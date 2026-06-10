@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>JARVIS</string>
+  <key>CFBundleDisplayName</key>
+  <string>JARVIS</string>
+  <key>CFBundleIdentifier</key>
+  <string>local.jarvis.app</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleExecutable</key>
+  <string>JARVIS</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>JarvisMark</string>
+  <key>LSBackgroundOnly</key>
+  <false/>
+  <key>LSUIElement</key>
+  <false/>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>JARVIS needs microphone access for realtime voice control.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>JARVIS uses the camera only when you ask it to look through the camera.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>JARVIS uses Apple Events to open apps, websites, Telegram, and automation actions you request.</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Personal local AI assistant.</string>
+</dict>
+</plist>

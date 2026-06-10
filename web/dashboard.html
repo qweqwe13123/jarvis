@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS Workspace</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body class="dashboard-page">
+  <div class="dashboard-shell workspace-layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">J.A.R.V.I.S</div>
+      <div class="sidebar-actions">
+        <button class="sidebar-action primary" id="btn-new-chat">✦ New Chat <span class="kbd">⌘N</span></button>
+        <button class="sidebar-action" data-section="automations">⚡ Automations</button>
+        <button class="sidebar-action" data-section="customize">◎ Customize</button>
+        <button class="sidebar-action active" data-section="workspaces">▣ Workspaces</button>
+      </div>
+      <div class="sidebar-section" id="sidebar-section">
+        <div class="sidebar-label">WORKSPACES</div>
+        <div class="workspace-list" id="workspace-list"></div>
+      </div>
+      <div class="sidebar-panel hidden" id="panel-customize">
+        <div class="sidebar-label">CUSTOMIZE</div>
+        <label class="field-label">System Prompt</label>
+        <textarea id="cfg-prompt" rows="4" placeholder="JARVIS system prompt…"></textarea>
+        <label class="field-label">Temperature <span id="cfg-temp-val">0.7</span></label>
+        <input type="range" id="cfg-temp" min="0" max="100" value="70">
+        <label class="field-label">Provider</label>
+        <select id="cfg-provider">
+          <option value="auto">Auto Router</option>
+          <option value="gemini">Gemini</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="groq">Groq</option>
+        </select>
+        <button class="sidebar-action" id="btn-save-settings">Save Settings</button>
+      </div>
+      <div class="sidebar-panel hidden" id="panel-automations">
+        <div class="sidebar-label">AUTOMATIONS</div>
+        <div id="automation-list" class="automation-list"></div>
+        <button class="sidebar-action" id="btn-new-automation">+ New Automation</button>
+      </div>
+      <div class="sidebar-footer">
+        <button class="sidebar-open">↗ Open Workspace</button>
+        <button class="sidebar-action upgrade-btn">Upgrade to a Pro account</button>
+        <div class="account-card">
+          <div class="account-avatar">KI</div>
+          <div>
+            <strong>Khalil</strong>
+            <span>Free Plan</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="dashboard-main workspace-center">
+      <header class="center-topbar">
+        <span class="status-online">● SYSTEM ONLINE</span>
+        <span class="center-title">JARVIS</span>
+        <span class="status-listening" id="top-status">STATUS LISTENING</span>
+      </header>
+
+      <section class="greeting-block">
+        <div class="eyebrow" id="greeting-time">GOOD EVENING</div>
+        <h1 id="greeting-name">KHALIL</h1>
+        <p>J.A.R.V.I.S is online and ready.</p>
+      </section>
+
+      <section class="hud-section">
+        <div class="hud-ring" id="hud-ring">
+          <div class="hud-bracket tl"></div>
+          <div class="hud-bracket tr"></div>
+          <div class="hud-bracket bl"></div>
+          <div class="hud-bracket br"></div>
+          <div class="hud-rings"></div>
+          <div class="hud-core">J.A.R.V.I.S</div>
+          <div class="hud-status" id="hud-status">● LISTENING</div>
+        </div>
+      </section>
+
+      <section class="chat-stream" id="chat-stream"></section>
+
+      <section class="composer-section">
+        <div class="composer-box">
+          <textarea id="composer-input" rows="2" placeholder="Ask anything, @ to mention, / for actions"></textarea>
+          <div class="composer-footer">
+            <div class="composer-left">
+              <button class="icon-btn" type="button">+</button>
+              <select id="model-select">
+                <option value="auto">Auto — Smart Router</option>
+                <option value="gemini">Gemini 2.5 Flash</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="groq">Groq Llama 3.3</option>
+              </select>
+            </div>
+            <div class="composer-right">
+              <button class="icon-btn" type="button">🎙</button>
+              <button class="send-btn" id="btn-send" type="button">▸</button>
+            </div>
+          </div>
+        </div>
+        <div class="composer-pills">
+          <button class="pill-btn" type="button">+ Composer 2.5</button>
+          <button class="pill-btn" type="button" id="btn-plan">Plan New Idea <span class="kbd">⌘Tab</span></button>
+        </div>
+      </section>
+    </main>
+
+    <aside class="console-panel" id="console-panel">
+      <div class="console-header">
+        <span class="panel-label">LIVE MODE</span>
+        <strong class="live-active">Status: ACTIVE</strong>
+      </div>
+      <div class="uptime-row">Uptime: <strong id="uptime">00:00</strong></div>
+
+      <div class="console-section">
+        <div class="panel-label">JARVIS CONSOLE</div>
+        <ul class="workflow-steps" id="workflow-steps">
+          <li data-step="Thinking">○ Thinking</li>
+          <li data-step="Searching">○ Searching</li>
+          <li data-step="Reading Files">○ Reading Files</li>
+          <li data-step="Analyzing Code">○ Analyzing Code</li>
+          <li data-step="Creating Files">○ Creating Files</li>
+          <li data-step="Editing Files">○ Editing Files</li>
+          <li data-step="Finished">○ Finished</li>
+        </ul>
+        <div class="console-output" id="console-output"></div>
+      </div>
+
+      <div class="status-card monitor-card">
+        <div class="card-header"><span>SYSTEM MONITOR</span></div>
+        <div class="metric"><span>CPU</span><strong id="m-cpu">--%</strong><div class="meter"><span id="m-cpu-bar" style="width:0%"></span></div></div>
+        <div class="metric"><span>MEM</span><strong id="m-mem">--%</strong><div class="meter warn"><span id="m-mem-bar" style="width:0%"></span></div></div>
+        <div class="metric"><span>NET</span><strong id="m-net">0KB/s</strong><div class="meter"><span id="m-net-bar" style="width:0%"></span></div></div>
+        <div class="metric"><span>GPU</span><strong id="m-gpu">--%</strong><div class="meter"><span id="m-gpu-bar" style="width:0%"></span></div></div>
+        <div class="metric"><span>TMP</span><strong id="m-tmp">--°C</strong><div class="meter"><span id="m-tmp-bar" style="width:0%"></span></div></div>
+      </div>
+
+      <div class="status-card ai-card">
+        <div class="card-header"><span>AI STATUS</span></div>
+        <div class="ai-grid" id="ai-status-grid">
+          <div><span>Current Model</span><strong id="ai-model">--</strong></div>
+          <div><span>Context Window</span><strong>200K</strong></div>
+          <div><span>Codebase Index</span><strong>Active</strong></div>
+          <div><span>Plugins</span><strong>12/12</strong></div>
+          <div><span>Memory</span><strong>Persistent</strong></div>
+          <div><span>AI Status</span><strong id="ai-status">Listening</strong></div>
+        </div>
+      </div>
+
+      <button class="mic-active-btn" type="button">🎙 MIC ACTIVE</button>
+    </aside>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

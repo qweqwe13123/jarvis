@@ -1,0 +1,14 @@
+#!/bin/zsh
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PYTHONUNBUFFERED=1
+cd "/Users/khalilisaiev/jarvis"
+
+LOG_DIR="$HOME/Library/Logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/jarvis-mark-xxxix.log"
+
+if [ -x "/Users/khalilisaiev/jarvis/.venv/bin/python" ]; then
+  exec "/Users/khalilisaiev/jarvis/.venv/bin/python" "/Users/khalilisaiev/jarvis/main.py" >> "$LOG_FILE" 2>&1
+fi
+
+exec /usr/bin/env python3 "/Users/khalilisaiev/jarvis/main.py" >> "$LOG_FILE" 2>&1

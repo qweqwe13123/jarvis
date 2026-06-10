@@ -1,0 +1,12 @@
+[2026-05-26 20:04:38] USAGE tier=free left=299 queue=0 blocked=0 task=chat quality=medium speed=high ctx=small
+[2026-05-26 20:04:38] FAIL groq/llama-3.3-70b-versatile: groq: auth error 401
+[2026-05-26 20:04:38] FAIL openrouter/google/gemma-2-9b-it:free: openrouter: auth error 401
+[2026-05-26 20:04:40] OK provider=gemini model=gemini-2.5-flash task=chat latency_ms=731 fallback_depth=2
+[2026-06-10 02:08:16] USAGE tier=free left=299 queue=0 blocked=0 task=chat quality=medium speed=high ctx=small
+[2026-06-10 02:08:16] FAIL groq/llama-3.3-70b-versatile: groq: auth error 401
+[2026-06-10 02:08:16] FAIL openrouter/google/gemma-2-9b-it:free: openrouter: auth error 401
+[2026-06-10 02:08:18] OK provider=gemini model=gemini-2.5-flash task=chat latency_ms=1408 fallback_depth=2
+[2026-06-10 02:08:28] USAGE tier=free left=298 queue=0 blocked=0 task=chat quality=medium speed=high ctx=small
+[2026-06-10 02:08:35] OK provider=gemini model=gemini-2.5-flash task=chat latency_ms=6890 fallback_depth=2
+[2026-06-10 02:08:47] USAGE tier=free left=297 queue=0 blocked=0 task=search quality=medium speed=high ctx=medium
+[2026-06-10 02:08:53] OK provider=gemini model=gemini-2.5-flash task=search latency_ms=5643 fallback_depth=2

@@ -1,0 +1,243 @@
+{
+  "active_workspace_id": "296845e03630",
+  "active_chat_id": "b0917b888706",
+  "workspaces": {
+    "default": {
+      "id": "default",
+      "name": "Default Workspace",
+      "path": "/Users/khalilisaiev/jarvis",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "03c334a7ccee": {
+      "id": "03c334a7ccee",
+      "name": "JarvisProjects",
+      "path": "/Users/khalilisaiev/Desktop/JarvisProjects",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "e7c0ab989805": {
+      "id": "e7c0ab989805",
+      "name": "go_ogle_так_я_тебя_же_раз_работ_ал",
+      "path": "/Users/khalilisaiev/Desktop/JarvisProjects/go_ogle_так_я_тебя_же_раз_работ_ал",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "dc43eaf30694": {
+      "id": "dc43eaf30694",
+      "name": "через_5_минут_напомни_мне_чтобы_я_оторвался_от_ф",
+      "path": "/Users/khalilisaiev/Desktop/JarvisProjects/через_5_минут_напомни_мне_чтобы_я_оторвался_от_ф",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "d1aea381275f": {
+      "id": "d1aea381275f",
+      "name": "в_смы_сле_te_le_gram_бот_от_куда_ты_знаешь_про_t",
+      "path": "/Users/khalilisaiev/Desktop/JarvisProjects/в_смы_сле_te_le_gram_бот_от_куда_ты_знаешь_про_t",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "e2a9a5acffbc": {
+      "id": "e2a9a5acffbc",
+      "name": "launcher",
+      "path": "/Users/khalilisaiev/jarvis/launcher",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "8be7c89890a4": {
+      "id": "8be7c89890a4",
+      "name": "tools",
+      "path": "/Users/khalilisaiev/jarvis/tools",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "1bd8f2db065c": {
+      "id": "1bd8f2db065c",
+      "name": "core",
+      "path": "/Users/khalilisaiev/jarvis/core",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "9913b4351e36": {
+      "id": "9913b4351e36",
+      "name": "memory",
+      "path": "/Users/khalilisaiev/jarvis/memory",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "1c8c21ff6d10": {
+      "id": "1c8c21ff6d10",
+      "name": "dist",
+      "path": "/Users/khalilisaiev/jarvis/dist",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "8732e6d34022": {
+      "id": "8732e6d34022",
+      "name": "config",
+      "path": "/Users/khalilisaiev/jarvis/config",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "ac848084695a": {
+      "id": "ac848084695a",
+      "name": "web",
+      "path": "/Users/khalilisaiev/jarvis/web",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "33cc7c94f028": {
+      "id": "33cc7c94f028",
+      "name": "runtime",
+      "path": "/Users/khalilisaiev/jarvis/runtime",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "8d89e898cc83": {
+      "id": "8d89e898cc83",
+      "name": "desktop",
+      "path": "/Users/khalilisaiev/jarvis/desktop",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "b7a6c84d761d": {
+      "id": "b7a6c84d761d",
+      "name": "agent",
+      "path": "/Users/khalilisaiev/jarvis/agent",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "26bdbeb17fe7": {
+      "id": "26bdbeb17fe7",
+      "name": "__pycache__",
+      "path": "/Users/khalilisaiev/jarvis/__pycache__",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "6819c98f27dd": {
+      "id": "6819c98f27dd",
+      "name": "actions",
+      "path": "/Users/khalilisaiev/jarvis/actions",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "1ff401453f82": {
+      "id": "1ff401453f82",
+      "name": "assets",
+      "path": "/Users/khalilisaiev/jarvis/assets",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "11a2dc46c58f": {
+      "id": "11a2dc46c58f",
+      "name": "Downloads",
+      "path": "/Users/khalilisaiev/jarvis/Downloads",
+      "chats": [],
+      "created": "2026-06-10T02:05:28"
+    },
+    "296845e03630": {
+      "id": "296845e03630",
+      "name": "jarvis_ui",
+      "path": "/Users/khalilisaiev/jarvis/jarvis_ui",
+      "chats": [
+        {
+          "id": "b0917b888706",
+          "title": "как дела",
+          "pinned": false,
+          "messages": [
+            {
+              "id": "1b2903620bf1",
+              "role": "assistant",
+              "content": "Hizmetinizdeyim, patron.",
+              "meta": {},
+              "ts": "2026-06-10T02:06:13"
+            },
+            {
+              "id": "ac131ec8f3e4",
+              "role": "assistant",
+              "content": "hizmetinizdeyim, patron.",
+              "meta": {},
+              "ts": "2026-06-10T02:06:15"
+            },
+            {
+              "id": "e6c557972340",
+              "role": "user",
+              "content": "как дела",
+              "meta": {},
+              "ts": "2026-06-10T02:08:16"
+            },
+            {
+              "id": "38cc1542499f",
+              "role": "assistant",
+              "content": "Отлично! Я рад быть полезным.\n\nКак я могу вам помочь сегодня? 😊",
+              "meta": {},
+              "ts": "2026-06-10T02:08:18"
+            },
+            {
+              "id": "112815a60654",
+              "role": "user",
+              "content": "не понял",
+              "meta": {},
+              "ts": "2026-06-10T02:08:28"
+            },
+            {
+              "id": "d45a93469ac7",
+              "role": "assistant",
+              "content": "Понял. Чтобы я мог вам помочь, пожалуйста, уточните:\n\n*   **Что именно вы не поняли?** (Что именно вам непонятно?)\n*   **Какая часть вызывает вопросы?** (Какой момент или предложение вызвало затруднение?)\n*   **Можете ли вы указать конкретное слово, фразу или идею, которая вам непонятна?**\n\nКак только вы уточните, что именно вы не поняли, я постараюсь объяснить это по-другому или более подробно.",
+              "meta": {},
+              "ts": "2026-06-10T02:08:35"
+            },
+            {
+              "id": "bae91a890cff",
+              "role": "user",
+              "content": "открой мне сайт",
+              "meta": {},
+              "ts": "2026-06-10T02:08:47"
+            },
+            {
+              "id": "8e4017813400",
+              "role": "assistant",
+              "content": "Как искусственный интеллект, я не могу напрямую открывать сайты в вашем браузере, потому что я — языковая модель, а не программа с доступом к вашему устройству.\n\nОднако я могу помочь вам несколькими способами:\n\n1.  **Подсказать URL:** Просто назовите мне, какой сайт вы хотите посетить (например, Google, YouTube, lenta.ru), и я дам вам ссылку, которую вы сможете скопировать и вставить в свой браузер.\n2.  **Найти информацию:** Если вы хотите найти конкретную информацию на сайте, я могу попробовать помочь найти ее для вас, если сайт общедоступен и информация находится в моей базе знаний.\n\nИтак, какой сайт вы хотели бы открыть?",
+              "meta": {},
+              "ts": "2026-06-10T02:08:53"
+            },
+            {
+              "id": "b9378d4d2ac2",
+              "role": "assistant",
+              "content": "К вашим услугам, босс.",
+              "meta": {},
+              "ts": "2026-06-10T02:10:03"
+            },
+            {
+              "id": "cf5f228f9a41",
+              "role": "assistant",
+              "content": "к вашим услугам, босс.",
+              "meta": {},
+              "ts": "2026-06-10T02:10:05"
+            },
+            {
+              "id": "e959ba9a7fba",
+              "role": "assistant",
+              "content": "я не понял, о каких \"множественных сделках\" идет речь. не могли бы вы уточнить, что именно вас интересует? возможно, это связано с вашим проектом или автоматизацией?",
+              "meta": {},
+              "ts": "2026-06-10T13:41:54"
+            }
+          ],
+          "created": "2026-06-10T02:06:13",
+          "updated": "2026-06-10T13:41:54"
+        }
+      ],
+      "created": "2026-06-10T02:05:28"
+    }
+  },
+  "automations": [],
+  "settings": {
+    "system_prompt": "",
+    "model": "auto",
+    "provider": "auto",
+    "temperature": 0.7,
+    "tools_enabled": true,
+    "memory_enabled": true,
+    "api_keys": {}
+  }
+}

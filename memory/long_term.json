@@ -1,0 +1,23 @@
+{
+  "identity": {
+    "user_name": {
+      "value": "Николай",
+      "updated": "2026-05-26"
+    }
+  },
+  "preferences": {
+    "profession": {
+      "value": "web coder",
+      "updated": "2026-05-26"
+    }
+  },
+  "projects": {
+    "telegram_bot_project": {
+      "value": "Develop Telegram bot using neural networks",
+      "updated": "2026-05-26"
+    }
+  },
+  "relationships": {},
+  "wishes": {},
+  "notes": {}
+}
