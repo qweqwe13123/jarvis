@@ -4,6 +4,7 @@ import threading
 import json
 import sys
 import traceback
+import time
 from pathlib import Path
 
 import sounddevice as sd
@@ -70,6 +71,31 @@ def _get_live_api_version() -> str:
             return json.load(f).get("live_api_version", "v1alpha")
     except Exception:
         return "v1alpha"
+
+
+def _flatten_exceptions(err: BaseException) -> list:
+    """Recursively unwrap ExceptionGroup into a flat list of leaf exceptions."""
+    group = getattr(err, "exceptions", None)
+    if group:
+        out = []
+        for sub in group:
+            out.extend(_flatten_exceptions(sub))
+        return out
+    return [err]
+
+
+def _classify_connection_error(err: Exception) -> str:
+    """Return 'auth' for fatal API-key problems, 'transient' otherwise."""
+    msg = str(err).lower()
+    auth_markers = (
+        "api key expired", "api_key_invalid", "api key not valid",
+        "invalid api key", "permission_denied", "permission denied",
+        "unauthenticated", "invalid authentication", "expired",
+        "401", "403",
+    )
+    if any(m in msg for m in auth_markers):
+        return "auth"
+    return "transient"
 
 
 def _load_system_prompt() -> str:
@@ -272,6 +298,7 @@ TOOL_DECLARATIONS = [
                 "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
                 "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
                 "message": {"type": "STRING", "description": "Reminder message text"},
+                    "language": {"type": "STRING", "description": "Original user language code for the reminder: ru, en, tr, or az"},
                 "delay_seconds": {"type": "INTEGER", "description": "Relative delay in seconds for timer reminders"},
                 "delay_minutes": {"type": "NUMBER", "description": "Relative delay in minutes for timer reminders"}
             },
@@ -642,6 +669,23 @@ class JarvisLive:
         self._startup_greeting_done = False
         self._preferred_provider = "auto"
         self._preferred_model = ""
+        self._last_output_audio_at = 0.0
+        self._last_voice_log_at = 0.0
+        self._playback_grace_seconds = 0.75
+        self._reminder_engine = None
+        self._start_reminder_engine()
+
+    def _start_reminder_engine(self) -> None:
+        """Fire reminders/timers/alarms through the live JARVIS voice only."""
+        try:
+            from core.reminder_engine import ReminderEngine
+            self._reminder_engine = ReminderEngine(
+                speak_cb=self.speak_notification,
+                log_cb=self.ui.write_log,
+            )
+            self._reminder_engine.start()
+        except Exception as e:
+            print(f"[JARVIS] ⚠️ reminder engine: {e}")
 
     def _emit_workflow_for_task(self, task_category: str) -> None:
         steps = {
@@ -752,10 +796,33 @@ class JarvisLive:
     def set_speaking(self, value: bool):
         with self._speaking_lock:
             self._is_speaking = value
-        if value:
-            self.ui.set_state("SPEAKING")
-        elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
+            if value:
+                self._last_output_audio_at = time.monotonic()
+        # The UI window may be torn down (closed) while audio tasks are still
+        # winding down; ignore the resulting "C/C++ object deleted" race.
+        try:
+            if value:
+                self.ui.set_state("SPEAKING")
+            elif not self.ui.muted:
+                self.ui.set_state("LISTENING")
+        except RuntimeError:
+            pass
+
+    def _voice_log(self, message: str, min_interval: float = 1.0):
+        now = time.monotonic()
+        if now - self._last_voice_log_at >= min_interval:
+            self._last_voice_log_at = now
+            print(f"[JARVIS][voice] {message}")
+            try:
+                self.ui.write_log(f"VOICE: {message}")
+            except Exception:
+                pass
+
+    def _output_busy(self) -> bool:
+        with self._speaking_lock:
+            speaking = self._is_speaking
+            last_audio = self._last_output_audio_at
+        return speaking or (time.monotonic() - last_audio) < self._playback_grace_seconds
 
     def speak(self, text: str):
         if not self._loop or not self.session:
@@ -767,6 +834,39 @@ class JarvisLive:
             ),
             self._loop
         )
+
+    _NOTIFY_LANG_NAMES = {
+        "ru": "Russian", "en": "English", "tr": "Turkish", "az": "Azerbaijani",
+    }
+
+    def speak_notification(self, text: str, language: str = "en") -> None:
+        """Speak a reminder/timer/alarm/automation announcement.
+
+        Routes exclusively through the live JARVIS voice session. If the session
+        is not connected yet, this raises so the reminder engine keeps the item
+        pending and retries — it NEVER falls back to a system/OS/browser voice.
+        """
+        if not self._loop or not self.session:
+            raise RuntimeError("live voice session not ready")
+        lang_name = self._NOTIFY_LANG_NAMES.get(language, "the user's language")
+        directive = (
+            f"[NOTIFICATION] It's time to deliver this reminder to the user out loud, "
+            f"right now, in {lang_name}. Say it naturally in your own normal voice, keep it "
+            f'short: "{text}"'
+        )
+        fut = asyncio.run_coroutine_threadsafe(
+            self.session.send_client_content(
+                turns={"parts": [{"text": directive}]},
+                turn_complete=True,
+            ),
+            self._loop,
+        )
+        # Surface scheduling errors so the engine can retry instead of silently dropping.
+        fut.result(timeout=5)
+        try:
+            self.ui.add_activity("Reminder", text)
+        except Exception:
+            pass
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
@@ -793,7 +893,11 @@ class JarvisLive:
             "The user often speaks Russian, but may mix Russian, English, Turkish, and Azerbaijani. "
             "Voice transcription may contain mistakes. Interpret intent generously. "
             "Common corrections: 'випить' means 'выпить', 'таймар/таймир' means 'таймер', "
-            "'напомнить меня' means 'напомни мне', and 'Jarvis/Джарвис' is your name.\n\n"
+            "'напомнить меня' means 'напомни мне'.\n"
+            "[TONE]\n"
+            "Talk back like a close friend on a call — short, casual, warm, a little funny. "
+            "Never sound like an assistant or robot. Never say you're an AI. "
+            "Keep replies tight and human, the way a buddy would actually talk.\n\n"
         )
         lang_ctx = language_instruction()
 
@@ -811,9 +915,9 @@ class JarvisLive:
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                    prefix_padding_ms=350,
-                    silence_duration_ms=900,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    prefix_padding_ms=200,
+                    silence_duration_ms=550,
                 ),
                 activity_handling=types.ActivityHandling.NO_INTERRUPTION,
                 turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
@@ -847,6 +951,10 @@ class JarvisLive:
 
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
+        try:
+            self.ui.set_workflow_step(f"Running {name.replace('_', ' ')}")
+        except Exception:
+            pass
 
         if name == "save_memory":
             category = args.get("category", "notes")
@@ -905,6 +1013,9 @@ class JarvisLive:
                 result = r or "Media downloader action complete."
 
             elif name == "reminder":
+                if not args.get("language"):
+                    from core.language import detect_language
+                    args["language"] = detect_language(args.get("message", ""))
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
                 result = r or "Reminder set."
 
@@ -994,10 +1105,67 @@ class JarvisLive:
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
         if result and name != "save_memory":
             append_conversation("tool", f"{name}: {str(result)[:900]}")
+        try:
+            self.ui.add_activity(f"Used {name.replace('_', ' ')}", str(result)[:600])
+        except Exception:
+            pass
+        try:
+            self._emit_preview(name, args, result)
+        except Exception as e:
+            print(f"[JARVIS] ⚠️ preview: {e}")
         return types.FunctionResponse(
             id=fc.id, name=name,
             response={"result": result}
         )
+
+    _PATH_RE = re.compile(r"(~?/[^\s'\"]+?\.[A-Za-z0-9]{1,6})")
+    _CODE_EXTS = (".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".json", ".md",
+                  ".txt", ".java", ".cpp", ".c", ".go", ".rs", ".sh", ".sql", ".yml", ".yaml")
+    _PREVIEW_TEXT_TOOLS = {
+        "web_search", "automation_workflow", "agent_task", "screen_process",
+        "flight_finder", "weather_report",
+    }
+
+    def _emit_preview(self, name: str, args: dict, result) -> None:
+        ui = self.ui
+        if not hasattr(ui, "show_preview") or not result:
+            return
+        text = str(result)
+
+        # 1) Artifact-producing tools: detect a saved file path.
+        if name in ("dev_agent", "code_helper", "file_processor", "game_updater"):
+            path = self._extract_artifact_path(text)
+            if path:
+                low = path.lower()
+                if low.endswith((".html", ".htm")):
+                    ui.show_preview("web", Path(path).name, path, path)
+                    return
+                if low.endswith(self._CODE_EXTS):
+                    try:
+                        content = Path(path).expanduser().read_text(encoding="utf-8", errors="ignore")
+                        ui.show_preview("code", Path(path).name, content, path)
+                        return
+                    except Exception:
+                        pass
+                ui.show_preview("text", name, text, path)
+                return
+            ui.show_preview("text", name.replace("_", " ").title(), text)
+            return
+
+        # 2) Text-result tools: show the result as a readable card.
+        if name in self._PREVIEW_TEXT_TOOLS and len(text.strip()) > 12:
+            ui.show_preview("text", name.replace("_", " ").title(), text)
+
+    def _extract_artifact_path(self, text: str) -> str | None:
+        candidates = self._PATH_RE.findall(text or "")
+        # Prefer an index.html / .html path, else the first code/file path.
+        html = [c for c in candidates if c.lower().endswith((".html", ".htm"))]
+        if html:
+            return html[-1]
+        for c in candidates:
+            if c.lower().endswith(self._CODE_EXTS):
+                return c
+        return candidates[-1] if candidates else None
 
     async def _send_realtime(self):
         while True:
@@ -1013,16 +1181,31 @@ class JarvisLive:
         loop = asyncio.get_event_loop()
 
         def callback(indata, frames, time_info, status):
-            with self._speaking_lock:
-                jarvis_speaking = self._is_speaking
-            if not jarvis_speaking and not self.ui.muted:
+            if status:
+                self._voice_log(f"mic status: {status}", min_interval=5.0)
+            if not self._output_busy() and not self.ui.muted:
                 data = indata.tobytes()
                 def _enqueue_audio():
                     try:
                         self.out_queue.put_nowait({"data": data, "mime_type": "audio/pcm"})
                     except asyncio.QueueFull:
-                        pass
+                        try:
+                            self.out_queue.get_nowait()
+                            self.out_queue.put_nowait({"data": data, "mime_type": "audio/pcm"})
+                            self._voice_log("mic queue full; dropped oldest chunk", min_interval=5.0)
+                        except Exception:
+                            pass
                 loop.call_soon_threadsafe(_enqueue_audio)
+
+        try:
+            sd.query_devices(kind="input")
+        except Exception:
+            self.ui.write_log(
+                "ERR: No microphone detected. Connect a mic and grant Microphone "
+                "permission in System Settings → Privacy & Security → Microphone."
+            )
+            print("[JARVIS] ❌ No input device available.")
+            raise RuntimeError("No microphone input device available")
 
         try:
             with sd.InputStream(
@@ -1033,15 +1216,32 @@ class JarvisLive:
                 callback=callback,
             ):
                 print("[JARVIS] 🎤 Mic stream open")
+                self.ui.write_log("SYS: Microphone active — listening.")
                 while True:
                     await asyncio.sleep(0.1)
         except Exception as e:
             print(f"[JARVIS] ❌ Mic: {e}")
+            self.ui.write_log(
+                f"ERR: Microphone error: {e}. Check macOS Microphone permission "
+                "for your terminal/Python in System Settings → Privacy & Security."
+            )
             raise
+
+    def _emit_user_turn(self, in_buf: list) -> bool:
+        """Persist + display the user's transcribed turn. Returns True if emitted."""
+        full_in = " ".join(in_buf).strip()
+        if not full_in:
+            return False
+        detect_and_save_language(full_in)
+        self.ui.add_user_message(full_in)
+        append_conversation("user", full_in)
+        remember_vector(full_in, kind="user_message")
+        return True
 
     async def _receive_audio(self):
         print("[JARVIS] 👂 Recv started")
         out_buf, in_buf = [], []
+        user_emitted = False
 
         try:
             while True:
@@ -1050,7 +1250,19 @@ class JarvisLive:
                     if response.data:
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
-                        self.audio_in_queue.put_nowait(response.data)
+                        # Never let a full playback queue crash the receive loop
+                        # (that would force a mid-conversation reconnect). Drop the
+                        # oldest buffered chunk and keep the newest audio instead.
+                        try:
+                            self.audio_in_queue.put_nowait(response.data)
+                        except asyncio.QueueFull:
+                            try:
+                                self.audio_in_queue.get_nowait()
+                                self.audio_in_queue.put_nowait(response.data)
+                                self._voice_log("playback queue full; dropped oldest chunk",
+                                                min_interval=5.0)
+                            except Exception:
+                                pass
 
                     if response.server_content:
                         sc = response.server_content
@@ -1058,7 +1270,15 @@ class JarvisLive:
                         if sc.output_transcription and sc.output_transcription.text:
                             txt = _clean_transcript(sc.output_transcription.text)
                             if txt:
+                                # Show the user's message before the assistant's
+                                # streamed reply so the thread stays in order.
+                                if not user_emitted and in_buf:
+                                    user_emitted = self._emit_user_turn(in_buf)
                                 out_buf.append(txt)
+                                try:
+                                    self.ui.stream_delta(txt)
+                                except Exception:
+                                    pass
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
@@ -1069,17 +1289,14 @@ class JarvisLive:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
-                            full_in = " ".join(in_buf).strip()
-                            if full_in:
-                                detect_and_save_language(full_in)
-                                self.ui.write_log(f"You: {full_in}")
-                                append_conversation("user", full_in)
-                                remember_vector(full_in, kind="user_message")
+                            if not user_emitted:
+                                self._emit_user_turn(in_buf)
                             in_buf = []
+                            user_emitted = False
 
                             full_out = " ".join(out_buf).strip()
+                            self.ui.stream_end(full_out)
                             if full_out:
-                                self.ui.write_log(f"Jarvis: {full_out}")
                                 append_conversation("jarvis", full_out)
                                 remember_vector(full_out, kind="assistant_message")
                                 stats = usage_stats()
@@ -1126,18 +1343,20 @@ class JarvisLive:
                 try:
                     chunk = await asyncio.wait_for(
                         self.audio_in_queue.get(),
-                        timeout=0.1
+                        timeout=0.25,
                     )
                 except asyncio.TimeoutError:
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
                         and self.audio_in_queue.empty()
+                        and (time.monotonic() - self._last_output_audio_at) > self._playback_grace_seconds
                     ):
                         self.set_speaking(False)
                         self._turn_done_event.clear()
                     continue
                 self.set_speaking(True)
+                self._last_output_audio_at = time.monotonic()
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:
             print(f"[JARVIS] ❌ Play: {e}")
@@ -1148,15 +1367,18 @@ class JarvisLive:
             stream.close()
 
     async def run(self):
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": _get_live_api_version()}
-        )
-
+        backoff = 3
         while True:
             try:
                 print("[JARVIS] 🔌 Connecting...")
                 self.ui.set_state("THINKING")
+
+                # Re-read the key/version every attempt so a renewed key is
+                # picked up automatically without restarting the app.
+                client = genai.Client(
+                    api_key=_get_api_key(),
+                    http_options={"api_version": _get_live_api_version()},
+                )
                 config = self._build_config()
 
                 async with (
@@ -1165,10 +1387,11 @@ class JarvisLive:
                 ):
                     self.session        = session
                     self._loop          = asyncio.get_event_loop()
-                    self.audio_in_queue = asyncio.Queue()
-                    self.out_queue      = asyncio.Queue(maxsize=10)
+                    self.audio_in_queue = asyncio.Queue(maxsize=200)
+                    self.out_queue      = asyncio.Queue(maxsize=200)
                     self._turn_done_event = asyncio.Event()
 
+                    backoff = 3  # reset after a successful connection
                     print("[JARVIS] ✅ Connected.")
                     self.ui.set_state("LISTENING")
                     self.ui.write_log("SYS: JARVIS online.")
@@ -1180,14 +1403,44 @@ class JarvisLive:
                     tg.create_task(self._play_audio())
 
             except Exception as e:
-                print(f"[JARVIS] ⚠️ {e}")
+                # TaskGroup raises ExceptionGroup; flatten to inspect real causes.
+                errors = _flatten_exceptions(e)
+                kind = "transient"
+                for err in errors:
+                    print(f"[JARVIS] ⚠️ {err}")
+                    if _classify_connection_error(err) == "auth":
+                        kind = "auth"
                 traceback.print_exc()
-            self.set_speaking(False)
-            self.ui.set_state("THINKING")
-            print("[JARVIS] 🔄 Reconnecting in 3s...")
-            await asyncio.sleep(3)
+
+                self.set_speaking(False)
+                self.session = None
+
+                if kind == "auth":
+                    self.ui.set_state("THINKING")
+                    self.ui.write_log(
+                        "ERR: Gemini API key is invalid or expired. "
+                        "Get a new free key at https://aistudio.google.com/apikey "
+                        "and paste it via the settings panel (or config/api_keys.json)."
+                    )
+                    print("[JARVIS] 🔑 Invalid/expired key. Waiting for a new key...")
+                    # Slow retry — picks up a renewed key automatically.
+                    await asyncio.sleep(15)
+                    continue
+
+                self.ui.set_state("THINKING")
+                self.ui.write_log(f"SYS: Connection lost, reconnecting in {backoff}s...")
+                print(f"[JARVIS] 🔄 Reconnecting in {backoff}s...")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)  # exponential backoff, capped
 
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--jarvis-apply-update":
+        from pathlib import Path
+        from core.updater.installer import apply_update
+        package = Path(sys.argv[2])
+        parent_pid = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+        raise SystemExit(apply_update(package, parent_pid=parent_pid))
+
     ui = JarvisUI("")
 
     def runner():

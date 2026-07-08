@@ -7,5 +7,11 @@ build/
 runtime/
 *.log
 .DS_Store
+config/api_keys.json
+memory/conversation_log.jsonl
+memory/language_state.json
+memory/long_term.json
+memory/vector_memory.jsonl
+memory/workspaces.json
 .env*
 !.env.example

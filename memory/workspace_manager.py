@@ -41,6 +41,7 @@ def _default_store() -> dict:
             }
         },
         "automations": [],
+        "reminders": [],
         "settings": {
             "system_prompt": "",
             "model": "auto",
@@ -69,6 +70,16 @@ def load_store() -> dict:
                 base["automations"] = data["automations"]
             if isinstance(data.get("settings"), dict):
                 base["settings"].update(data["settings"])
+            for workspace in base.get("workspaces", {}).values():
+                workspace.setdefault("chats", [])
+                for chat in workspace.get("chats", []):
+                    chat.setdefault("pinned", False)
+                    chat.setdefault("messages", [])
+                    chat.setdefault("artifacts", [])
+                    chat.setdefault("project_state", {})
+                    chat.setdefault("created", _now())
+                    chat.setdefault("updated", chat.get("created", _now()))
+            base.setdefault("reminders", [])
             return base
         except Exception:
             return _default_store()
@@ -112,6 +123,8 @@ def create_chat(title: str | None = None) -> dict:
         "title": title or "New Chat",
         "pinned": False,
         "messages": [],
+        "artifacts": [],
+        "project_state": {},
         "created": _now(),
         "updated": _now(),
     }
@@ -159,6 +172,18 @@ def pin_chat(chat_id: str, pinned: bool = True) -> bool:
     return False
 
 
+def toggle_pin_chat(chat_id: str) -> bool:
+    store = load_store()
+    ws = get_active_workspace(store)
+    for chat in ws.get("chats", []):
+        if chat.get("id") == chat_id:
+            chat["pinned"] = not bool(chat.get("pinned"))
+            chat["updated"] = _now()
+            save_store(store)
+            return True
+    return False
+
+
 def set_active_chat(chat_id: str) -> bool:
     store = load_store()
     ws = get_active_workspace(store)
@@ -194,6 +219,68 @@ def add_message(role: str, content: str, meta: dict | None = None) -> dict | Non
             save_store(store)
             return msg
     return None
+
+
+def add_artifact(kind: str, title: str, payload: str,
+                 path: str | None = None, meta: dict | None = None) -> dict | None:
+    """Persist a generated output in the active session workspace."""
+    store = load_store()
+    chat_id = store.get("active_chat_id")
+    if not chat_id:
+        chat = create_chat(title or "New Session")
+        chat_id = chat["id"]
+        store = load_store()
+    ws = get_active_workspace(store)
+    artifact = {
+        "id": _new_id(),
+        "kind": kind or "text",
+        "title": (title or "Output")[:80],
+        "payload": payload or "",
+        "path": path or "",
+        "meta": meta or {},
+        "created": _now(),
+        "updated": _now(),
+    }
+    for chat in ws.get("chats", []):
+        if chat.get("id") == chat_id:
+            chat.setdefault("artifacts", []).append(artifact)
+            state = chat.setdefault("project_state", {})
+            state["active_artifact_id"] = artifact["id"]
+            state["last_output_kind"] = artifact["kind"]
+            # Pointer into the single chronological thread so the conversation
+            # timeline can render the artifact inline in order.
+            chat.setdefault("messages", []).append({
+                "id": _new_id(),
+                "role": "artifact",
+                "content": artifact["title"],
+                "meta": {
+                    "artifact_id": artifact["id"],
+                    "kind": artifact["kind"],
+                    "title": artifact["title"],
+                    "path": artifact["path"],
+                },
+                "ts": _now(),
+            })
+            chat["updated"] = _now()
+            save_store(store)
+            return artifact
+    return None
+
+
+def get_session_state(chat_id: str | None = None) -> dict:
+    store = load_store()
+    if chat_id:
+        ws = get_active_workspace(store)
+        chat = next((c for c in ws.get("chats", []) if c.get("id") == chat_id), None)
+    else:
+        chat = get_active_chat(store)
+    if not chat:
+        return {"messages": [], "artifacts": [], "project_state": {}}
+    return {
+        "messages": list(chat.get("messages", [])),
+        "artifacts": list(chat.get("artifacts", [])),
+        "project_state": dict(chat.get("project_state", {})),
+    }
 
 
 def list_chats(workspace_id: str | None = None) -> list[dict]:
@@ -245,6 +332,34 @@ def set_active_workspace(ws_id: str) -> bool:
     store["active_chat_id"] = None
     save_store(store)
     return True
+
+
+def rename_workspace(ws_id: str, name: str) -> bool:
+    store = load_store()
+    ws = store.get("workspaces", {}).get(ws_id)
+    if not ws:
+        return False
+    ws["name"] = name.strip() or ws.get("name", "Workspace")
+    save_store(store)
+    return True
+
+
+def delete_workspace(ws_id: str) -> bool:
+    """Delete a workspace. The 'default' workspace cannot be removed."""
+    store = load_store()
+    if ws_id == "default" or ws_id not in store.get("workspaces", {}):
+        return False
+    del store["workspaces"][ws_id]
+    if store.get("active_workspace_id") == ws_id:
+        store["active_workspace_id"] = "default"
+        store["active_chat_id"] = None
+    save_store(store)
+    return True
+
+
+def get_active_ids() -> tuple[str, str | None]:
+    store = load_store()
+    return store.get("active_workspace_id", "default"), store.get("active_chat_id")
 
 
 def load_automations() -> list[dict]:

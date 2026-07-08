@@ -105,6 +105,7 @@ def _routes(task_type: str) -> list[tuple[str, str]]:
         ]
     if task in ("translation", "creative", "chat", "search"):
         return [
+            ("ollama", "qwen3:8b"),
             ("groq", "llama-3.3-70b-versatile"),
             ("openrouter", "google/gemma-2-9b-it:free"),
             ("gemini", "gemini-2.5-flash"),
@@ -144,6 +145,14 @@ def _raise_from_http(provider: str, status: int, body: str) -> None:
     raise ModelRouterError(f"{provider}: bad request {status} {body[:180]}")
 
 
+def _build_messages(prompt: str, system: str | None) -> list[dict]:
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
 def _chat_http(
     url: str,
     api_key: str,
@@ -153,13 +162,14 @@ def _chat_http(
     timeout_sec: int,
     temperature: float,
     max_tokens: int,
+    system: str | None = None,
 ) -> tuple[str, int]:
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": _build_messages(prompt, system),
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
@@ -182,8 +192,9 @@ def _chat_http(
     return text, int((time.time() - start) * 1000)
 
 
-def _generate_gemini(model: str, prompt: str, timeout_sec: int) -> tuple[str, int]:
+def _generate_gemini(model: str, prompt: str, timeout_sec: int, system: str | None = None) -> tuple[str, int]:
     from google import genai
+    from google.genai import types
 
     api_key = _key("gemini_api_key")
     if not api_key:
@@ -191,7 +202,8 @@ def _generate_gemini(model: str, prompt: str, timeout_sec: int) -> tuple[str, in
     start = time.time()
     try:
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=model, contents=prompt)
+        config = types.GenerateContentConfig(system_instruction=system) if system else None
+        response = client.models.generate_content(model=model, contents=prompt, config=config)
     except Exception as e:
         raise ProviderUnavailableError(f"gemini: {e}") from e
     text = (response.text or "").strip()
@@ -231,6 +243,7 @@ def generate_text(
     max_tokens: int = 1200,
     preferred_provider: str | None = None,
     preferred_model: str | None = None,
+    system: str | None = None,
 ) -> ModelResult:
     profile = analyze_task(prompt)
     routed_task = task_type if task_type and task_type != "conversation" else profile.category
@@ -262,7 +275,7 @@ def generate_text(
             continue
         try:
             if provider == "gemini":
-                text, latency = _generate_gemini(model, prompt, timeout_sec)
+                text, latency = _generate_gemini(model, prompt, timeout_sec, system)
             elif provider == "openai":
                 text, latency = _chat_http(
                     "https://api.openai.com/v1/chat/completions",
@@ -273,6 +286,7 @@ def generate_text(
                     timeout_sec,
                     temperature,
                     max_tokens,
+                    system,
                 )
             elif provider == "groq":
                 text, latency = _chat_http(
@@ -284,6 +298,7 @@ def generate_text(
                     timeout_sec,
                     temperature,
                     max_tokens,
+                    system,
                 )
             elif provider == "deepseek":
                 text, latency = _chat_http(
@@ -295,6 +310,7 @@ def generate_text(
                     timeout_sec,
                     temperature,
                     max_tokens,
+                    system,
                 )
             elif provider == "together":
                 text, latency = _chat_http(
@@ -306,6 +322,7 @@ def generate_text(
                     timeout_sec,
                     temperature,
                     max_tokens,
+                    system,
                 )
             elif provider == "openrouter":
                 text, latency = _chat_http(
@@ -317,6 +334,7 @@ def generate_text(
                     timeout_sec,
                     temperature,
                     max_tokens,
+                    system,
                 )
             elif provider == "ollama":
                 text, latency = _generate_ollama(model, prompt, timeout_sec)
@@ -349,3 +367,146 @@ def generate_text(
             continue
 
     raise ModelRouterError("All model providers failed: " + " | ".join(errors[-6:]))
+
+
+# --------------------------------------------------------------------------- #
+# Streaming — used by the Website Builder for a live, on-the-fly HTML preview. #
+# --------------------------------------------------------------------------- #
+
+_OPENAI_COMPATIBLE_URLS = {
+    "openai": ("https://api.openai.com/v1/chat/completions", "openai_api_key"),
+    "groq": ("https://api.groq.com/openai/v1/chat/completions", "groq_api_key"),
+    "deepseek": ("https://api.deepseek.com/chat/completions", "deepseek_api_key"),
+    "together": ("https://api.together.xyz/v1/chat/completions", "together_api_key"),
+    "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "openrouter_api_key"),
+}
+
+
+def _stream_gemini(model: str, prompt: str, system: str | None, max_tokens: int):
+    from google import genai
+    from google.genai import types
+
+    api_key = _key("gemini_api_key")
+    if not api_key:
+        raise AuthError("gemini: key missing")
+    client = genai.Client(api_key=api_key)
+    config = types.GenerateContentConfig(
+        system_instruction=system,
+        max_output_tokens=max_tokens,
+    )
+    try:
+        stream = client.models.generate_content_stream(model=model, contents=prompt, config=config)
+        for chunk in stream:
+            piece = getattr(chunk, "text", None)
+            if piece:
+                yield piece
+    except Exception as e:
+        raise ProviderUnavailableError(f"gemini: {e}") from e
+
+
+def _stream_openai_compatible(url: str, api_key: str, model: str, prompt: str,
+                              provider: str, system: str | None, timeout_sec: int,
+                              temperature: float, max_tokens: int):
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = {
+        "model": model,
+        "messages": _build_messages(prompt, system),
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec, stream=True)
+    except requests.Timeout as e:
+        raise TimeoutError(f"{provider}: timeout") from e
+    except Exception as e:
+        raise ProviderUnavailableError(f"{provider}: transport error {e}") from e
+    if resp.status_code >= 400:
+        _raise_from_http(provider, resp.status_code, resp.text or "")
+    got_any = False
+    for raw in resp.iter_lines(decode_unicode=True):
+        if not raw or not raw.startswith("data:"):
+            continue
+        data = raw[len("data:"):].strip()
+        if data == "[DONE]":
+            break
+        try:
+            obj = json.loads(data)
+            delta = obj["choices"][0]["delta"].get("content")
+        except Exception:
+            continue
+        if delta:
+            got_any = True
+            yield delta
+    if not got_any:
+        raise EmptyResponseError(f"{provider}: empty stream")
+
+
+def stream_text(
+    prompt: str,
+    system: str | None = None,
+    task_type: str = "coding",
+    timeout_sec: int = 120,
+    temperature: float = 0.6,
+    max_tokens: int = 8192,
+    preferred_provider: str | None = None,
+    preferred_model: str | None = None,
+):
+    """Yield text deltas from the first healthy provider that streams.
+
+    Falls back to a single non-streamed generation (yielded as one delta) if
+    every streaming provider fails, so callers always get *something*.
+    """
+    reserve_request(is_heavy_task=False)
+
+    routes = _routes(task_type)
+    if preferred_provider:
+        pref = preferred_provider.strip().lower()
+        if pref != "auto":
+            routes = [(p, (preferred_model or m)) for p, m in routes if p == pref] + \
+                     [(p, m) for p, m in routes if p != pref]
+
+    errors: list[str] = []
+    for provider, model in routes:
+        if not _health_ok(provider):
+            continue
+        try:
+            if provider == "gemini":
+                yield from _stream_gemini(model, prompt, system, max_tokens)
+            elif provider in _OPENAI_COMPATIBLE_URLS:
+                url, key_name = _OPENAI_COMPATIBLE_URLS[provider]
+                yield from _stream_openai_compatible(
+                    url, _key(key_name), model, prompt, provider, system,
+                    timeout_sec, temperature, max_tokens,
+                )
+            else:
+                continue
+            _mark_health(provider, True)
+            _log(f"STREAM OK provider={provider} model={model} task={task_type}")
+            return
+        except (AuthError, RateLimitError, TimeoutError, ProviderUnavailableError,
+                EmptyResponseError, ModelRouterError) as e:
+            _mark_health(provider, False)
+            errors.append(f"{provider}/{model}: {e}")
+            _log(f"STREAM FAIL {provider}/{model}: {e}")
+            continue
+        except Exception as e:
+            _mark_health(provider, False)
+            errors.append(f"{provider}/{model}: unknown {e}")
+            _log(f"STREAM FAIL {provider}/{model}: unknown {e}")
+            continue
+
+    # Last resort: non-streamed generation.
+    result = generate_text(
+        prompt,
+        task_type=task_type,
+        timeout_sec=timeout_sec,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        preferred_provider=preferred_provider,
+        preferred_model=preferred_model,
+        system=system,
+    )
+    yield result.text

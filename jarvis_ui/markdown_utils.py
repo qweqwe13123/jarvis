@@ -4,6 +4,42 @@ from __future__ import annotations
 import html
 import re
 
+try:
+    from pygments import highlight as _pyg_highlight
+    from pygments.formatters import HtmlFormatter as _PygFormatter
+    from pygments.lexers import get_lexer_by_name as _pyg_lexer
+    from pygments.util import ClassNotFound as _PygNotFound
+    _HAS_PYGMENTS = True
+except Exception:  # pragma: no cover - pygments optional
+    _HAS_PYGMENTS = False
+
+
+def _highlight_code(code: str, lang: str) -> str | None:
+    """Return syntax-highlighted HTML for a code block, or None if unavailable."""
+    if not _HAS_PYGMENTS:
+        return None
+    try:
+        try:
+            lexer = _pyg_lexer(lang, stripnl=False)
+        except _PygNotFound:
+            return None
+        formatter = _PygFormatter(
+            noclasses=True,
+            style="monokai",
+            nobackground=True,
+            nowrap=True,
+        )
+        body = _pyg_highlight(code, lexer, formatter)
+        return (
+            '<div style="background:#000d14;border:1px solid #0d3347;border-radius:6px;'
+            'padding:10px;margin:8px 0;">'
+            f'<div style="color:#3a8a9a;font-size:10px;margin-bottom:4px;">{html.escape(lang)}</div>'
+            '<pre style="margin:0;font-family:monospace;font-size:11px;'
+            f'white-space:pre-wrap;color:#d8f8ff;">{body}</pre></div>'
+        )
+    except Exception:
+        return None
+
 _CODE_BLOCK = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]+)`")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -62,12 +98,17 @@ def markdown_to_html(text: str) -> str:
         if before.strip():
             parts.append(_render_blocks(before))
         lang = m.group(1) or "code"
-        code = html.escape(m.group(2).strip())
-        parts.append(
-            f'<pre style="background:#000d14;border:1px solid #0d3347;border-radius:6px;'
-            f'padding:10px;margin:8px 0;overflow-x:auto;font-family:monospace;font-size:11px;'
-            f'color:#d8f8ff;"><span style="color:#3a8a9a;font-size:10px;">{lang}</span>\n{code}</pre>'
-        )
+        raw = m.group(2).strip("\n")
+        highlighted = _highlight_code(raw, lang)
+        if highlighted:
+            parts.append(highlighted)
+        else:
+            code = html.escape(raw)
+            parts.append(
+                f'<pre style="background:#000d14;border:1px solid #0d3347;border-radius:6px;'
+                f'padding:10px;margin:8px 0;overflow-x:auto;font-family:monospace;font-size:11px;'
+                f'white-space:pre-wrap;color:#d8f8ff;"><span style="color:#3a8a9a;font-size:10px;">{html.escape(lang)}</span>\n{code}</pre>'
+            )
         last = m.end()
     tail = src[last:]
     if tail.strip():

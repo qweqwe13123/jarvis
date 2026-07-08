@@ -18,6 +18,7 @@ PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
 MAX_FIX_ATTEMPTS = 5
 MODEL_PLANNER    = "gemini-2.5-flash"
 MODEL_WRITER     = "gemini-2.5-flash"
+MODEL_DESIGN     = "gemini-2.5-flash"
 STATIC_SITE_FILES = ("index.html", "styles.css", "script.js")
 FULLSTACK_MARKERS = (
     "business", "бизнес", "company", "crm", "auth", "admin", "dashboard",
@@ -134,7 +135,22 @@ RUN npm install
 COPY . .
 CMD ["npm", "run", "dev"]
 """, encoding="utf-8")
-    (frontend / "index.html").write_text(f"""<!doctype html>
+    premium_done = False
+    try:
+        log("Designing premium business front-end...")
+        html = _generate_site_html(
+            f"A premium production marketing + product website for: {description}. "
+            f"Brand name: {brand}. Include hero, features, pricing, testimonials, FAQ and footer.",
+            log=log,
+        )
+        (frontend / "index.html").write_text(html.strip() + "\n", encoding="utf-8")
+        premium_done = True
+        log("Premium front-end generated.")
+    except Exception as e:
+        log(f"Premium generation fell back to scaffold: {e}")
+
+    if not premium_done:
+        (frontend / "index.html").write_text(f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -250,6 +266,52 @@ def _extract_json_object(text: str) -> dict:
         return json.loads(match.group(0))
 
 
+SITE_DESIGN_BRIEF = """You are a world-class product designer and senior front-end engineer — the level of Lovable, Vercel, Linear, and Stripe. You build websites that make people say "wow" on the first screen.
+
+Build a COMPLETE, production-quality, single-file website for this request:
+{description}
+
+NON-NEGOTIABLE QUALITY BAR:
+- Output a SINGLE self-contained `index.html`. Everything inline (CSS in <style>, JS in <script>). It must open perfectly by just double-clicking the file.
+- Use Tailwind via CDN: <script src="https://cdn.tailwindcss.com"></script>. You may extend the Tailwind config inline for custom colors/fonts.
+- Use a beautiful Google Font (e.g. Inter, Sora, Space Grotesk, Manrope) via <link>.
+- Use Lucide icons via CDN (https://unpkg.com/lucide@latest) and call lucide.createIcons() — NEVER use raw emoji as icons.
+- Design language: modern, premium, lots of whitespace, strong typographic hierarchy, tasteful gradients, soft shadows, rounded corners, subtle glassmorphism, and a cohesive color palette that fits the brand/topic.
+- Add polished micro-interactions: hover states, smooth transitions, scroll-reveal animations (IntersectionObserver), and a sticky header that adapts on scroll.
+- Fully responsive: flawless on mobile, tablet, and desktop. Include a working mobile menu.
+- Real, specific, believable copy in the SAME LANGUAGE as the user's request. NO lorem ipsum, no "[placeholder]", no "your text here".
+- Rich structure: sticky nav, a stunning hero with a clear CTA, 3-6 meaningful sections (features/benefits, social proof/testimonials, pricing or gallery or stats as fits the topic, FAQ, strong footer). Make it feel like a real launched product.
+- Include at least one piece of real interactivity in JS (e.g. working FAQ accordion, tabs, theme toggle, form validation, animated counters, or filterable cards).
+- Accessible: semantic HTML, alt text, aria labels, good color contrast, keyboard-focusable controls.
+- For images use https://picsum.photos or gradient/SVG placeholders that actually look good — never broken image links.
+
+OUTPUT RULES:
+- Output ONLY the raw HTML document, starting with <!doctype html>. 
+- NO markdown, NO code fences, NO commentary before or after.
+"""
+
+
+def _generate_site_html(description: str, log=None) -> str:
+    """Generate a polished, self-contained index.html for the request."""
+    model = _get_model(MODEL_DESIGN)
+    prompt = SITE_DESIGN_BRIEF.format(description=description)
+    response = model.generate_content(
+        prompt,
+        generation_config={"temperature": 0.85, "max_output_tokens": 16384},
+    )
+    html = _strip_fences(response.text or "")
+    low = html.lower()
+    if "<!doctype" not in low and "<html" not in low:
+        idx = low.find("<!doctype")
+        if idx == -1:
+            idx = low.find("<html")
+        if idx != -1:
+            html = html[idx:]
+    if "<html" not in html.lower():
+        raise ValueError("Model did not return valid HTML")
+    return html.strip()
+
+
 def _build_static_site(
     description: str,
     project_name: str,
@@ -261,76 +323,42 @@ def _build_static_site(
         if player:
             player.write_log(f"[DevAgent] {msg}")
 
-    model = _get_model(MODEL_WRITER)
     proj_name = _safe_project_name(project_name, "jarvis_site")
     project_dir = PROJECTS_DIR / proj_name
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt = f"""You are a senior frontend engineer. Build a polished static mini-site or browser automation tool.
-
-User request:
-{description}
-
-Return ONLY valid JSON in this exact shape:
-{{
-  "project_name": "{proj_name}",
-  "files": {{
-    "index.html": "...",
-    "styles.css": "...",
-    "script.js": "..."
-  }},
-  "notes": "one short sentence"
-}}
-
-Requirements:
-- Use only HTML, CSS, and vanilla JavaScript. No external packages, no CDNs.
-- The first screen must be the usable product/site, not a marketing placeholder.
-- Make it responsive and polished on desktop and mobile.
-- Include realistic controls, states, validation, and useful sample data when relevant.
-- Keep all CSS in styles.css and all JavaScript in script.js.
-- index.html must link to ./styles.css and ./script.js.
-- Do not include markdown or comments outside JSON."""
-
     try:
-        log("Building static mini-site...")
-        response = model.generate_content(prompt)
-        data = _extract_json_object(response.text)
-        files = data.get("files", {})
+        log("Designing a premium website...")
+        html = _generate_site_html(description, log=log)
 
-        missing = [name for name in STATIC_SITE_FILES if not files.get(name)]
-        if missing:
-            return f"Static site generation failed: missing files {', '.join(missing)}"
-
-        for name in STATIC_SITE_FILES:
-            path = project_dir / name
-            path.write_text(str(files[name]).strip() + "\n", encoding="utf-8")
-            log(f"Written {name}")
+        index_path = project_dir / "index.html"
+        index_path.write_text(html.strip() + "\n", encoding="utf-8")
+        log(f"Written index.html ({len(html)} chars)")
 
         readme = (
             f"# {proj_name}\n\n"
-            f"Generated by JARVIS.\n\n"
+            f"Generated by JARVIS — a premium, self-contained website.\n\n"
             f"Request: {description}\n\n"
-            "Open `index.html` in a browser to use it.\n"
+            "Open `index.html` in any browser to view it. Everything is inline (no build step).\n"
         )
         (project_dir / "README.md").write_text(readme, encoding="utf-8")
 
-        index_path = project_dir / "index.html"
         try:
             subprocess.Popen(["open", str(index_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
-        msg = f"Mini-site '{proj_name}' is ready: {index_path}"
+        msg = f"Готово — сайт '{proj_name}' собран и открыт: {index_path}"
         if speak:
             speak(msg)
         return msg
     except Exception as e:
         if _is_rate_limit(e):
-            msg = "Rate limit reached while building the mini-site. Please try again in a moment."
+            msg = "Лимит запросов словил, бро. Дай пару секунд и повтори."
             if speak:
                 speak(msg)
             return msg
-        return f"Static site generation failed: {e}"
+        return f"Site generation failed: {e}"
 
 
 def _is_rate_limit(error: Exception) -> bool:

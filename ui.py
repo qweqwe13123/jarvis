@@ -6,6 +6,7 @@ import os
 import platform
 import random
 import subprocess
+import os
 import sys
 import threading
 import time
@@ -24,12 +25,17 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QComboBox, QMainWindow, QPushButton, QScrollArea, QSizePolicy, QTextEdit,
-    QVBoxLayout, QWidget, QProgressBar,
+    QComboBox, QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
+    QTextEdit, QVBoxLayout, QWidget, QProgressBar, QDialog, QFormLayout,
 )
 
 from memory import workspace_manager as ws
-from jarvis_ui.components import NavSidebar, ChatPanel, JarvisConsole, CenterInputBar, WORKFLOW_STEPS
+from jarvis_ui.components import NavSidebar, ChatPanel, JarvisConsole, CenterInputBar, PreviewPanel, ConversationView, WORKFLOW_STEPS
+from jarvis_ui.website_builder import WebsiteBuilderView
+from jarvis_ui.code_assistant import CodeAssistantView
+from jarvis_ui.maps_prospector import MapsProspectorView
+from core.updater.controller import UpdateController
+from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -43,7 +49,7 @@ API_FILE   = CONFIG_DIR / "api_keys.json"
 _DEFAULT_W, _DEFAULT_H = 1480, 920
 _MIN_W,     _MIN_H     = 1180, 720
 _LEFT_W  = 268
-_RIGHT_W = 430
+_RIGHT_W = 500
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
@@ -988,6 +994,134 @@ class SetupOverlay(QWidget):
         self.done.emit(key, self._sel_os)
 
 
+class ApiSettingsDialog(QDialog):
+    """Manage provider API keys and Forge Builder defaults."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setModal(True)
+        self.setMinimumWidth(560)
+        self.setStyleSheet(
+            f"QDialog {{ background: {C.PANEL}; color: {C.TEXT}; }}"
+            f"QLabel {{ color: {C.TEXT_MED}; }}"
+        )
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(10)
+
+        title = QLabel("API Keys & Forge Builder")
+        title.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {C.PRI};")
+        lay.addWidget(title)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+
+        self._fields: dict[str, QLineEdit] = {}
+        key_fields = [
+            ("gemini_api_key", "Gemini API key"),
+            ("openrouter_api_key", "OpenRouter API key"),
+            ("groq_api_key", "Groq API key"),
+            ("deepseek_api_key", "DeepSeek API key"),
+            ("together_api_key", "Together API key"),
+            ("openai_api_key", "OpenAI API key"),
+            ("hf_token", "HuggingFace token (for FLUX)"),
+            ("flux_model_id", "FLUX model repo id"),
+            ("ollama_base_url", "Ollama Base URL"),
+            ("lmstudio_base_url", "LM Studio Base URL"),
+        ]
+        for key, label in key_fields:
+            e = QLineEdit()
+            e.setPlaceholderText(label)
+            e.setEchoMode(QLineEdit.EchoMode.Password if key.endswith("_api_key") else QLineEdit.EchoMode.Normal)
+            e.setStyleSheet(
+                f"QLineEdit {{ background: #000d14; color: {C.WHITE}; border: 1px solid {C.BORDER}; border-radius: 6px; padding: 5px 8px; }}"
+                f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}"
+            )
+            self._fields[key] = e
+            form.addRow(label + ":", e)
+
+        self._builder_provider = QComboBox()
+        self._builder_provider.addItems(["gemini", "openrouter", "groq", "deepseek", "together", "ollama", "lmstudio", "auto"])
+        self._builder_provider.setStyleSheet(
+            f"QComboBox {{ background: #000d14; color: {C.WHITE}; border: 1px solid {C.BORDER}; border-radius: 6px; padding: 5px 8px; }}"
+            f"QComboBox QAbstractItemView {{ background: #001018; color: {C.WHITE}; border: 1px solid {C.BORDER_B}; selection-background-color: {C.PRI_GHO}; }}"
+        )
+        self._builder_model = QLineEdit()
+        self._builder_model.setPlaceholderText("Example: gemini-2.5-flash")
+        self._builder_model.setStyleSheet(
+            f"QLineEdit {{ background: #000d14; color: {C.WHITE}; border: 1px solid {C.BORDER}; border-radius: 6px; padding: 5px 8px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}"
+        )
+        form.addRow("Forge provider:", self._builder_provider)
+        form.addRow("Forge model:", self._builder_model)
+        lay.addLayout(form)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton("Cancel")
+        save = QPushButton("Save")
+        for b in (cancel, save):
+            b.setFixedHeight(32)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton {{ background: #000d14; color: {C.TEXT_MED}; border: 1px solid {C.BORDER}; border-radius: 7px; padding: 0 14px; }}"
+                f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}"
+            )
+        save.setStyleSheet(
+            f"QPushButton {{ background: rgba(0,209,255,0.10); color: {C.PRI}; border: 1px solid {C.PRI_DIM}; border-radius: 7px; padding: 0 14px; }}"
+            f"QPushButton:hover {{ background: rgba(0,209,255,0.18); }}"
+        )
+        cancel.clicked.connect(self.reject)
+        save.clicked.connect(self.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(save)
+        lay.addLayout(btns)
+
+        self._load()
+
+    def _load(self):
+        cfg = {}
+        if API_FILE.exists():
+            try:
+                cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                cfg = {}
+        for key, edit in self._fields.items():
+            edit.setText(str(cfg.get(key, "")))
+
+        try:
+            st = ws.get_settings()
+        except Exception:
+            st = {}
+        provider = str(st.get("builder_provider", "gemini"))
+        model = str(st.get("builder_model", "gemini-2.5-flash"))
+        ix = self._builder_provider.findText(provider)
+        self._builder_provider.setCurrentIndex(ix if ix >= 0 else 0)
+        self._builder_model.setText(model)
+
+    def save(self):
+        cfg = {}
+        if API_FILE.exists():
+            try:
+                cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                cfg = {}
+        for key, edit in self._fields.items():
+            cfg[key] = edit.text().strip()
+        cfg.setdefault("os_system", {"Darwin": "mac", "Windows": "windows"}.get(_OS, "linux"))
+        cfg.setdefault("camera_index", 0)
+        API_FILE.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+        ws.save_settings({
+            "builder_provider": self._builder_provider.currentText().strip(),
+            "builder_model": self._builder_model.text().strip() or "gemini-2.5-flash",
+        })
+
+
 class MainWindow(QMainWindow):
     _log_sig      = pyqtSignal(str)
     _state_sig    = pyqtSignal(str)
@@ -995,22 +1129,37 @@ class MainWindow(QMainWindow):
     _workflow_sig = pyqtSignal(str)
     _chat_user_sig = pyqtSignal(str)
     _chat_ai_sig  = pyqtSignal(str)
+    _preview_sig  = pyqtSignal(dict)
+    _stream_delta_sig = pyqtSignal(str)
+    _stream_end_sig = pyqtSignal(str)
+    _activity_sig = pyqtSignal(dict)
+    _builder_delta_sig = pyqtSignal(str)
+    _builder_done_sig = pyqtSignal(str)
+    _builder_err_sig = pyqtSignal(str)
+    _code_delta_sig = pyqtSignal(str)
+    _code_done_sig = pyqtSignal(str)
+    _code_err_sig = pyqtSignal(str)
 
     def __init__(self, face_path: str):
         super().__init__()
         self.setWindowTitle("JARVIS")
         self.setMinimumSize(_MIN_W, _MIN_H)
-        self.resize(_DEFAULT_W, _DEFAULT_H)
 
         screen = QApplication.primaryScreen().availableGeometry()
+        # Fit the window to the available screen (with a small margin) so it
+        # never opens partially off-screen on smaller displays.
+        win_w = min(_DEFAULT_W, screen.width() - 40)
+        win_h = min(_DEFAULT_H, screen.height() - 40)
+        self.resize(win_w, win_h)
         self.move(
-            (screen.width()  - _DEFAULT_W) // 2,
-            (screen.height() - _DEFAULT_H) // 2,
+            screen.x() + max(0, (screen.width()  - win_w) // 2),
+            screen.y() + max(0, (screen.height() - win_h) // 2),
         )
 
         self.on_text_command  = None
         self._muted           = False
         self._current_file: str | None = None
+        self._active_agent = "general"
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -1027,11 +1176,31 @@ class MainWindow(QMainWindow):
         self._nav.setFixedWidth(_LEFT_W)
         body.addWidget(self._nav, stretch=0)
 
+        self._workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._workspace_splitter.setHandleWidth(2)
+        self._workspace_splitter.setChildrenCollapsible(False)
+        self._workspace_splitter.setStyleSheet(f"""
+            QSplitter::handle {{ background: {C.BORDER}; }}
+            QSplitter::handle:hover {{ background: {C.PRI_DIM}; }}
+        """)
         self._center_panel = self._build_center_panel(face_path)
-        body.addWidget(self._center_panel, stretch=5)
-
         self._right_panel = self._build_right_panel()
-        body.addWidget(self._right_panel, stretch=0)
+        self._workspace_splitter.addWidget(self._center_panel)
+        self._workspace_splitter.addWidget(self._right_panel)
+        self._workspace_splitter.setSizes([max(520, self.width() - _LEFT_W - _RIGHT_W), _RIGHT_W])
+
+        # The main work area swaps between the default voice workspace and the
+        # full-screen Website Builder (chat + live preview) depending on the
+        # selected agent.
+        self._workspace_stack = QStackedWidget()
+        self._workspace_stack.addWidget(self._workspace_splitter)   # index 0 (default)
+        self._builder = WebsiteBuilderView()
+        self._workspace_stack.addWidget(self._builder)              # index 1 (website)
+        self._code_assistant = CodeAssistantView()
+        self._workspace_stack.addWidget(self._code_assistant)       # index 2 (code)
+        self._maps_prospector = MapsProspectorView()
+        self._workspace_stack.addWidget(self._maps_prospector)      # index 3 (maps_prospector)
+        body.addWidget(self._workspace_stack, stretch=1)
 
         root.addLayout(body, stretch=1)
 
@@ -1052,9 +1221,14 @@ class MainWindow(QMainWindow):
         self._log_sig.connect(self._on_log_line)
         self._state_sig.connect(self._apply_state)
         self._ai_sig.connect(self._apply_ai_status)
-        self._workflow_sig.connect(self._console.set_workflow_step)
-        self._chat_user_sig.connect(lambda t: self._chat.add_message("user", t))
+        self._workflow_sig.connect(self._on_workflow_step)
+        self._chat_user_sig.connect(self._on_user_message)
         self._chat_ai_sig.connect(self._on_ai_chat_response)
+        self._preview_sig.connect(self._on_preview)
+        self._stream_delta_sig.connect(self._conv.stream_delta)
+        self._stream_end_sig.connect(self._on_stream_end)
+        self._activity_sig.connect(self._on_activity)
+        self._load_active_conversation()
 
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
@@ -1190,7 +1364,7 @@ class MainWindow(QMainWindow):
                 pass
 
     def _available_providers(self) -> list[str]:
-        items = ["Claude Opus 4.6 (Thinking)", "auto — Smart Router"]
+        items = ["Live Voice (Gemini)", "auto — Smart Router"]
         try:
             cfg = json.loads(API_FILE.read_text(encoding="utf-8")) if API_FILE.exists() else {}
         except Exception:
@@ -1219,108 +1393,254 @@ class MainWindow(QMainWindow):
         top.setStyleSheet(f"background: {C.BG}; border-bottom: 1px solid {C.BORDER};")
         tl = QHBoxLayout(top)
         tl.setContentsMargins(20, 0, 20, 0)
-        title = QLabel("JARVIS")
+        online = QLabel("● SYSTEM ONLINE")
+        online.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
+        online.setStyleSheet(f"color: {C.GREEN}; background: transparent; letter-spacing: 1px;")
+        title = QLabel("J.A.R.V.I.S")
         title.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 4px;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        editor = QPushButton("Editor Window  ↗")
-        editor.setFont(QFont("Menlo", 8))
-        editor.setStyleSheet(f"color: {C.TEXT_MED}; border: none; background: transparent;")
-        editor.setCursor(Qt.CursorShape.PointingHandCursor)
-        tl.addStretch()
-        tl.addWidget(title, stretch=0)
-        tl.addStretch()
-        tl.addWidget(editor)
-        lay.addWidget(top)
-
-        greet_wrap = QWidget()
-        gl = QVBoxLayout(greet_wrap)
-        gl.setContentsMargins(24, 12, 24, 0)
-        gl.setSpacing(4)
-        status_row = QHBoxLayout()
-        online = QLabel("SYSTEM ONLINE")
-        online.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
-        online.setStyleSheet(f"color: {C.GREEN}; background: transparent; letter-spacing: 1px;")
         self._status_top = QLabel("STATUS LISTENING")
         self._status_top.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
         self._status_top.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 1px;")
-        status_row.addWidget(online)
-        status_row.addStretch()
-        status_row.addWidget(self._status_top)
-        gl.addLayout(status_row)
+        self._status_top.setAlignment(Qt.AlignmentFlag.AlignRight)
+        tl.addWidget(online, stretch=1)
+        tl.addWidget(title, stretch=0)
+        tl.addWidget(self._status_top, stretch=1)
+        lay.addWidget(top)
 
-        import datetime
-        hour = datetime.datetime.now().hour
-        period = "MORNING" if hour < 12 else ("AFTERNOON" if hour < 18 else "EVENING")
-        h1 = QLabel(f"GOOD {period}, KHALIL")
-        h1.setFont(QFont("Menlo", 22, QFont.Weight.Bold))
-        h1.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 1px;")
-        h1.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub = QLabel("J.A.R.V.I.S IS ONLINE AND READY.")
-        sub.setFont(QFont("Menlo", 9))
-        sub.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; letter-spacing: 1px;")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gl.addWidget(h1)
-        gl.addWidget(sub)
-        lay.addWidget(greet_wrap)
-
+        # Center stays minimal and focused on the JARVIS visualization.
         self.hud = HudCanvas(face_path)
-        self.hud.setMinimumHeight(300)
+        self.hud.setMinimumHeight(320)
         self.hud.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        lay.addWidget(self.hud, stretch=3)
+        lay.addWidget(self.hud, stretch=1)
 
+        # Compatibility shim: chat history now lives in the right Activity stream.
         self._chat = ChatPanel()
-        lay.addWidget(self._chat, stretch=1)
+        self._chat.hide()
 
         self._input_bar = CenterInputBar(self._available_providers())
         self._input_bar.submitted.connect(self._send_from_bar)
         self._input_bar.plan_requested.connect(self._send_plan_mode)
         lay.addWidget(self._input_bar)
-
-        chat = ws.get_active_chat()
-        if chat:
-            self._chat.load_messages(chat.get("messages", []))
         return w
 
     def _wire_navigation(self):
         self._nav.new_chat.connect(self._on_new_chat)
+        self._nav.agent_selected.connect(self._on_agent_selected)
         self._nav.chat_selected.connect(self._on_chat_selected)
         self._nav.workspace_selected.connect(self._on_workspace_selected)
         self._nav.section_changed.connect(self._on_section_changed)
+        self._nav.workspace_create.connect(self._on_ws_create)
+        self._nav.workspace_rename.connect(self._on_ws_rename)
+        self._nav.workspace_delete.connect(self._on_ws_delete)
+        self._nav.chat_rename.connect(self._on_chat_rename)
+        self._nav.chat_delete.connect(self._on_chat_delete)
+        self._nav.chat_pin.connect(self._on_chat_pin)
+        self._nav.settings_requested.connect(self._open_settings)
         sc = QShortcut(QKeySequence("Ctrl+N"), self)
         sc.activated.connect(self._on_new_chat)
         sc2 = QShortcut(QKeySequence("Meta+N"), self)
         sc2.activated.connect(self._on_new_chat)
+        self._builder.submitted.connect(self._on_builder_submit)
+        self._builder_delta_sig.connect(self._builder.on_delta)
+        self._builder_done_sig.connect(self._builder.finish)
+        self._builder_err_sig.connect(self._builder.set_error)
+        self._builder_history: list[dict] = []
+        self._code_assistant.submitted.connect(self._on_code_submit)
+        self._code_delta_sig.connect(self._code_assistant.on_delta)
+        self._code_done_sig.connect(self._code_assistant.finish)
+        self._code_err_sig.connect(self._code_assistant.set_error)
+        self._code_history: list[dict] = []
 
     def _refresh_sidebar(self):
-        try:
-            workspaces = ws.discover_project_workspaces()
-        except Exception:
-            workspaces = ws.list_workspaces()
+        workspaces = ws.list_workspaces()
         chats = ws.list_chats()
-        self._nav.refresh_workspaces(workspaces, chats)
+        active_ws, active_chat = ws.get_active_ids()
+        self._nav.refresh(workspaces, chats, active_ws, active_chat)
         self._nav.refresh_automations(ws.load_automations())
 
+    def _load_active_conversation(self):
+        state = ws.get_session_state()
+        if hasattr(self, "_conv"):
+            self._conv.load(state.get("messages", []), state.get("artifacts", []))
+
+    def _reset_session_view(self):
+        """Reset right panel to default when a new session starts."""
+        if hasattr(self, "_conv"):
+            self._conv.clear()
+        if hasattr(self, "_switch_tab"):
+            self._switch_tab("preview")
+
     def _on_new_chat(self):
-        chat = ws.create_chat()
-        self._chat.clear_messages()
-        self._console.reset_workflow()
+        ws.create_chat()
+        self._reset_session_view()
         self._refresh_sidebar()
+
+    def _on_agent_selected(self, agent_key: str):
+        from core.agents import get_agent
+        agent = get_agent(agent_key)
+        self._active_agent = agent_key
+        if hasattr(self, "_log"):
+            self._log.append_log(f"SYS: Agent mode → {agent.name}")
+        # Dedicated workspaces for website and code agents.
+        if agent_key == "website":
+            self._workspace_stack.setCurrentIndex(1)
+        elif agent_key == "code":
+            self._workspace_stack.setCurrentIndex(2)
+        elif agent_key == "maps_prospector":
+            self._maps_prospector.reset_overlay()
+            self._workspace_stack.setCurrentIndex(3)
+        else:
+            self._workspace_stack.setCurrentIndex(0)
+
+    def _on_builder_submit(self, prompt: str):
+        from core.agents import get_agent
+        agent = get_agent("website")
+        self._builder.add_user(prompt)
+        self._builder.begin_build()
+        self._builder_history.append({"role": "user", "content": prompt})
+        history = list(self._builder_history)
+        provider = self._builder.selected_provider()
+        model = self._builder.selected_model()
+        ws.save_settings({"builder_provider": provider, "builder_model": model or "gemini-2.5-flash"})
+        threading.Thread(
+            target=self._run_builder, args=(agent.system_prompt, history, provider, model), daemon=True
+        ).start()
+
+    def _run_builder(self, system_prompt: str, history: list[dict], provider: str, model: str):
+        from core.model_router import stream_text, ModelRouterError
+        # Render the running transcript into a single user prompt so multi-turn
+        # change requests carry the previous HTML for a full rebuild.
+        parts: list[str] = []
+        for msg in history[:-1]:
+            who = "User" if msg["role"] == "user" else "Assistant"
+            parts.append(f"{who}: {msg['content']}")
+        parts.append(f"User: {history[-1]['content']}")
+        prompt = "\n\n".join(parts)
+
+        pref = (provider or "gemini").lower()
+
+        acc = ""
+        last_emit = 0.0
+        try:
+            for delta in stream_text(prompt, system=system_prompt, task_type="coding",
+                                     preferred_provider=pref, preferred_model=(model or "").strip()):
+                acc += delta
+                now = time.monotonic()
+                if now - last_emit >= 0.12:
+                    last_emit = now
+                    self._builder_delta_sig.emit(acc)
+            if not acc.strip():
+                raise ModelRouterError("empty response")
+            self._builder_history.append({"role": "assistant", "content": acc})
+            self._builder_done_sig.emit(acc)
+        except Exception as e:
+            self._builder_err_sig.emit(str(e))
+
+    def _on_code_submit(self, prompt: str):
+        from core.agents import get_agent
+        agent = get_agent("code")
+        self._code_assistant.add_user(prompt)
+        self._code_assistant.begin_run()
+        self._code_history.append({"role": "user", "content": prompt})
+        history = list(self._code_history)
+        provider = self._input_bar.get_provider() if hasattr(self, "_input_bar") else "auto"
+        threading.Thread(
+            target=self._run_code_assistant, args=(agent.system_prompt, history, provider), daemon=True
+        ).start()
+
+    def _run_code_assistant(self, system_prompt: str, history: list[dict], provider: str):
+        from core.model_router import stream_text, ModelRouterError
+
+        parts: list[str] = []
+        for msg in history[:-1]:
+            who = "User" if msg["role"] == "user" else "Assistant"
+            parts.append(f"{who}: {msg['content']}")
+        parts.append(f"User: {history[-1]['content']}")
+        prompt = "\n\n".join(parts)
+
+        pref = "auto"
+        low = (provider or "").lower()
+        if "gemini" in low:
+            pref = "gemini"
+        elif "groq" in low:
+            pref = "groq"
+        elif "openrouter" in low:
+            pref = "openrouter"
+        elif "deepseek" in low:
+            pref = "deepseek"
+
+        acc = ""
+        last_emit = 0.0
+        try:
+            for delta in stream_text(prompt, system=system_prompt, task_type="coding",
+                                     preferred_provider=pref):
+                acc += delta
+                now = time.monotonic()
+                if now - last_emit >= 0.12:
+                    last_emit = now
+                    self._code_delta_sig.emit(acc)
+            if not acc.strip():
+                raise ModelRouterError("empty response")
+            self._code_history.append({"role": "assistant", "content": acc})
+            self._code_done_sig.emit(acc)
+        except Exception as e:
+            self._code_err_sig.emit(str(e))
 
     def _on_chat_selected(self, chat_id: str):
         ws.set_active_chat(chat_id)
-        chat = ws.get_active_chat()
-        if chat:
-            self._chat.load_messages(chat.get("messages", []))
+        self._load_active_conversation()
+        self._refresh_sidebar()
+        self._switch_tab("preview")
 
     def _on_workspace_selected(self, ws_id: str):
         ws.set_active_workspace(ws_id)
+        self._reset_session_view()
         self._refresh_sidebar()
-        chat = ws.get_active_chat()
-        if chat:
-            self._chat.load_messages(chat.get("messages", []))
-        else:
-            self._chat.clear_messages()
+
+    def _on_ws_create(self):
+        name, ok = QInputDialog.getText(self, "New Workspace", "Workspace name:")
+        if ok and name.strip():
+            ws.add_workspace(name.strip())
+            self._reset_session_view()
+            self._refresh_sidebar()
+
+    def _on_ws_rename(self, ws_id: str):
+        cur = next((x.get("name", "") for x in ws.list_workspaces() if x.get("id") == ws_id), "")
+        name, ok = QInputDialog.getText(self, "Rename Workspace", "New name:", text=cur)
+        if ok and name.strip():
+            ws.rename_workspace(ws_id, name.strip())
+            self._refresh_sidebar()
+
+    def _on_ws_delete(self, ws_id: str):
+        if ws_id == "default":
+            return
+        r = QMessageBox.question(self, "Delete Workspace",
+                                 "Delete this workspace and all its sessions?")
+        if r == QMessageBox.StandardButton.Yes:
+            ws.delete_workspace(ws_id)
+            self._reset_session_view()
+            self._refresh_sidebar()
+
+    def _on_chat_rename(self, chat_id: str):
+        cur = next((c.get("title", "") for c in ws.list_chats() if c.get("id") == chat_id), "")
+        name, ok = QInputDialog.getText(self, "Rename Session", "New name:", text=cur)
+        if ok and name.strip():
+            ws.rename_chat(chat_id, name.strip())
+            self._refresh_sidebar()
+
+    def _on_chat_delete(self, chat_id: str):
+        r = QMessageBox.question(self, "Delete Session", "Delete this session?")
+        if r == QMessageBox.StandardButton.Yes:
+            ws.delete_chat(chat_id)
+            self._reset_session_view()
+            self._load_active_conversation()
+            self._refresh_sidebar()
+
+    def _on_chat_pin(self, chat_id: str):
+        ws.toggle_pin_chat(chat_id)
+        self._refresh_sidebar()
 
     def _on_section_changed(self, section: str):
         if section == "automation_create":
@@ -1332,6 +1652,12 @@ class MainWindow(QMainWindow):
         elif section == "settings_saved":
             self._log.append_log("SYS: Customize settings saved.")
 
+    def _open_settings(self):
+        dlg = ApiSettingsDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            dlg.save()
+            self._log.append_log("SYS: Settings updated.")
+
     def _on_log_line(self, text: str):
         self._log.append_log(text)
         low = text.lower()
@@ -1339,37 +1665,139 @@ class MainWindow(QMainWindow):
             msg = text.split(":", 1)[1].strip()
             self._on_ai_chat_response(msg)
 
+    def _on_user_message(self, text: str):
+        if not hasattr(self, "_conv"):
+            return
+        self._conv.add_user(text)
+        ws.add_message("user", text)
+        self._refresh_sidebar()
+
     def _on_ai_chat_response(self, text: str):
-        self._chat.add_message("assistant", text)
-        self._console.set_workflow_step("Finished")
-        self._console.add_response("JARVIS Response", text, "assistant")
+        if not hasattr(self, "_conv"):
+            return
+        self._conv.clear_live_activity()
+        self._conv.add_assistant(text)
         ws.add_message("assistant", text)
+        self._refresh_sidebar()
+
+    def _on_stream_end(self, text: str):
+        if not hasattr(self, "_conv"):
+            return
+        self._conv.stream_end(text)
+        if text.strip():
+            ws.add_message("assistant", text)
+            self._refresh_sidebar()
+
+    def _on_workflow_step(self, step: str):
+        if hasattr(self, "_conv"):
+            if step in ("Finished", "", None):
+                self._conv.clear_live_activity()
+            else:
+                self._conv.set_live_activity(step)
+
+    def _on_activity(self, data: dict):
+        if not hasattr(self, "_conv"):
+            return
+        label = data.get("label", "Activity")
+        detail = data.get("detail", "")
+        self._conv.add_activity(label, detail)
+        ws.add_message("activity", label, {"label": label, "detail": detail})
+
+    def _on_preview(self, data: dict):
+        if not hasattr(self, "_conv"):
+            return
+        kind = data.get("kind", "text")
+        title = data.get("title", "")
+        payload = data.get("payload", "")
+        path = data.get("path")
+        persist = data.get("persist", True)
+        try:
+            if persist:
+                artifact = ws.add_artifact(kind, title, payload, path)
+                if artifact:
+                    kind = artifact.get("kind", kind)
+                    title = artifact.get("title", title)
+                    payload = artifact.get("payload", payload)
+                    path = artifact.get("path", path)
+            self._conv.add_artifact_card(kind, title, payload, path or "")
+            self._refresh_sidebar()
+        except Exception:
+            pass
 
     def _send_from_bar(self, text: str):
         if not text:
             return
-        self._console.reset_workflow()
-        self._console.set_workflow_step("Thinking")
-        ws.add_message("user", text)
-        self._chat.add_message("user", text)
         if not ws.get_active_chat():
             ws.create_chat(text[:40])
-            self._refresh_sidebar()
+        self._on_user_message(text)
+        # In General Chat, route image requests to local FLUX generator.
+        if self._active_agent == "general" and self._looks_like_image_request(text):
+            self._conv.set_live_activity("Generating image")
+            self._log.append_log(f"You: {text}")
+            threading.Thread(target=self._run_general_image_generation, args=(text,), daemon=True).start()
+            return
+
+        self._conv.set_live_activity("Thinking")
         provider = self._input_bar.get_provider()
+        model = ""
+        # Force local Ollama Qwen3 for General Chat text requests.
+        if self._active_agent == "general":
+            provider = "ollama"
+            model = "qwen3:8b"
         mode = "auto"
-        payload = f"[JCFG mode={mode} provider={provider} model=] {text}"
+        payload = f"[JCFG mode={mode} provider={provider} model={model}] {text}"
         self._log.append_log(f"You: {text}")
         if self.on_text_command:
             threading.Thread(target=self.on_text_command, args=(payload,), daemon=True).start()
 
     def _send_plan_mode(self):
         self._send_from_bar("Help me plan a new idea step by step.")
+
+    @staticmethod
+    def _looks_like_image_request(text: str) -> bool:
+        low = text.lower()
+        markers = (
+            "generate image", "create image", "make image", "draw", "illustration",
+            "render", "photo of", "image of",
+            "сделай картин", "создай картин", "сгенерируй картин", "нарисуй",
+            "сделай фото", "фото ",
+            "resim", "görsel", "şəkil",
+        )
+        return any(m in low for m in markers)
+
+    def _run_general_image_generation(self, prompt: str):
+        from core.local_image import generate_flux_image
+
+        try:
+            png_path = Path(generate_flux_image(prompt, steps=4, guidance=0.0))
+            html_path = png_path.with_suffix(".html")
+            html_path.write_text(
+                "<!doctype html><html><head><meta charset='utf-8'>"
+                "<style>html,body{height:100%;margin:0;background:#050a14;display:grid;place-items:center}"
+                "img{max-width:96vw;max-height:96vh;border-radius:14px;border:1px solid #1e4a62;"
+                "box-shadow:0 0 28px rgba(0,209,255,.25)}</style></head>"
+                f"<body><img src='{png_path.name}' alt='Generated image'/></body></html>",
+                encoding="utf-8",
+            )
+
+            self._preview_sig.emit({
+                "kind": "web",
+                "title": "Generated image",
+                "payload": str(html_path),
+                "path": str(html_path),
+                "persist": True,
+            })
+            self._chat_ai_sig.emit(
+                f"Generated locally with FLUX.\nSaved to: `{png_path}`"
+            )
+        except Exception as e:
+            self._chat_ai_sig.emit(f"Image generation failed: {e}")
     def _build_right_panel(self) -> QWidget:
         w = QWidget()
-        w.setFixedWidth(_RIGHT_W)
+        w.setMinimumWidth(360)
         w.setStyleSheet(f"background: {C.PANEL}; border-left: 1px solid {C.BORDER};")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
 
         def _sec(txt):
@@ -1378,62 +1806,50 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 1px;")
             return l
 
-        editor_hdr = QHBoxLayout()
-        editor_hdr.addWidget(_sec("Editor Window"))
-        pop = QPushButton("↗")
-        pop.setFixedSize(22, 22)
-        pop.setStyleSheet(f"color: {C.TEXT_MED}; border: none; background: transparent;")
-        editor_hdr.addStretch()
-        editor_hdr.addWidget(pop)
-        lay.addLayout(editor_hdr)
+        # Tab toggles: Preview (primary) | Activity
+        self._tab_btns: dict[str, QPushButton] = {}
+        tabrow = QHBoxLayout()
+        tabrow.setSpacing(6)
+        for key, label in [("preview", "💬  Conversation"), ("activity", "≣  System")]:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setFixedHeight(30)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
+            b.clicked.connect(lambda _, k=key: self._switch_tab(k))
+            self._tab_btns[key] = b
+            tabrow.addWidget(b)
+        tabrow.addStretch()
+        self._uptime_lbl = QLabel("--:--")
+        self._uptime_lbl.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        self._uptime_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        upt = QLabel("UPTIME")
+        upt.setFont(QFont("Menlo", 6))
+        upt.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        upcol = QVBoxLayout(); upcol.setSpacing(0)
+        upcol.addWidget(upt); upcol.addWidget(self._uptime_lbl)
+        tabrow.addLayout(upcol)
+        lay.addLayout(tabrow)
 
-        live_row = QHBoxLayout()
-        live_row.setSpacing(8)
-        for label, val, color in [
-            ("Status:", "ACTIVE", C.GREEN),
-            ("Uptime:", "--:--", C.TEXT),
-        ]:
-            box = QFrame()
-            box.setStyleSheet(f"""
-                QFrame {{
-                    background: {C.PANEL2}; border: 1px solid {C.BORDER};
-                    border-radius: 8px;
-                }}
-            """)
-            bl = QHBoxLayout(box)
-            bl.setContentsMargins(10, 6, 10, 6)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Menlo", 7))
-            lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
-            val_lbl = QLabel(val)
-            val_lbl.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
-            val_lbl.setStyleSheet(f"color: {color}; background: transparent; border: none;")
-            if label.startswith("Uptime"):
-                self._uptime_lbl = val_lbl
-            else:
-                self._live_status = val_lbl
-            bl.addWidget(lbl)
-            bl.addWidget(val_lbl)
-            live_row.addWidget(box)
-        lay.addLayout(live_row)
-        lay.addWidget(_sec("LIVE MODE"))
+        self._right_stack = QStackedWidget()
+        lay.addWidget(self._right_stack, stretch=1)
 
-        self._console = JarvisConsole()
-        lay.addWidget(self._console, stretch=2)
+        # --- Conversation page (single continuous chat feed) ---
+        self._conv = ConversationView()
+        self._right_stack.addWidget(self._conv)
 
-        self._log = LogWidget()
-        self._log.setMaximumHeight(0)
-        self._log.hide()
+        # --- System page (monitor + AI status) ---
+        activity = QWidget()
+        activity.setStyleSheet("background: transparent;")
+        al = QVBoxLayout(activity)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(10)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
-        lay.addWidget(sep)
-
-        lay.addWidget(_sec("SYSTEM MONITOR"))
+        al.addWidget(_sec("SYSTEM MONITOR"))
         mon = QWidget()
-        mon.setStyleSheet(f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 5px;")
+        mon.setStyleSheet(f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 8px;")
         ml = QVBoxLayout(mon)
-        ml.setContentsMargins(6, 5, 6, 5)
+        ml.setContentsMargins(8, 6, 8, 6)
         ml.setSpacing(3)
         self._bar_cpu = MetricBar("CPU", C.PRI)
         self._bar_mem = MetricBar("MEM", C.ACC2)
@@ -1446,40 +1862,42 @@ class MainWindow(QMainWindow):
         self._proc_lbl.setFont(QFont("Courier New", 7))
         self._proc_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
         ml.addWidget(self._proc_lbl)
-        lay.addWidget(mon)
+        al.addWidget(mon)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
-        lay.addWidget(sep2)
-
-        lay.addWidget(_sec("AI STATUS"))
+        al.addWidget(_sec("AI STATUS"))
         status_box = QWidget()
-        status_box.setStyleSheet(f"background: transparent; border: none;")
+        status_box.setStyleSheet("background: transparent; border: none;")
         grid = QGridLayout(status_box)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(6)
-        self._ai_model_lbl = self._ai_cell("Current Model", "Claude-4-Antigravity")
-        self._ai_ctx_lbl = self._ai_cell("Context Window", "200K")
-        self._ai_index_lbl = self._ai_cell("Codebase Index", "Active")
-        self._ai_plugins_lbl = self._ai_cell("Plugins", "12/12")
-        self._ai_mem_lbl = self._ai_cell("Memory", "Persistent")
+        self._ai_model_lbl = self._ai_cell("Current Model", "gemini-live")
         self._ai_state_lbl = self._ai_cell("AI Status", "Listening")
+        self._ai_provider_lbl = self._ai_cell("Provider", "gemini-live")
         self._wake_lbl = self._ai_cell("Wake Word", "Jarvis")
-        self._ai_provider_lbl = self._ai_cell("Provider", "--")
+        self._ai_mem_lbl = self._ai_cell("Memory", "Persistent")
+        self._ai_index_lbl = self._ai_cell("Tools", "25 ready")
+        # kept for compatibility with _apply_ai_status references
+        self._ai_ctx_lbl = self._ai_mem_lbl
+        self._ai_plugins_lbl = self._ai_index_lbl
         cells = [
-            self._ai_model_lbl, self._ai_ctx_lbl,
-            self._ai_index_lbl, self._ai_plugins_lbl,
-            self._ai_mem_lbl, self._ai_state_lbl,
-            self._wake_lbl, self._ai_provider_lbl,
+            self._ai_model_lbl, self._ai_state_lbl,
+            self._ai_provider_lbl, self._wake_lbl,
+            self._ai_mem_lbl, self._ai_index_lbl,
         ]
         for i, cell in enumerate(cells):
             grid.addWidget(cell, i // 2, i % 2)
-        lay.addWidget(status_box)
+        al.addWidget(status_box)
+        al.addStretch(1)
 
-        self._mute_btn = QPushButton("🎙  MIC ACTIVE")
-        self._mute_btn.setFixedHeight(42)
-        self._mute_btn.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
-        self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._right_stack.addWidget(activity)
+
+        # hidden log sink (kept for append_log calls)
+        self._log = LogWidget()
+        self._log.setMaximumHeight(0)
+        self._log.hide()
+        self._live_status = QLabel("ACTIVE")  # referenced by some flows
+
+        # --- pinned mic control + drop zone ---
         self._drop_zone = FileDropZone()
         self._drop_zone.setMaximumHeight(0)
         self._drop_zone.hide()
@@ -1488,11 +1906,34 @@ class MainWindow(QMainWindow):
         self._file_hint.hide()
         lay.addWidget(self._drop_zone)
 
+        self._mute_btn = QPushButton("🎙  MIC ACTIVE")
+        self._mute_btn.setFixedHeight(40)
+        self._mute_btn.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
+        self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
         lay.addWidget(self._mute_btn)
 
+        self._switch_tab("preview")
         return w
+
+    def _switch_tab(self, key: str):
+        idx = 0 if key == "preview" else 1
+        self._right_stack.setCurrentIndex(idx)
+        for k, b in self._tab_btns.items():
+            active = (k == key)
+            b.setChecked(active)
+            if active:
+                b.setStyleSheet(f"""
+                    QPushButton {{ background: rgba(0,209,255,0.14); color: {C.PRI};
+                        border: 1px solid {C.PRI_DIM}; border-radius: 8px; padding: 0 14px; }}
+                """)
+            else:
+                b.setStyleSheet(f"""
+                    QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                        border: 1px solid {C.BORDER}; border-radius: 8px; padding: 0 14px; }}
+                    QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
+                """)
 
     def _build_input_row(self) -> QHBoxLayout:
         row = QHBoxLayout(); row.setSpacing(5)
@@ -1714,6 +2155,8 @@ class MainWindow(QMainWindow):
             "os_system": os_name,
             "camera_index": existing.get("camera_index", 0),
             "openai_api_key": existing.get("openai_api_key", ""),
+            "hf_token": existing.get("hf_token", ""),
+            "flux_model_id": existing.get("flux_model_id", "black-forest-labs/FLUX.1-schnell"),
             "openrouter_api_key": existing.get("openrouter_api_key", ""),
             "groq_api_key": existing.get("groq_api_key", ""),
             "deepseek_api_key": existing.get("deepseek_api_key", ""),
@@ -1747,6 +2190,7 @@ class JarvisUI:
         self._app.setStyle("Fusion")
         self._win = MainWindow(face_path)
         self._win.show()
+        self._updater = UpdateController(self._win, os.getpid())
         self.root = _RootShim(self._app)
 
     @property
@@ -1785,8 +2229,22 @@ class JarvisUI:
     def add_ai_message(self, text: str):
         self._win._chat_ai_sig.emit(text)
 
+    def stream_delta(self, text: str):
+        self._win._stream_delta_sig.emit(text)
+
+    def stream_end(self, text: str = ""):
+        self._win._stream_end_sig.emit(text)
+
+    def add_activity(self, label: str, detail: str = ""):
+        self._win._activity_sig.emit({"label": label, "detail": detail})
+
     def set_ai_status(self, **kwargs):
         self._win._ai_sig.emit(kwargs)
+
+    def show_preview(self, kind: str, title: str, payload: str, path: str | None = None, persist: bool = True):
+        self._win._preview_sig.emit({
+            "kind": kind, "title": title, "payload": payload, "path": path, "persist": persist,
+        })
 
     def wait_for_api_key(self):
         while not self._win._ready:

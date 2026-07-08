@@ -9,14 +9,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LANGUAGE_PATH = BASE_DIR / "memory" / "language_state.json"
 
 LANGUAGES = {
-    "ru": {"name": "Russian", "greeting": "К вашим услугам, босс."},
-    "tr": {"name": "Turkish", "greeting": "Hizmetinizdeyim, patron."},
-    "az": {"name": "Azerbaijani", "greeting": "Xidmətinizdəyəm, boss."},
-    "en": {"name": "English", "greeting": "At your service, boss."},
+    "ru": {"name": "Russian", "greeting": "Йо, на связи. Чё делаем?"},
+    "tr": {"name": "Turkish", "greeting": "Yo, buradayım. Ne yapıyoruz?"},
+    "az": {"name": "Azerbaijani", "greeting": "Salam, buradayam. Nə edirik?"},
+    "en": {"name": "English", "greeting": "Yo, I'm here. What are we doing?"},
 }
 
 _CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
-_TURKISH_RE = re.compile(r"[çğıöşüİ]", re.IGNORECASE)
+_TURKISH_RE = re.compile(r"[çğıöşü]")
 _AZERI_HINTS = {"salam", "necəsən", "xahiş", "mənə", "üçün", "göndər", "zəng"}
 _TURKISH_HINTS = {"merhaba", "nasılsın", "lütfen", "benim", "için", "gönder", "ara"}
 
