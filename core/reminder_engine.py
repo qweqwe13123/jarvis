@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -84,13 +84,70 @@ class ReminderEngine:
                     break
             self._save(items)
 
+    # ----- recurrence ------------------------------------------------------
+    @staticmethod
+    def _next_target(item: dict) -> datetime | None:
+        """Next occurrence for a repeating reminder, or None for one-shots.
+
+        ``repeat`` may be "daily", "weekly", or an interval in minutes
+        (int/str). The next target is always pushed into the future even if
+        several periods were missed while the app was closed.
+        """
+        repeat = item.get("repeat")
+        if not repeat:
+            return None
+        try:
+            target = datetime.fromisoformat(item.get("target", ""))
+        except Exception:
+            return None
+        if repeat == "daily":
+            step = timedelta(days=1)
+        elif repeat == "weekly":
+            step = timedelta(weeks=1)
+        else:
+            try:
+                minutes = int(float(repeat))
+                if minutes <= 0:
+                    return None
+                step = timedelta(minutes=minutes)
+            except Exception:
+                return None
+        now = datetime.now()
+        while target <= now:
+            target += step
+        return target
+
+    def _rearm(self, reminder_id: str, next_target: datetime) -> None:
+        with self._lock:
+            items = self._load()
+            for item in items:
+                if item.get("id") == reminder_id:
+                    item["target"] = next_target.isoformat(timespec="seconds")
+                    item["status"] = "pending"
+                    item["last_fired"] = datetime.now().isoformat(timespec="seconds")
+                    break
+            self._save(items)
+
     # ----- firing ----------------------------------------------------------
     def _fire(self, item: dict) -> None:
-        spoken = item.get("spoken") or item.get("message") or "Reminder."
+        if item.get("kind") == "quote":
+            # Fresh quote each time; falls back to the stored message.
+            try:
+                from core.daily_quotes import get_quote
+                spoken = get_quote(item.get("language") or "en")
+            except Exception:
+                spoken = item.get("message") or "Stay focused today."
+        else:
+            spoken = item.get("spoken") or item.get("message") or "Reminder."
         language = item.get("language") or "en"
         try:
             self._speak_cb(spoken, language)
-            self._mark(item.get("id", ""), "fired")
+            next_target = self._next_target(item)
+            if next_target is not None:
+                self._rearm(item.get("id", ""), next_target)
+                self._log(f"Recurring reminder re-armed for {next_target.isoformat(timespec='minutes')}")
+            else:
+                self._mark(item.get("id", ""), "fired")
             self._log(f"Reminder fired [{language}]: {item.get('message', '')[:50]}")
         except Exception as e:
             # Do NOT fall back to another voice — leave pending and retry.
@@ -122,7 +179,13 @@ class ReminderEngine:
             except Exception:
                 continue
             if (now - target).total_seconds() > self.CATCHUP_WINDOW:
-                self._mark(item.get("id", ""), "missed")
+                # Repeating reminders silently roll forward to the next
+                # occurrence; one-shots this stale are marked missed.
+                next_target = self._next_target(item)
+                if next_target is not None:
+                    self._rearm(item.get("id", ""), next_target)
+                else:
+                    self._mark(item.get("id", ""), "missed")
 
         while not self._stop.is_set():
             try:

@@ -1740,6 +1740,18 @@ class MainWindow(QMainWindow):
         self._conv.set_live_activity("Thinking")
         provider = self._input_bar.get_provider()
         model = ""
+        # Specialized sidebar agents run through the local agent runtime:
+        # own system prompt + toolset (web search, deep research, files) +
+        # persistent per-agent session memory. General chat keeps the
+        # live-voice pipeline below.
+        if self._active_agent in ("writer", "researcher", "designer", "automation"):
+            self._log.append_log(f"You: {text}")
+            threading.Thread(
+                target=self._run_sidebar_agent,
+                args=(self._active_agent, text, provider, model),
+                daemon=True,
+            ).start()
+            return
         # Force local Ollama Qwen3 for General Chat text requests.
         if self._active_agent == "general":
             provider = "ollama"
@@ -1749,6 +1761,21 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"You: {text}")
         if self.on_text_command:
             threading.Thread(target=self.on_text_command, args=(payload,), daemon=True).start()
+
+    def _run_sidebar_agent(self, agent_key: str, text: str, provider: str, model: str):
+        from core.agent_runtime import run_agent
+
+        try:
+            answer = run_agent(
+                agent_key,
+                text,
+                preferred_provider=provider or "auto",
+                preferred_model=model,
+                on_progress=lambda step: self._workflow_sig.emit(step),
+            )
+            self._chat_ai_sig.emit(answer or "(no response)")
+        except Exception as e:
+            self._chat_ai_sig.emit(f"Agent error: {e}")
 
     def _send_plan_mode(self):
         self._send_from_bar("Help me plan a new idea step by step.")
