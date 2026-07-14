@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import re
 import threading
 import json
@@ -8,6 +9,7 @@ import time
 from pathlib import Path
 
 import sounddevice as sd
+import numpy as np
 from google import genai
 from google.genai import types
 from ui import JarvisUI
@@ -34,6 +36,7 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.autonomous_mode   import autonomous_mode
+from actions.focus_guard       import focus_guard
 from actions.telegram_control  import telegram_control
 from actions.automation_workflow import automation_workflow
 from actions.communication_module import communication_module
@@ -203,7 +206,8 @@ TOOL_DECLARATIONS = [
         "description": (
             "Enables, disables, or checks autonomous/focus mode. Use when the user asks for autonomous mode, "
             "do not disturb, focus mode, nobody should bother me, or a work/protection mode. "
-            "On macOS this attempts to enable Do Not Disturb/Focus and saves local mode state."
+            "On macOS this attempts to enable Do Not Disturb/Focus and saves local mode state. "
+            "Do NOT use this for 'remind me if I get distracted watching a movie' — use focus_guard for that."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -213,6 +217,43 @@ TOOL_DECLARATIONS = [
             },
             "required": ["action"]
         }
+    },
+    {
+        "name": "focus_guard",
+        "description": (
+            "Distraction watchdog. Use when the user asks to be reminded if they get distracted "
+            "(watching a movie/YouTube/Netflix, gaming, scrolling) away from work for N minutes. "
+            "Examples: 'напомни про работу если отвлекусь на 5 минут', 'watch me and nudge if I binge', "
+            "'если залипну в фильм — напомни продолжить проект'. "
+            "action=start arms the watch; action=stop disables it; action=status reports state. "
+            "Pass goal as what they should return to, and idle_minutes as the distraction threshold."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "start | stop | status",
+                },
+                "goal": {
+                    "type": "STRING",
+                    "description": "What to remind them about, e.g. 'продолжить проект'",
+                },
+                "idle_minutes": {
+                    "type": "NUMBER",
+                    "description": "Minutes of distraction before nudging. Default 5.",
+                },
+                "message": {
+                    "type": "STRING",
+                    "description": "Optional custom nudge text. If empty, a friendly default is used.",
+                },
+                "language": {
+                    "type": "STRING",
+                    "description": "ru | en | tr | az",
+                },
+            },
+            "required": ["action"],
+        },
     },
     {
         "name": "telegram_control",
@@ -673,7 +714,9 @@ class JarvisLive:
         self._last_voice_log_at = 0.0
         self._playback_grace_seconds = 0.75
         self._reminder_engine = None
+        self._focus_guard_engine = None
         self._start_reminder_engine()
+        self._start_focus_guard_engine()
 
     def _start_reminder_engine(self) -> None:
         """Fire reminders/timers/alarms through the live JARVIS voice only."""
@@ -686,6 +729,19 @@ class JarvisLive:
             self._reminder_engine.start()
         except Exception as e:
             print(f"[JARVIS] ⚠️ reminder engine: {e}")
+
+    def _start_focus_guard_engine(self) -> None:
+        """Watch frontmost app and voice-nudge after prolonged distraction."""
+        try:
+            from core.focus_guard import FocusGuardEngine
+            self._focus_guard_engine = FocusGuardEngine(
+                speak_cb=self.speak_notification,
+                log_cb=self.ui.write_log,
+                poll_interval=15.0,
+            )
+            self._focus_guard_engine.start()
+        except Exception as e:
+            print(f"[JARVIS] ⚠️ focus guard engine: {e}")
 
     def _emit_workflow_for_task(self, task_category: str) -> None:
         steps = {
@@ -727,6 +783,16 @@ class JarvisLive:
         detect_and_save_language(text)
         append_conversation("user", text)
         remember_vector(text, kind="user_message")
+
+        # Arm/disarm Focus Guard deterministically — don't rely on the Live model
+        # remembering to call the tool (users often get a verbal "ок" with no watch).
+        try:
+            armed = self._maybe_arm_focus_guard(text)
+            if armed:
+                self.ui.write_log(f"Jarvis: {armed}")
+        except Exception:
+            pass
+
         if mode == "auto":
             self._fallback_local_response(text, self._preferred_provider, self._preferred_model)
             return
@@ -761,11 +827,214 @@ class JarvisLive:
         except Exception:
             return "unknown"
 
+    def _maybe_arm_focus_guard(self, text: str) -> str | None:
+        """Start/stop Focus Guard from natural language without waiting for a tool call."""
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        low = raw.lower()
+        focus_on = any(
+            m in low
+            for m in (
+                "если отвлек", "если отвлеч", "если залип", "focus guard",
+                "напомни про работ", "напомни о работ", "напомни про проект",
+                "напомни о проект", "watch me", "если буду смотреть",
+                "если смотрю фильм", "если отвлекусь", "если я отвлек",
+            )
+        )
+        focus_off = any(
+            m in low
+            for m in (
+                "выключи focus", "стоп focus", "не следи", "focus guard off",
+                "выключи фокус гард", "перестань следить",
+            )
+        )
+        if not focus_on and not focus_off:
+            return None
+        if focus_off:
+            return focus_guard({"action": "stop", "language": "ru"}, player=self.ui)
+        mins = 5.0
+        m = re.search(r"(\d+[.,]?\d*)\s*(минут|мин|minute|min)", low)
+        if m:
+            try:
+                mins = float(m.group(1).replace(",", "."))
+            except ValueError:
+                mins = 5.0
+        goal = "продолжить работу"
+        gm = re.search(
+            r"(?:про|о|about|to)\s+(.+?)(?:\s+если|\s+when|\s+for\s+\d|$)",
+            raw,
+            re.IGNORECASE,
+        )
+        if gm:
+            candidate = gm.group(1).strip(" \t.,!?;:\"'")
+            if candidate and len(candidate) < 80:
+                goal = candidate
+        return focus_guard(
+            {
+                "action": "start",
+                "goal": goal,
+                "idle_minutes": mins,
+                "language": "ru",
+            },
+            player=self.ui,
+        )
+
+    def _try_direct_local_actions(self, text: str) -> str | None:
+        """Deterministic tool shortcuts when Live session is unavailable.
+
+        Keeps critical OS actions (open site / camera / open app) working even
+        if Gemini Live is reconnecting — plain chat models have no tools.
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        low = raw.lower()
+
+        # —— Camera / webcam (before "open …" so "открой камеру" is not treated as a URL) ——
+        cam_markers = (
+            "камер", "webcam", "web cam", "camera",
+            "что ты видишь", "что видишь", "look at me", "посмотри на меня",
+        )
+        if any(m in low for m in cam_markers):
+            open_cam = any(
+                m in low
+                for m in (
+                    "включи", "открой", "запусти", "turn on", "open", "start", "enable",
+                )
+            )
+            try:
+                if open_cam and not any(
+                    m in low
+                    for m in ("что", "видишь", "look", "see", "покажи что", "analyze")
+                ):
+                    app_name = "Photo Booth" if sys.platform == "darwin" else "Camera"
+                    result = open_app(
+                        parameters={"app_name": app_name},
+                        response=None,
+                        player=self.ui,
+                    )
+                    return result or f"Открыл {app_name}."
+                result = screen_process(
+                    parameters={"angle": "camera", "question": raw},
+                    response=None,
+                    player=self.ui,
+                    session_memory=None,
+                )
+                return result or "Камера отработала, но результата нет."
+            except Exception as e:
+                return f"Камера недоступна: {e}"
+
+        # —— Focus Guard (distract → nudge) ——
+        focus_on = any(
+            m in low
+            for m in (
+                "если отвлек", "если отвлеч", "если залип", "focus guard",
+                "напомни про работ", "напомни о работ", "напомни про проект",
+                "напомни о проект", "watch me", "если буду смотреть",
+                "если смотрю фильм", "если отвлекусь", "если я отвлек",
+            )
+        )
+        focus_off = any(
+            m in low
+            for m in (
+                "выключи focus", "стоп focus", "не следи", "focus guard off",
+                "выключи фокус гард", "перестань следить",
+            )
+        )
+        if focus_off:
+            try:
+                return focus_guard(
+                    parameters={"action": "stop", "language": "ru"},
+                    player=self.ui,
+                )
+            except Exception as e:
+                return f"Focus Guard: {e}"
+        if focus_on:
+            mins = 5.0
+            m = re.search(r"(\d+[.,]?\d*)\s*(минут|мин|minute|min)", low)
+            if m:
+                try:
+                    mins = float(m.group(1).replace(",", "."))
+                except ValueError:
+                    mins = 5.0
+            goal = "продолжить работу"
+            gm = re.search(
+                r"(?:про|о|about|to)\s+(.+?)(?:\s+если|\s+when|\s+for\s+\d|$)",
+                raw,
+                re.IGNORECASE,
+            )
+            if gm:
+                candidate = gm.group(1).strip(" \t.,!?;:\"'")
+                if candidate and len(candidate) < 80:
+                    goal = candidate
+            try:
+                return focus_guard(
+                    parameters={
+                        "action": "start",
+                        "goal": goal,
+                        "idle_minutes": mins,
+                        "language": "ru",
+                    },
+                    player=self.ui,
+                )
+            except Exception as e:
+                return f"Focus Guard: {e}"
+
+        # —— Open website / URL ——
+        open_site = re.search(
+            r"(?:открой(?:\s+сайт)?|зайди\s+на|откройте|open(?:\s+(?:the\s+)?(?:site|website|page))?|go\s+to|visit)\s+"
+            r"(.+)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if open_site:
+            target = open_site.group(1).strip(" \t.,!?;:\"'")
+            target = re.sub(
+                r"\s+(пожалуйста|please|thanks|спасибо).*$",
+                "",
+                target,
+                flags=re.IGNORECASE,
+            ).strip()
+            if target and len(target) < 120:
+                try:
+                    result = browser_control(
+                        parameters={"action": "go_to", "url": target},
+                        player=self.ui,
+                    )
+                    return result or f"Открыл {target}."
+                except Exception as e:
+                    return f"Не смог открыть сайт: {e}"
+
+        if re.match(r"^(https?://|www\.)\S+$", raw, re.IGNORECASE) or (
+            " " not in raw
+            and "." in raw
+            and re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/\S*)?$", low)
+        ):
+            try:
+                result = browser_control(
+                    parameters={"action": "go_to", "url": raw},
+                    player=self.ui,
+                )
+                return result or f"Открыл {raw}."
+            except Exception as e:
+                return f"Не смог открыть сайт: {e}"
+
+        return None
+
     def _fallback_local_response(self, text: str, preferred_provider: str = "auto", preferred_model: str = "") -> None:
         try:
+            # Prefer real local tools over a tool-less LLM refusal.
+            direct = self._try_direct_local_actions(text)
+            if direct:
+                self.ui.set_workflow_step("Finished")
+                self.ui.write_log(f"Jarvis: {direct}")
+                self.ui.set_state("LISTENING")
+                append_conversation("jarvis", direct)
+                return
+
             profile = analyze_task(text)
-            self._emit_workflow_for_task(profile.category)
-            self.ui.set_workflow_step("Searching")
+            # Keep "Thinking" until a real search/tool step is reported via on_progress.
             routed = generate_text(
                 text,
                 task_type=profile.category,
@@ -840,31 +1109,54 @@ class JarvisLive:
     }
 
     def speak_notification(self, text: str, language: str = "en") -> None:
-        """Speak a reminder/timer/alarm/automation announcement.
+        """Speak a reminder / Focus Guard announcement in JARVIS's Live voice (Charon).
 
-        Routes exclusively through the live JARVIS voice session. If the session
-        is not connected yet, this raises so the reminder engine keeps the item
-        pending and retries — it NEVER falls back to a system/OS/browser voice.
+        Never uses macOS ``say`` / Milena / any system TTS. Mute only blocks the
+        microphone — output still goes through Gemini Live. If Live is not ready,
+        raises so Focus Guard / ReminderEngine can retry.
         """
+        try:
+            self.ui.add_activity("Focus Guard", text)
+        except Exception:
+            pass
+
         if not self._loop or not self.session:
-            raise RuntimeError("live voice session not ready")
+            raise RuntimeError("live Jarvis voice session not ready")
+
         lang_name = self._NOTIFY_LANG_NAMES.get(language, "the user's language")
         directive = (
-            f"[NOTIFICATION] It's time to deliver this reminder to the user out loud, "
-            f"right now, in {lang_name}. Say it naturally in your own normal voice, keep it "
-            f'short: "{text}"'
+            f"[NOTIFICATION] Speak this out loud right now in {lang_name}, "
+            f"in your normal Jarvis voice, short and natural — do not stay silent, "
+            f'do not answer in text only: "{text}"'
         )
-        fut = asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": directive}]},
-                turn_complete=True,
-            ),
-            self._loop,
-        )
-        # Surface scheduling errors so the engine can retry instead of silently dropping.
-        fut.result(timeout=5)
+        muted = False
         try:
-            self.ui.add_activity("Reminder", text)
+            muted = bool(self.ui.muted)
+        except Exception:
+            muted = False
+
+        async def _deliver() -> None:
+            # When the mic is muted no PCM is flowing; flush + send realtime TEXT
+            # so Live still produces AUDIO in Charon's (Jarvis) voice.
+            if muted:
+                try:
+                    await self.session.send_realtime_input(audio_stream_end=True)
+                except Exception:
+                    pass
+            try:
+                await self.session.send_realtime_input(text=directive)
+            except Exception:
+                await self.session.send_client_content(
+                    turns={"parts": [{"text": directive}]},
+                    turn_complete=True,
+                )
+
+        fut = asyncio.run_coroutine_threadsafe(_deliver(), self._loop)
+        fut.result(timeout=8)
+        try:
+            self.ui.write_log(
+                f"FOCUS: Jarvis voice nudge{' (mic muted)' if muted else ''}: {text[:120]}"
+            )
         except Exception:
             pass
 
@@ -998,8 +1290,24 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, lambda: autonomous_mode(parameters=args, response=None, player=self.ui))
                 result = r or "Autonomous mode updated."
 
+            elif name == "focus_guard":
+                if not args.get("language"):
+                    from core.language import detect_language, load_language
+                    sample = args.get("goal") or args.get("message") or ""
+                    args["language"] = detect_language(sample) if sample else load_language()
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: focus_guard(parameters=args, response=None, player=self.ui),
+                )
+                result = r or "Focus Guard updated."
+
             elif name == "telegram_control":
-                r = await loop.run_in_executor(None, lambda: telegram_control(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: telegram_control(
+                        parameters=args, response=None, player=self.ui, speak=self.speak
+                    ),
+                )
                 result = r or "Telegram action complete."
 
             elif name == "automation_workflow":
@@ -1183,6 +1491,12 @@ class JarvisLive:
         def callback(indata, frames, time_info, status):
             if status:
                 self._voice_log(f"mic status: {status}", min_interval=5.0)
+            if not self.ui.muted:
+                try:
+                    rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+                    self.ui.set_user_voice_level(rms)
+                except RuntimeError:
+                    pass
             if not self._output_busy() and not self.ui.muted:
                 data = indata.tobytes()
                 def _enqueue_audio():
@@ -1433,6 +1747,16 @@ class JarvisLive:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)  # exponential backoff, capped
 
+def _ensure_double_clap_wake() -> None:
+    """Install/refresh the macOS LaunchAgent that opens Jarvis on double clap."""
+    try:
+        from launcher.install_launch_agent import install as install_wake_agent
+
+        install_wake_agent()
+    except Exception as e:
+        print(f"[Wake] Could not install double-clap listener: {e}")
+
+
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "--jarvis-apply-update":
         from pathlib import Path
@@ -1441,7 +1765,50 @@ def main():
         parent_pid = int(sys.argv[3]) if len(sys.argv) > 3 else 0
         raise SystemExit(apply_update(package, parent_pid=parent_pid))
 
+    # Keep double-clap wake alive for this machine (and for future public installs).
+    # Defer so it never races with first-run UI paint / SIGTRAPs.
+    def _wake_later():
+        try:
+            _ensure_double_clap_wake()
+        except Exception as e:
+            print(f"[Wake] Could not install double-clap listener: {e}")
+
+    threading.Thread(
+        target=_wake_later, daemon=True, name="WakeAgentInstall"
+    ).start()
+
+    # First-run welcome + permissions + Gemini key (before main window).
+    try:
+        from jarvis_ui.onboarding import run_onboarding_if_needed
+
+        run_onboarding_if_needed()
+    except Exception as e:
+        print(f"[AURA] Onboarding skipped due to error: {e}")
+
     ui = JarvisUI("")
+    # Guarantee setup card after main window is up (fallback if key skipped).
+    try:
+        from PyQt6.QtCore import QTimer
+
+        if not ui._win._ready:
+            QTimer.singleShot(250, ui._win._ensure_setup_overlay)
+    except Exception:
+        pass
+
+    def _openclaw_progress(msg: str) -> None:
+        ui.write_log(f"OpenClaw: {msg}")
+
+    def _start_openclaw() -> None:
+        try:
+            from core.integrations.openclaw import bootstrap_and_start_gateway, stop_gateway
+
+            atexit.register(stop_gateway)
+            gw_url = bootstrap_and_start_gateway(on_progress=_openclaw_progress)
+            ui.write_log(f"SYS: OpenClaw gateway online — {gw_url}")
+        except Exception as e:
+            ui.write_log(f"SYS: OpenClaw fallback mode ({e})")
+
+    threading.Thread(target=_start_openclaw, daemon=True, name="OpenClawBootstrap").start()
 
     def runner():
         ui.wait_for_api_key()

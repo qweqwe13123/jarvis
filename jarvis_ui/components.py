@@ -1,20 +1,23 @@
 """JARVIS workspace UI components — screenshot-matched design."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QUrl, QRectF, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QUrl, QRectF, QPointF, QPoint
 from PyQt6.QtGui import (
-    QFont, QDesktopServices, QPainter, QPen, QColor, QPolygonF, QPainterPath,
+    QFont, QFontMetrics, QDesktopServices, QPainter, QPen, QColor, QPolygonF, QPainterPath, QBrush,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QFrame, QGridLayout, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QTextBrowser,
-    QTextEdit, QVBoxLayout, QWidget,
+    QTextEdit, QVBoxLayout, QWidget, QMenu,
 )
 
 from jarvis_ui.markdown_utils import markdown_to_html
 from jarvis_ui import theme as T
+from jarvis_ui import user_account as UA
+from jarvis_ui.dashboard_hud import DashboardHeroView
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -268,31 +271,36 @@ class _SideRow(QFrame):
         self._id = item_id
         self._active = active
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(40 if subtitle else 34)
+        self.setFixedHeight(40 if subtitle else 32)
         self._apply_style(active)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 4, 6, 4)
+        lay.setContentsMargins(8, 2, 6, 2)
         lay.setSpacing(8)
 
-        ic = QLabel(icon)
-        ic.setFont(QFont(T.FONT_UI, 9))
-        ic.setStyleSheet(f"color: {T.CYAN if active else T.TEXT_DIM}; background: transparent; border: none;")
-        ic.setFixedWidth(16)
-        lay.addWidget(ic)
+        if icon:
+            ic = QLabel(icon)
+            ic.setFont(QFont(T.FONT_UI, 9))
+            ic.setStyleSheet(f"color: {T.CYAN if active else T.TEXT_DIM}; background: transparent; border: none;")
+            ic.setFixedWidth(16)
+            lay.addWidget(ic)
 
         textcol = QVBoxLayout()
         textcol.setSpacing(0)
         name = QLabel(title)
-        name.setFont(QFont(T.FONT_UI, 9, QFont.Weight.Bold if active else QFont.Weight.Normal))
-        name.setStyleSheet(f"color: {T.WHITE if active else T.TEXT_MED}; background: transparent; border: none;")
+        name.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium if active else QFont.Weight.Normal))
+        name.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE if active else T.SB_TEXT}; background: transparent; border: none;"
+        )
         textcol.addWidget(name)
+        lay.addLayout(textcol, stretch=1)
+
         if subtitle:
             sub = QLabel(subtitle)
-            sub.setFont(QFont(T.FONT_UI, 7))
-            sub.setStyleSheet(f"color: {T.TEXT_DIM}; background: transparent; border: none;")
-            textcol.addWidget(sub)
-        lay.addLayout(textcol, stretch=1)
+            sub.setFont(QFont(T.SB_FONT, 10))
+            sub.setStyleSheet(f"color: {T.SB_TEXT_MUTED}; background: transparent; border: none;")
+            sub.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lay.addWidget(sub)
 
         self._actions = QWidget()
         self._actions.setStyleSheet("background: transparent; border: none;")
@@ -330,15 +338,15 @@ class _SideRow(QFrame):
         if active:
             self.setStyleSheet(f"""
                 _SideRow {{
-                    background: rgba(0, 209, 255, 0.12);
-                    border: 1px solid rgba(0, 209, 255, 0.30);
-                    border-radius: 10px;
+                    background: {T.SB_ACCENT_SOFT};
+                    border: none;
+                    border-radius: 6px;
                 }}
             """)
         else:
             self.setStyleSheet(f"""
-                _SideRow {{ background: transparent; border: 1px solid transparent; border-radius: 10px; }}
-                _SideRow:hover {{ background: rgba(255,255,255,0.04); border: 1px solid {T.BORDER}; }}
+                _SideRow {{ background: transparent; border: none; border-radius: 6px; }}
+                _SideRow:hover {{ background: {T.SB_HOVER}; }}
             """)
 
     def enterEvent(self, e):
@@ -351,6 +359,189 @@ class _SideRow(QFrame):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self._on_select:
+            self._on_select(self._id)
+        super().mousePressEvent(e)
+
+
+class _ElidedLabel(QLabel):
+    """Single-line label that always truncates with … when text is too wide."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setWordWrap(False)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def set_full_text(self, text: str):
+        self._full = text or ""
+        self._reflow()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._reflow()
+
+    def _reflow(self):
+        w = max(1, self.width())
+        fm = QFontMetrics(self.font())
+        self.setText(fm.elidedText(self._full, Qt.TextElideMode.ElideRight, w))
+        self.setToolTip(self._full if fm.horizontalAdvance(self._full) > w else "")
+
+
+class _ChatIconBtn(QFrame):
+    """Compact icon button for chat-row actions (trash / more)."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, icon_name: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ChatIconBtn")
+        self._hover = False
+        self.setFixedSize(26, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._icon = _LineIcon(icon_name, T.SB_TEXT_MUTED, 14)
+        lay.addWidget(self._icon, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._apply()
+
+    def _apply(self):
+        bg = "rgba(255,255,255,0.08)" if self._hover else "transparent"
+        self.setStyleSheet(
+            f"QFrame#ChatIconBtn {{ background: {bg}; border: none; border-radius: 6px; }}"
+        )
+        self._icon.set_color(T.SB_TEXT if self._hover else T.SB_TEXT_MUTED)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+
+class _ChatSidebarRow(QFrame):
+    """ChatGPT-style chat row: bubble, elided title, trash + ⋮ on active/hover."""
+
+    def __init__(self, title: str, chat_id: str, active: bool, pinned: bool,
+                 on_select, on_delete, on_rename=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ChatSidebarRow")
+        self._id = chat_id
+        self._full_title = (title or "New chat").strip() or "New chat"
+        self._active = active
+        self._hover = False
+        self._on_select = on_select
+        self._on_rename = on_rename
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(36)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._apply_style(active, False)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 4, 0)
+        lay.setSpacing(8)
+
+        self._icon = _LineIcon("chat", T.SB_TEXT_MUTED, 16)
+        self._icon.setFixedSize(16, 16)
+        lay.addWidget(self._icon)
+
+        self._title = _ElidedLabel()
+        self._title.setFont(QFont(T.SB_FONT, 13, QFont.Weight.Medium if active else QFont.Weight.Normal))
+        self._title.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE if active else T.SB_TEXT}; "
+            "background: transparent; border: none;"
+        )
+        self._title.set_full_text(self._full_title)
+        lay.addWidget(self._title, stretch=1)
+
+        self._actions = QWidget()
+        self._actions.setStyleSheet("background: transparent; border: none;")
+        self._actions.setFixedWidth(56)
+        al = QHBoxLayout(self._actions)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(0)
+        al.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self._delete_btn = _ChatIconBtn("trash")
+        self._delete_btn.clicked.connect(lambda: on_delete(chat_id))
+        al.addWidget(self._delete_btn)
+
+        self._more_btn = _ChatIconBtn("more")
+        self._more_btn.clicked.connect(self._open_more_menu)
+        al.addWidget(self._more_btn)
+
+        lay.addWidget(self._actions)
+        self._sync_actions()
+        self._sync_icon()
+
+    def _sync_icon(self):
+        self._icon.set_color(T.CYAN if self._active else T.SB_TEXT_MUTED)
+
+    def _sync_actions(self):
+        # Match screenshot: actions visible on selected row and on hover.
+        show = self._active or self._hover
+        self._actions.setVisible(show)
+
+    def _apply_style(self, active: bool, hover: bool):
+        if active:
+            bg = "rgba(0, 209, 255, 0.12)"
+        elif hover:
+            bg = T.SB_HOVER
+        else:
+            bg = "transparent"
+        self.setStyleSheet(
+            f"QFrame#ChatSidebarRow {{ background: {bg}; border: none; border-radius: 8px; }}"
+        )
+
+    def _open_more_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: {T.BG_CARD}; color: {T.CHAT_TEXT}; "
+            f"border: 1px solid {T.BORDER}; padding: 4px 0; border-radius: 8px; }}"
+            "QMenu::item { padding: 8px 16px; }"
+            "QMenu::item:selected { background: rgba(255,255,255,0.08); }"
+        )
+        rename_act = menu.addAction("Rename")
+        delete_act = menu.addAction("Delete")
+        chosen = menu.exec(self._more_btn.mapToGlobal(QPoint(0, self._more_btn.height())))
+        if chosen is rename_act and self._on_rename:
+            self._on_rename(self._id)
+        elif chosen is delete_act:
+            self._delete_btn.clicked.emit()
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply_style(self._active, True)
+        self._sync_actions()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply_style(self._active, False)
+        self._sync_actions()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self._on_select:
+            # Ignore clicks that landed on action buttons (they accept the event).
+            child = self.childAt(e.position().toPoint())
+            if child is not None and (
+                child is self._delete_btn or child is self._more_btn
+                or self._actions.isAncestorOf(child)
+            ):
+                super().mousePressEvent(e)
+                return
             self._on_select(self._id)
         super().mousePressEvent(e)
 
@@ -444,6 +635,511 @@ class _LineIcon(QWidget):
                 (5.1, 18.9, 6.9, 17.1), (17.1, 6.9, 18.9, 5.1),
             ]:
                 p.drawLine(P(x1, y1), P(x2, y2))
+        elif n == "grid":
+            for ox, oy in ((4, 4), (13, 4), (4, 13), (13, 13)):
+                p.drawRoundedRect(R(ox, oy, 7, 7), 1.5 * s, 1.5 * s)
+        elif n == "plug":
+            p.drawRoundedRect(R(8, 3, 8, 7), 1.5 * s, 1.5 * s)
+            p.drawLine(P(12, 10), P(12, 14))
+            p.drawLine(P(8, 14), P(16, 14))
+        elif n == "puzzle":
+            poly((6, 8), (10, 8), (10, 6), (14, 6), (14, 10), (18, 10), (18, 14), (14, 14), (14, 18), (10, 18), (10, 14), (6, 14))
+        elif n == "mic":
+            p.drawRoundedRect(R(9, 4, 6, 10), 3 * s, 3 * s)
+            p.drawArc(R(6, 10, 12, 8), 0, -180 * 16)
+            p.drawLine(P(12, 18), P(12, 21))
+            p.drawLine(P(8, 21), P(16, 21))
+        elif n == "monitor":
+            p.drawRoundedRect(R(3, 5, 18, 11), 2 * s, 2 * s)
+            p.drawLine(P(9, 16), P(15, 16))
+            p.drawLine(P(12, 16), P(12, 19))
+            p.drawLine(P(8, 19), P(16, 19))
+        elif n == "clock":
+            p.drawEllipse(R(4, 4, 16, 16))
+            p.drawLine(P(12, 12), P(12, 8))
+            p.drawLine(P(12, 12), P(16, 12))
+        elif n == "plus":
+            p.drawLine(P(12, 6), P(12, 18))
+            p.drawLine(P(6, 12), P(18, 12))
+        elif n == "subscription":
+            p.drawRoundedRect(R(5, 5, 14, 14), 2 * s, 2 * s)
+            p.drawLine(P(12, 8), P(12, 16))
+            p.drawLine(P(8, 12), P(16, 12))
+        elif n == "gift":
+            p.drawRoundedRect(R(5, 10, 14, 10), 2 * s, 2 * s)
+            p.drawLine(P(5, 14), P(19, 14))
+            p.drawLine(P(12, 10), P(12, 20))
+        elif n == "user":
+            p.drawEllipse(R(8, 4, 8, 8))
+            p.drawArc(R(5, 13, 14, 9), 0, -180 * 16)
+        elif n == "help":
+            p.drawEllipse(R(4, 4, 16, 16))
+            p.drawArc(R(8, 7, 8, 8), 60 * 16, 240 * 16)
+        elif n == "logout":
+            p.drawRoundedRect(R(4, 5, 10, 14), 2 * s, 2 * s)
+            p.drawLine(P(14, 12), P(20, 12))
+            p.drawLine(P(17, 9), P(20, 12))
+            p.drawLine(P(17, 15), P(20, 12))
+        elif n == "login":
+            p.drawRoundedRect(R(10, 5, 10, 14), 2 * s, 2 * s)
+            p.drawLine(P(4, 12), P(10, 12))
+            p.drawLine(P(7, 9), P(4, 12))
+            p.drawLine(P(7, 15), P(4, 12))
+        elif n == "plus_user":
+            p.drawEllipse(R(6, 4, 8, 8))
+            p.drawArc(R(3, 13, 14, 9), 0, -180 * 16)
+            p.drawLine(P(17, 8), P(17, 14))
+            p.drawLine(P(14, 11), P(20, 11))
+        elif n == "trash":
+            p.drawLine(P(8, 6), P(16, 6))
+            p.drawLine(P(10, 6), P(10.5, 4))
+            p.drawLine(P(13.5, 6), P(14, 4))
+            p.drawLine(P(10.5, 4), P(13.5, 4))
+            p.drawRoundedRect(R(7, 7, 10, 12), 1.5 * s, 1.5 * s)
+            p.drawLine(P(10, 10), P(10, 16))
+            p.drawLine(P(12, 10), P(12, 16))
+            p.drawLine(P(14, 10), P(14, 16))
+        elif n == "more":
+            # Vertical kebab (⋮)
+            for cy in (7, 12, 17):
+                p.setBrush(QColor(self._color))
+                p.drawEllipse(R(10.5, cy - 1.5, 3, 3))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+        elif n == "more_h":
+            # Horizontal ellipsis (⋯)
+            for cx in (7, 12, 17):
+                p.setBrush(QColor(self._color))
+                p.drawEllipse(R(cx - 1.5, 10.5, 3, 3))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+
+
+class _SidebarLogo(QWidget):
+    """Compact wordmark at the top of the sidebar."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(28)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(T.SB_TEXT_ACTIVE)))
+        p.setFont(QFont(T.SB_FONT, 14, QFont.Weight.DemiBold))
+        p.drawText(4, 20, "J.A.R.V.I.S")
+
+
+class _SidebarNewSessionBtn(QFrame):
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hover = False
+        self.setFixedHeight(34)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 10, 0)
+        lay.setSpacing(8)
+        lay.addWidget(_LineIcon("plus", T.SB_TEXT_MUTED, 15))
+        lbl = QLabel("New chat")
+        lbl.setFont(QFont(T.SB_FONT, T.SB_FONT_SIZE))
+        lbl.setStyleSheet(f"color: {T.SB_TEXT}; background: transparent;")
+        lay.addWidget(lbl)
+        lay.addStretch()
+        self._apply()
+
+    def _apply(self):
+        bg = T.SB_HOVER if self._hover else "transparent"
+        self.setStyleSheet(
+            f"_SidebarNewSessionBtn {{ background: {bg}; border: none; border-radius: 8px; }}"
+        )
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+
+class _SidebarMoreBtn(QFrame):
+    """'⋯ More' under Automations — no filled gray background."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SidebarMoreBtn")
+        self._hover = False
+        self.setFixedHeight(T.SB_ROW_H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(8)
+        self._icon = _LineIcon("more_h", T.SB_TEXT_MUTED, T.SB_ICON)
+        lay.addWidget(self._icon, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._lbl = QLabel("More")
+        self._lbl.setFont(QFont(T.SB_FONT, T.SB_FONT_SIZE))
+        self._lbl.setStyleSheet(f"color: {T.SB_TEXT}; background: transparent; border: none;")
+        lay.addWidget(self._lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch()
+        self._apply()
+
+    def _apply(self):
+        # Transparent by default — only a soft hover like other nav rows.
+        bg = T.SB_HOVER if self._hover else "transparent"
+        self.setStyleSheet(
+            f"QFrame#SidebarMoreBtn {{ background: {bg}; border: none; border-radius: 8px; }}"
+        )
+        self._icon.set_color(T.SB_TEXT if self._hover else T.SB_TEXT_MUTED)
+        self._lbl.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT}; "
+            "background: transparent; border: none;"
+        )
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+
+class _SidebarNavRow(QFrame):
+    """Linear-style sidebar row using SB_* theme tokens."""
+
+    clicked = pyqtSignal(str)
+
+    def __init__(
+        self,
+        key: str,
+        label: str,
+        icon_name: str,
+        active: bool = False,
+        trailing: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._key = key
+        self._active = active
+        self._hover = False
+        self.setFixedHeight(T.SB_ROW_H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(8)
+
+        self._icon = _LineIcon(icon_name, T.SB_TEXT_MUTED, T.SB_ICON)
+        lay.addWidget(self._icon)
+
+        self._label = QLabel(label)
+        self._label.setFont(QFont(T.SB_FONT, T.SB_FONT_SIZE))
+        lay.addWidget(self._label, stretch=1)
+
+        self._trail = None
+        if trailing:
+            self._trail = QLabel(trailing)
+            self._trail.setFont(QFont(T.SB_FONT, 10))
+            lay.addWidget(self._trail)
+
+        self._apply()
+
+    def set_active(self, active: bool):
+        if active != self._active:
+            self._active = active
+            self._apply()
+
+    def _apply(self):
+        if self._active:
+            bg, icon_c, fg = T.SB_ACCENT_SOFT, T.SB_ACCENT, T.SB_TEXT_ACTIVE
+        elif self._hover:
+            bg, icon_c, fg = T.SB_HOVER, T.SB_TEXT, T.SB_TEXT
+        else:
+            bg, icon_c, fg = "transparent", T.SB_TEXT_MUTED, T.SB_TEXT
+        self.setStyleSheet(
+            f"_SidebarNavRow {{ background: {bg}; border: none; border-radius: 6px; }}"
+        )
+        self._icon.set_color(icon_c)
+        self._label.setStyleSheet(f"color: {fg}; background: transparent; border: none;")
+        if self._trail is not None:
+            self._trail.setStyleSheet(f"color: {T.SB_TEXT_MUTED}; background: transparent;")
+
+    def enterEvent(self, e):
+        if not self._active:
+            self._hover = True
+            self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._key)
+        super().mousePressEvent(e)
+
+
+class _ProfileMenuItem(QFrame):
+    clicked = pyqtSignal(str)
+
+    def __init__(self, action: str, label: str, icon_name: str, *, danger: bool = False, parent=None):
+        super().__init__(parent)
+        self._action = action
+        self._hover = False
+        self.setFixedHeight(34)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 12, 0)
+        lay.setSpacing(10)
+        icon_color = T.RED if danger else T.SB_TEXT_MUTED
+        self._icon = _LineIcon(icon_name, icon_color, 16)
+        lay.addWidget(self._icon)
+        self._label = QLabel(label)
+        self._label.setFont(QFont(T.SB_FONT, 12))
+        lay.addWidget(self._label, stretch=1)
+        self._danger = danger
+        self._apply()
+
+    def _apply(self) -> None:
+        if self._danger:
+            fg, icon = T.RED, T.RED
+            hover_bg = "rgba(255, 68, 102, 0.10)"
+        else:
+            fg = T.SB_TEXT
+            icon = T.SB_ACCENT if self._hover else T.SB_TEXT_MUTED
+            hover_bg = T.SB_HOVER
+        bg = hover_bg if self._hover else "transparent"
+        self.setStyleSheet(f"_ProfileMenuItem {{ background: {bg}; border-radius: 8px; }}")
+        self._icon.set_color(icon)
+        self._label.setStyleSheet(f"color: {fg}; background: transparent; border: none;")
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._action)
+        super().mousePressEvent(e)
+
+
+class ProfileMenuPopover(QWidget):
+    action_selected = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedWidth(228)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        self._card = QFrame()
+        self._card.setObjectName("profileMenuCard")
+        card_lay = QVBoxLayout(self._card)
+        card_lay.setContentsMargins(8, 8, 8, 8)
+        card_lay.setSpacing(2)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(6, 4, 6, 8)
+        self._avatar = QLabel("U")
+        self._avatar.setFixedSize(32, 32)
+        self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._avatar.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        header.addWidget(self._avatar)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        self._name = QLabel("User")
+        self._name.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        self._subtitle = QLabel("Free Plan")
+        self._subtitle.setFont(QFont(T.SB_FONT, 10))
+        col.addWidget(self._name)
+        col.addWidget(self._subtitle)
+        header.addLayout(col, stretch=1)
+        card_lay.addLayout(header)
+
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {T.BORDER}; border: none;")
+        card_lay.addWidget(sep)
+
+        self._items_host = QVBoxLayout()
+        self._items_host.setContentsMargins(0, 4, 0, 4)
+        self._items_host.setSpacing(1)
+        card_lay.addLayout(self._items_host)
+        outer.addWidget(self._card)
+
+        shadow = QGraphicsDropShadowEffect(self._card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 110))
+        self._card.setGraphicsEffect(shadow)
+        self._style_card()
+        self.refresh()
+
+    def _style_card(self) -> None:
+        self._card.setStyleSheet(
+            f"QFrame#profileMenuCard {{ background: {T.BG_CARD}; "
+            f"border: 1px solid {T.BORDER_HI}; border-radius: 14px; }}"
+        )
+        self._avatar.setStyleSheet(
+            f"background: {T.BG_ELEVATED}; color: {T.SB_ACCENT}; "
+            f"border: 1px solid {T.SB_ACCENT_BORDER}; border-radius: 16px;"
+        )
+        self._name.setStyleSheet(f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;")
+        self._subtitle.setStyleSheet(f"color: {T.SB_TEXT_MUTED}; background: transparent; border: none;")
+
+    def _clear_items(self) -> None:
+        while self._items_host.count():
+            item = self._items_host.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _add_item(self, action: str, label: str, icon: str, *, danger: bool = False) -> None:
+        row = _ProfileMenuItem(action, label, icon, danger=danger)
+        row.clicked.connect(self._on_item)
+        self._items_host.addWidget(row)
+
+    def _add_separator(self) -> None:
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {T.BORDER}; border: none; margin: 4px 8px;")
+        self._items_host.addWidget(sep)
+
+    def _on_item(self, action: str) -> None:
+        self.hide()
+        self.action_selected.emit(action)
+
+    def refresh(self, *, authenticated: bool | None = None) -> None:
+        authed = UA.is_authenticated() if authenticated is None else authenticated
+        name = UA.get_display_name()
+        self._name.setText(name)
+        self._subtitle.setText(UA.get_subtitle(authenticated=authed))
+        self._avatar.setText(name[:1].upper())
+        self._clear_items()
+        if authed:
+            for action, label, icon in (
+                ("profile", "Profile", "user"),
+                ("settings", "Settings", "settings"),
+                ("subscription", "Subscription", "subscription"),
+                ("referral", "Referral Program", "gift"),
+                ("shortcuts", "Keyboard Shortcuts", "keyboard"),
+                ("help", "Help & Support", "help"),
+            ):
+                self._add_item(action, label, icon)
+            self._add_separator()
+            self._add_item("sign_out", "Sign Out", "logout", danger=True)
+        else:
+            self._add_item("sign_in", "Sign In", "login")
+            self._add_item("create_account", "Create Account", "plus_user")
+        self.adjustSize()
+
+    def popup_above(self, anchor: QWidget, *, authenticated: bool | None = None) -> None:
+        self.refresh(authenticated=authenticated)
+        self.adjustSize()
+        pos = anchor.mapToGlobal(QPoint(0, 0))
+        x = pos.x() + max(0, (anchor.width() - self.width()) // 2)
+        y = pos.y() - self.height() - 6
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+
+class _SidebarProfileFooter(QFrame):
+    menu_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hover = False
+        name = UA.get_display_name()
+        initial = name[:1].upper()
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(8)
+
+        self._avatar = QLabel(initial)
+        self._avatar.setFixedSize(28, 28)
+        self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._avatar.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Bold))
+        lay.addWidget(self._avatar)
+
+        info = QVBoxLayout()
+        info.setSpacing(0)
+        self._name = QLabel(name)
+        self._name.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        self._plan = QLabel(UA.get_subtitle())
+        self._plan.setFont(QFont(T.SB_FONT, 10))
+        info.addWidget(self._name)
+        info.addWidget(self._plan)
+        lay.addLayout(info, stretch=1)
+        self._apply()
+
+    def refresh_account(self) -> None:
+        name = UA.get_display_name()
+        authed = UA.is_authenticated()
+        self._name.setText(name)
+        self._plan.setText(UA.get_subtitle(authenticated=authed))
+        self._avatar.setText(name[:1].upper())
+        self._apply(authenticated=authed)
+
+    def _apply(self, *, authenticated: bool | None = None) -> None:
+        authed = UA.is_authenticated() if authenticated is None else authenticated
+        bg = T.SB_HOVER if self._hover else "transparent"
+        self.setStyleSheet(
+            f"_SidebarProfileFooter {{ background: {bg}; border: none; border-radius: 8px; }}"
+        )
+        accent = T.SB_ACCENT if authed else T.SB_TEXT_MUTED
+        self._avatar.setStyleSheet(
+            f"background: {T.BG_ELEVATED}; color: {accent}; "
+            f"border-radius: 14px; border: 1px solid {'rgba(0,209,255,0.35)' if authed else 'transparent'};"
+        )
+        self._name.setStyleSheet(f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;")
+        self._plan.setStyleSheet(
+            f"color: {T.SB_ACCENT if authed else T.SB_TEXT_MUTED}; "
+            f"background: transparent; border: none;"
+        )
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.menu_requested.emit()
+        super().mousePressEvent(e)
 
 
 class _BracketButton(QFrame):
@@ -599,20 +1295,75 @@ class _AgentRow(QFrame):
         super().mousePressEvent(e)
 
 
-class NavSidebar(QWidget):
-    """Screenshot-matched left navigation: agents, skills, and monetization tools."""
+class _SidebarEdgeRail(QWidget):
+    """Full-height fused divider+scrollbar rail drawn on top of the sidebar.
 
-    _AGENTS = (
-        ("general", "General Chat", "chat"),
+    The native QScrollBar stays interactive underneath (this widget is mouse-
+    transparent) but is fully invisible — we paint the track + thumb here so
+    there is exactly one vertical line, never a gray splitter beside it.
+    """
+
+    def __init__(self, sidebar: "NavSidebar"):
+        super().__init__(sidebar)
+        self._sidebar = sidebar
+        self.setObjectName("SidebarEdgeRail")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def sync_from_sidebar(self):
+        sb = self._sidebar
+        width, _track, _handle = sb._rail_metrics()
+        self.setGeometry(sb.width() - width, 0, width, sb.height())
+        self.update()
+        self.raise_()
+
+    def paintEvent(self, _event):
+        sb = self._sidebar
+        width, track, handle = sb._rail_metrics()
+        if width <= 0 or self.height() <= 0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        # Continuous divider track (replaces the old gray splitter line).
+        p.fillRect(0, 0, width, self.height(), track)
+
+        bar = sb._scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
+            return
+        # Manual thumb geometry — initStyleOption is protected in PyQt6.
+        bar_h = max(1, bar.height())
+        span = bar.maximum() + bar.pageStep()
+        handle_h = max(36, int(bar_h * (bar.pageStep() / span))) if span > 0 else 36
+        handle_h = min(handle_h, bar_h)
+        travel = max(0, bar_h - handle_h)
+        y_in_bar = int(travel * (bar.value() / bar.maximum())) if bar.maximum() else 0
+        # mapToGlobal avoids parent-hierarchy issues between overlay and scrollbar.
+        y = self.mapFromGlobal(bar.mapToGlobal(QPoint(0, y_in_bar))).y()
+        y = max(0, y)
+        h = max(8, handle_h)
+        if y + h > self.height():
+            h = self.height() - y
+        if h > 0:
+            p.fillRect(0, y, width, h, handle)
+
+
+class NavSidebar(QWidget):
+    """Screenshot-matched sidebar — platform nav, agents, workspaces, sessions."""
+
+    _PLATFORM = (
+        ("dashboard", "Dashboard", "grid", "dashboard"),
+        ("chat", "Chat", "chat", "chat"),
+        ("connectors", "Connectors", "plug", "connectors"),
+        ("computer_use", "Computer Use", "monitor", "computer_use"),
+        ("skills", "Skills", "puzzle", "almost_ready"),
+        ("voice", "Voice", "mic", "almost_ready"),
+        ("automations", "Automations", "clock", "almost_ready"),
+    )
+    _BUILDERS = (
         ("website", "Website Builder", "globe"),
         ("code", "Code Assistant", "code"),
-        ("automation", "Automation", "automation"),
-        ("writer", "Writer", "writer"),
         ("researcher", "Researcher", "researcher"),
-        ("designer", "Designer", "designer"),
-    )
-    _MONEY = (
-        ("maps_prospector", "Maps Prospector", "maps", "$"),
     )
 
     new_chat = pyqtSignal()
@@ -627,80 +1378,280 @@ class NavSidebar(QWidget):
     chat_delete = pyqtSignal(str)
     chat_pin = pyqtSignal(str)
     settings_requested = pyqtSignal()
+    profile_menu_action = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet(f"background: {T.BG_PANEL}; border-right: 1px solid {T.BORDER};")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 20, 16, 16)
-        lay.setSpacing(0)
+        self.setObjectName("NavSidebar")
+        self._nav_rows: dict[str, _SidebarNavRow] = {}
+        self._active_key = "dashboard"
+        self._list_rows: list[_SideRow] = []
 
-        new_btn = _BracketButton("NEW SESSION", "⌘N")
+        root = QVBoxLayout(self)
+        # Right margin 0 — scrollbar track sits on the barrier edge.
+        root.setContentsMargins(10, 10, 0, 8)
+        root.setSpacing(0)
+
+        top = QWidget()
+        top_lay = QVBoxLayout(top)
+        top_lay.setContentsMargins(0, 0, 10, 0)
+        top_lay.setSpacing(0)
+        top_lay.addWidget(_SidebarLogo())
+        top_lay.addSpacing(6)
+        new_btn = _SidebarNewSessionBtn()
         new_btn.clicked.connect(self.new_chat.emit)
-        lay.addWidget(new_btn)
-        lay.addSpacing(22)
+        top_lay.addWidget(new_btn)
+        top_lay.addSpacing(8)
+        root.addWidget(top)
 
-        lay.addWidget(self._section_label("AGENTS · SKILLS", T.CYAN_DIM))
-        lay.addSpacing(8)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Always show the rail so the barrier line is visible even with few chats.
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        body = QWidget()
+        self._body_lay = QVBoxLayout(body)
+        self._body_lay.setContentsMargins(0, 0, 10, 0)
+        self._body_lay.setSpacing(1)
 
-        self._agent_rows: dict[str, _AgentRow] = {}
-        self._active_agent = "general"
-        for key, label, icon in self._AGENTS:
-            row = _AgentRow(
-                key, label, icon,
-                active=(key == "general"),
-                active_dot=(key == "general"),
-            )
+        self._body_lay.addWidget(self._section_label("PLATFORM"))
+        for key, label, icon, agent in self._PLATFORM:
+            row = _SidebarNavRow(key, label, icon, active=(key == "dashboard"))
+            row.clicked.connect(lambda k, a=agent: self._on_platform(k, a))
+            self._nav_rows[key] = row
+            self._body_lay.addWidget(row)
+            if key == "automations":
+                more = _SidebarMoreBtn()
+                more.clicked.connect(self._on_automations_more)
+                self._body_lay.addWidget(more)
+
+        self._body_lay.addSpacing(6)
+        self._body_lay.addWidget(self._section_label("AGENTS"))
+        for key, label, icon in self._BUILDERS:
+            row = _SidebarNavRow(key, label, icon)
             row.clicked.connect(self._on_agent)
-            self._agent_rows[key] = row
-            lay.addWidget(row)
+            self._nav_rows[key] = row
+            self._body_lay.addWidget(row)
 
-        lay.addSpacing(22)
-        if self._MONEY:
-            lay.addWidget(self._section_label("MAKE MONEY", "#a84858"))
-            lay.addSpacing(8)
+        self._body_lay.addSpacing(6)
+        self._body_lay.addWidget(self._section_label("CHATS"))
+        self._chat_host = QVBoxLayout()
+        self._chat_host.setSpacing(2)
+        self._chat_wrap = QWidget()
+        self._chat_wrap.setLayout(self._chat_host)
+        self._body_lay.addWidget(self._chat_wrap)
 
-            for key, label, icon, trail in self._MONEY:
-                row = _AgentRow(
-                    key, label, icon,
-                    trailing=trail,
-                    trailing_color=T.TEXT_DIM,
-                )
-                row.clicked.connect(self._on_agent)
-                self._agent_rows[key] = row
-                lay.addWidget(row)
+        self._body_lay.addStretch()
+        self._scroll.setWidget(body)
+        root.addWidget(self._scroll, stretch=1)
 
-        lay.addStretch()
-        lay.addWidget(self._section_label("SYSTEM", T.CYAN_DIM))
-        lay.addSpacing(6)
-        settings = _AgentRow("settings", "Settings", "settings")
-        settings.clicked.connect(lambda *_: self.settings_requested.emit())
-        lay.addWidget(settings)
+        foot_wrap = QWidget()
+        foot_lay = QVBoxLayout(foot_wrap)
+        foot_lay.setContentsMargins(0, 0, 10, 0)
+        foot_lay.setSpacing(0)
+        self._footer = _SidebarProfileFooter()
+        self._footer.menu_requested.connect(self._open_profile_menu)
+        foot_lay.addWidget(self._footer)
+        root.addWidget(foot_wrap)
+
+        self._profile_menu: ProfileMenuPopover | None = None
+
+        self.setMinimumWidth(T.SB_MIN_W)
+        self.setMaximumWidth(T.SB_MAX_W)
+        self.setMouseTracking(True)
+
+        # Single fused edge: full-height overlay rail + scrollbar thumb on top.
+        # (The QSplitter handle in ui.py is intentionally invisible.)
+        self.setStyleSheet(
+            f"QWidget#NavSidebar {{ background: {T.BG_PANEL}; border: none; }}"
+        )
+        self._rail_hot = False
+        self._rail_width_idle = 2
+        self._rail_width_hot = 3
+        self._scroll_fade = QTimer(self)
+        self._scroll_fade.setSingleShot(True)
+        self._scroll_fade.timeout.connect(lambda: self._set_rail_hot(False))
+
+        self._edge_rail = _SidebarEdgeRail(self)
+        self._edge_rail.raise_()
+
+        sb = self._scroll.verticalScrollBar()
+        sb.installEventFilter(self)
+        self._scroll.installEventFilter(self)
+        self._edge_rail.installEventFilter(self)
+        sb.valueChanged.connect(self._on_rail_scroll)
+        sb.rangeChanged.connect(lambda *_: self._edge_rail.update())
+        self._apply_edge_rail_style()
 
         self._cached_chats: list[dict] = []
         self._active_chat_id: str | None = None
 
+    def _rail_metrics(self) -> tuple[int, QColor, QColor]:
+        """Return (width, track_color, handle_color) for idle/hot states."""
+        if self._rail_hot:
+            return (
+                self._rail_width_hot,
+                QColor(0, 209, 255, 72),
+                QColor(0, 209, 255, 230),
+            )
+        return (
+            self._rail_width_idle,
+            QColor(0, 209, 255, 40),
+            QColor(0, 209, 255, 130),
+        )
+
+    def _apply_edge_rail_style(self):
+        width, _track, _handle = self._rail_metrics()
+        # Native scrollbar is invisible but keeps its hit-target under the rail.
+        # The overlay paints the only visible divider + thumb.
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical {"
+            "  background: transparent;"
+            f"  width: {width}px;"
+            "  margin: 0px;"
+            "  border: none;"
+            "  border-radius: 0px;"
+            "}"
+            "QScrollBar::handle:vertical {"
+            "  background: transparent;"
+            "  border-radius: 0px;"
+            "  min-height: 36px;"
+            "}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
+            " { height: 0px; width: 0px; border: none; background: transparent; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
+            " { background: transparent; }"
+        )
+        self._edge_rail.sync_from_sidebar()
+
+    def _set_rail_hot(self, hot: bool):
+        if self._rail_hot == hot:
+            return
+        self._rail_hot = hot
+        self._apply_edge_rail_style()
+
+    def _on_rail_scroll(self, *_):
+        self._set_rail_hot(True)
+        self._edge_rail.update()
+        self._scroll_fade.start(700)
+
+    def _near_right_edge(self, pos: QPoint) -> bool:
+        return pos.x() >= self.width() - 12
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        sb = self._scroll.verticalScrollBar()
+        if obj in (self._scroll, sb, self._edge_rail):
+            if et == QEvent.Type.Enter:
+                self._scroll_fade.stop()
+                self._set_rail_hot(True)
+            elif et == QEvent.Type.Leave:
+                self._scroll_fade.start(280)
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._edge_rail.sync_from_sidebar()
+        self._edge_rail.raise_()
+
+    def mouseMoveEvent(self, event):
+        if self._near_right_edge(event.position().toPoint()):
+            self._scroll_fade.stop()
+            self._set_rail_hot(True)
+        elif not self._scroll.verticalScrollBar().underMouse():
+            self._scroll_fade.start(280)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._scroll_fade.start(280)
+        super().leaveEvent(event)
+
     @staticmethod
-    def _section_label(text: str, color: str) -> QLabel:
+    def _section_label(text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setFont(_spaced_font(T.FONT_UI, 8, 2.8, bold=True))
-        lbl.setStyleSheet(f"color: {color}; background: transparent; border: none;")
+        lbl.setFont(QFont(T.SB_FONT, T.SB_SECTION_SIZE, QFont.Weight.Bold))
+        lbl.setStyleSheet(
+            f"color: {T.SB_TEXT_MUTED}; background: transparent; "
+            f"padding: 8px 8px 4px; letter-spacing: 1.2px;"
+        )
         return lbl
 
+    def _on_platform(self, key: str, agent: str):
+        if self._active_key in self._nav_rows:
+            self._nav_rows[self._active_key].set_active(False)
+        self._active_key = key
+        if key in self._nav_rows:
+            self._nav_rows[key].set_active(True)
+        self.agent_selected.emit(agent)
+
     def _on_agent(self, key: str):
-        if key != self._active_agent:
-            self._agent_rows[self._active_agent].set_active(False)
-            self._active_agent = key
-            self._agent_rows[key].set_active(True)
+        if self._active_key in self._nav_rows:
+            self._nav_rows[self._active_key].set_active(False)
+        self._active_key = key
+        self._nav_rows[key].set_active(True)
         self.agent_selected.emit(key)
+
+    def _clear_layout(self, layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
 
     def refresh(self, workspaces: list[dict], chats: list[dict],
                 active_ws_id: str = "", active_chat_id: str | None = None):
         self._cached_chats = list(chats)
         self._active_chat_id = active_chat_id
+        self._list_rows.clear()
+
+        self._clear_layout(self._chat_host)
+        for chat in chats:
+            cid = chat.get("id", "")
+            title = chat.get("title", "Session")
+            active = cid == active_chat_id
+            row = _ChatSidebarRow(
+                title, cid, active, bool(chat.get("pinned")),
+                on_select=lambda c=cid: self.chat_selected.emit(c),
+                on_delete=lambda c=cid: self.chat_delete.emit(c),
+                on_rename=lambda c=cid: self.chat_rename.emit(c),
+            )
+            self._list_rows.append(row)
+            self._chat_host.addWidget(row)
+
+        add_chat = _SidebarNewSessionBtn()
+        add_chat.clicked.connect(lambda *_: self.new_chat.emit())
+        self._chat_host.addWidget(add_chat)
 
     def refresh_automations(self, automations: list[dict]):
-        pass
+        # WORKFLOWS sidebar section removed — keep as no-op for callers.
+        return
+
+    def _on_automations_more(self) -> None:
+        # Open the Coming Soon roadmap page (do not switch to agent chat).
+        if self._active_key in self._nav_rows:
+            self._nav_rows[self._active_key].set_active(False)
+        self._active_key = "automations"
+        if "automations" in self._nav_rows:
+            self._nav_rows["automations"].set_active(True)
+        self.section_changed.emit("automations_more")
+
+    def _open_profile_menu(self) -> None:
+        if self._profile_menu is None:
+            self._profile_menu = ProfileMenuPopover(self)
+            self._profile_menu.action_selected.connect(self._on_profile_menu_action)
+        self._profile_menu.popup_above(self._footer)
+
+    def _on_profile_menu_action(self, action: str) -> None:
+        if action == "settings":
+            self.settings_requested.emit()
+        self.profile_menu_action.emit(action)
+
+    def refresh_user_account(self) -> None:
+        self._footer.refresh_account()
+        if self._profile_menu is not None and self._profile_menu.isVisible():
+            self._profile_menu.refresh()
 
 
 class PreviewPanel(QWidget):
@@ -1017,112 +1968,345 @@ class _ActivityItem(QFrame):
         self._btn.setText(("▾  " if vis else "▸  ") + text)
 
 
-class ConversationView(QWidget):
-    """Single continuous conversation feed (ChatGPT / Cursor style).
+class _JarvisChatOrb(QWidget):
+    """Self-contained animated J.A.R.V.I.S. badge for the chat header."""
 
-    Replaces the old multi-tab response-card system: every user message,
-    assistant reply, inline activity/tool log and generated artifact is appended
-    to ONE chronological vertically-scrolling thread with auto-scroll, markdown,
-    syntax-highlighted code and streaming support.
-    """
+    def __init__(self, size: int = 76, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.muted = False
+        self.speaking = False
+        self.user_speaking = False
+        self.state = "LISTENING"
+        self._voice_level = 0.0
+        self._smooth_voice = 0.0
+        self._rings = [0.0, 120.0, 240.0]
+        self._tick = 0
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._step)
+        self._tmr.start(32)
+
+    def set_voice_level(self, level: float) -> None:
+        self._voice_level = max(0.0, float(level))
+        if self.muted:
+            self._voice_level = 0.0
+
+    def _step(self) -> None:
+        self._tick += 1
+        threshold = 380.0
+        target = 1.0 if self._voice_level > threshold and not self.muted else 0.0
+        self._smooth_voice += (target - self._smooth_voice) * 0.28
+        self.user_speaking = self._voice_level > threshold and not self.muted
+        active = self.speaking or self.user_speaking or self.state in (
+            "THINKING", "PROCESSING", "SPEAKING",
+        )
+        speed = 2.4 if self.user_speaking else (1.8 if active else 0.7)
+        for i in range(3):
+            self._rings[i] = (self._rings[i] + speed * (1 if i != 1 else -1)) % 360
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+        fw = min(w, h)
+        accent = QColor(T.CHAT_ASSIST_ACCENT if not self.muted else T.RED)
+        active = self.speaking or self.user_speaking or self.state in (
+            "THINKING", "PROCESSING", "SPEAKING",
+        )
+        pulse = 1.0 + (0.06 if active else 0.0) + min(0.1, self._smooth_voice * 0.1)
+
+        p.fillRect(self.rect(), QColor(T.CHAT_BG))
+        for i, (r_frac, alpha) in enumerate(
+            ((0.46, 40), (0.38, 65), (0.30, 90), (0.22, 120))
+        ):
+            rr = fw * r_frac * pulse
+            p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), alpha), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QRectF(cx - rr, cy - rr, rr * 2, rr * 2))
+
+        for idx, (r_frac, arc_len) in enumerate(((0.42, 100), (0.34, 72), (0.26, 48))):
+            ring_r = fw * r_frac
+            a_val = 200 - idx * 45
+            p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), a_val), 1.8))
+            rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
+            p.drawArc(rect, int(self._rings[idx] * 16), int(arc_len * 16))
+
+        p.setPen(QPen(accent, 1.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(cx - fw * 0.13, cy - fw * 0.13, fw * 0.26, fw * 0.26))
+
+        font = QFont(T.CHAT_FONT, max(6, int(fw * 0.10)), QFont.Weight.DemiBold)
+        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 105)
+        p.setFont(font)
+        p.setPen(QPen(accent))
+        p.drawText(
+            QRectF(cx - fw * 0.36, cy - fw * 0.10, fw * 0.72, fw * 0.20),
+            Qt.AlignmentFlag.AlignCenter,
+            "J.A.R.V.I.S.",
+        )
+
+
+class _ChatHudHeader(QWidget):
+    """Compact HUD orb pinned to the top-right of the chat."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._orb = _JarvisChatOrb(76, self)
+        self.setStyleSheet(f"background: {T.CHAT_BG}; border: none;")
+        self.setFixedHeight(92)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(T.CHAT_SIDE_PAD, 8, T.CHAT_SIDE_PAD, 8)
+        lay.setSpacing(0)
+        lay.addStretch(1)
+        lay.addWidget(self._orb, alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+    def orb_widget(self) -> _JarvisChatOrb:
+        return self._orb
+
+    def set_compact(self, _compact: bool) -> None:
+        return
+
+
+class _ChatAvatar(QWidget):
+    """Lens-style assistant avatar from the screenshot mock."""
+
+    def __init__(self, role: str = "assistant", parent=None):
+        super().__init__(parent)
+        self._role = role
+        self.setFixedSize(22, 22)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        accent = QColor(T.CHAT_ASSIST_ACCENT)
+        if self._role == "user":
+            p.setPen(QPen(QColor(T.CHAT_TEXT_DIM), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(2, 2, 18, 18)
+            return
+        p.setPen(QPen(accent, 1.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(2.5, 2.5, 17, 17))
+        p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 90), 1.0))
+        p.drawEllipse(QRectF(5.5, 5.5, 11, 11))
+        p.setBrush(QBrush(accent))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QRectF(8.5, 8.5, 5, 5))
+
+
+class _ChatEmptyHero(QWidget):
+    """Center greeting when the thread is empty."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 48, 24, 24)
+        lay.setSpacing(12)
+        lay.addStretch(1)
+        greet = QLabel("Yo, I'm here. What are we doing?")
+        greet.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        greet.setFont(QFont(T.CHAT_FONT, 22, QFont.Weight.DemiBold))
+        greet.setStyleSheet(f"color: {T.CHAT_TEXT}; background: transparent;")
+        greet.setWordWrap(True)
+        lay.addWidget(greet)
+        lay.addStretch(2)
+
+
+class ConversationView(QWidget):
+    """Screenshot-style message feed."""
+
+    messages_changed = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"background: {T.CHAT_BG};")
         self._stream_view: _AutoText | None = None
         self._stream_text = ""
-        self._artifact_open = {}
+        self._message_count = 0
+        self._stick_to_bottom = True
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(8)
-
-        header = QHBoxLayout()
-        title = QLabel("CONVERSATION")
-        title.setFont(QFont(T.FONT_UI, 8, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {T.CYAN}; background: transparent; letter-spacing: 1px;")
-        header.addWidget(title)
-        header.addStretch()
-        self._clear_btn = QPushButton("Clear")
-        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_btn.setFont(QFont(T.FONT_UI, 8))
-        self._clear_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {T.TEXT_DIM}; "
-            f"border: 1px solid {T.BORDER}; border-radius: 6px; padding: 3px 10px; }}"
-            f"QPushButton:hover {{ color: {T.CYAN}; border-color: {T.CYAN_DIM}; }}"
-        )
-        self._clear_btn.clicked.connect(self.clear)
-        header.addWidget(self._clear_btn)
-        root.addLayout(header)
+        root.setSpacing(0)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            f"QScrollBar:vertical {{ background: transparent; width: 7px; }}"
-            f"QScrollBar::handle:vertical {{ background: {T.BORDER_HI}; border-radius: 3px; }}"
+            f"QScrollArea {{ background: {T.CHAT_BG}; border: none; }}"
+            "QScrollBar:vertical { background: transparent; width: 6px; margin: 4px 2px; }"
+            "QScrollBar::handle:vertical { background: rgba(255,255,255,0.12); border-radius: 3px; min-height: 24px; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
         )
-        host = QWidget()
-        host.setStyleSheet("background: transparent;")
-        self._feed = QVBoxLayout(host)
-        self._feed.setContentsMargins(2, 2, 8, 2)
-        self._feed.setSpacing(10)
-        self._feed.addStretch()
-        self._scroll.setWidget(host)
+
+        self._feed_host = QWidget()
+        self._feed_host.setStyleSheet(f"background: {T.CHAT_BG};")
+        self._feed = QVBoxLayout(self._feed_host)
+        self._feed.setContentsMargins(T.CHAT_SIDE_PAD, 8, T.CHAT_SIDE_PAD, 24)
+        self._feed.setSpacing(T.CHAT_MSG_SPACING)
+        self._feed.addStretch(1)
+        self._scroll.setWidget(self._feed_host)
         root.addWidget(self._scroll, stretch=1)
 
-        self._empty = QLabel("Start talking or type below — the full conversation appears here.")
-        self._empty.setWordWrap(True)
-        self._empty.setFont(QFont(T.FONT_UI, 9))
-        self._empty.setStyleSheet(f"color: {T.TEXT_DIM}; background: transparent;")
-        self._feed.insertWidget(0, self._empty)
+        scroll_bar = self._scroll.verticalScrollBar()
+        scroll_bar.rangeChanged.connect(self._on_scroll_range_changed)
+        scroll_bar.valueChanged.connect(self._on_scroll_value_changed)
 
         self._status = QLabel("")
-        self._status.setFont(QFont(T.FONT_UI, 9))
-        self._status.setStyleSheet(f"color: {T.CYAN}; background: transparent;")
+        self._status.setFont(QFont(T.CHAT_FONT, 11))
+        self._status.setStyleSheet(
+            f"color: {T.CHAT_ASSIST_ACCENT}; background: {T.CHAT_BG}; padding: 6px 24px;"
+        )
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status.setVisible(False)
         root.addWidget(self._status)
 
-    # ----- feed helpers ----------------------------------------------------
     def _insert(self, widget: QWidget):
-        if self._empty.isVisible():
-            self._empty.setVisible(False)
-        self._feed.insertWidget(self._feed.count() - 1, widget)
-        QTimer.singleShot(0, self._scroll_bottom)
+        idx = max(0, self._feed.count() - 1)
+        self._feed.insertWidget(idx, widget)
+        self._message_count += 1
+        self.messages_changed.emit(True)
+        QTimer.singleShot(0, lambda: self._scroll_bottom(force=True))
 
-    def _scroll_bottom(self):
+    def _on_scroll_range_changed(self, _min: int, max_val: int) -> None:
+        if self._stick_to_bottom and max_val > 0:
+            self._scroll_bottom()
+
+    def _on_scroll_value_changed(self, value: int) -> None:
         bar = self._scroll.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self._stick_to_bottom = value >= bar.maximum() - 64
 
-    def _bubble(self, role: str, who: str, accent: str) -> _AutoText:
-        frame = QFrame()
-        frame.setStyleSheet(
-            f"QFrame {{ background: {T.BG_CARD}; border: 1px solid {T.BORDER}; "
-            f"border-left: 2px solid {accent}; border-radius: 10px; }}"
+    def _scroll_bottom(self, force: bool = False) -> None:
+        if force:
+            self._stick_to_bottom = True
+        if not self._stick_to_bottom:
+            return
+        bar = self._scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
+            return
+        bar.setValue(bar.maximum())
+        QTimer.singleShot(50, lambda: bar.setValue(bar.maximum()))
+
+    def has_messages(self) -> bool:
+        return self._message_count > 0
+
+    @staticmethod
+    def _chat_html(text: str) -> str:
+        html_text = markdown_to_html(text)
+        for old, new in (
+            ("#8ffcff", "#e5e7eb"),
+            ("#d8f8ff", "#f3f4f6"),
+            ("color:#00d4ff", "color:#00d1ff"),
+        ):
+            html_text = html_text.replace(old, new)
+        return html_text
+
+    def _track_body_scroll(self, body: _AutoText) -> None:
+        try:
+            body.document().documentLayout().documentSizeChanged.connect(
+                lambda *_: self._scroll_bottom()
+            )
+        except Exception:
+            pass
+
+    def _bubble(self, role: str) -> _AutoText:
+        ts = datetime.now().strftime("%H:%M")
+
+        if role == "user":
+            wrap = QWidget()
+            wrap.setStyleSheet("background: transparent;")
+            outer = QHBoxLayout(wrap)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+            outer.addStretch(1)
+
+            card = QFrame()
+            card.setObjectName("chatUserCard")
+            card.setMaximumWidth(T.CHAT_USER_MAX_W)
+            card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+            card.setStyleSheet(
+                f"QFrame#chatUserCard {{ background: {T.CHAT_BUBBLE}; border: none; "
+                f"border-radius: {T.CHAT_BUBBLE_RADIUS}px; }}"
+            )
+            bl = QHBoxLayout(card)
+            bl.setContentsMargins(18, 14, 16, 14)
+            bl.setSpacing(12)
+
+            body = _AutoText()
+            body.setFont(QFont(T.CHAT_FONT, 15))
+            body.setStyleSheet(f"color: {T.CHAT_TEXT}; background: transparent;")
+            bl.addWidget(body, stretch=1)
+
+            meta = QVBoxLayout()
+            meta.setContentsMargins(0, 0, 0, 0)
+            meta.setSpacing(2)
+            time = QLabel(ts)
+            time.setFont(QFont(T.CHAT_FONT, 10))
+            time.setAlignment(Qt.AlignmentFlag.AlignRight)
+            time.setStyleSheet(f"color: {T.CHAT_TEXT_DIM}; background: transparent;")
+            meta.addWidget(time)
+            tick = QLabel("✓")
+            tick.setFont(QFont(T.CHAT_FONT, 11, QFont.Weight.Bold))
+            tick.setAlignment(Qt.AlignmentFlag.AlignRight)
+            tick.setStyleSheet(f"color: {T.CHAT_ASSIST_ACCENT}; background: transparent;")
+            meta.addWidget(tick)
+            bl.addLayout(meta)
+
+            outer.addWidget(card, stretch=0)
+            self._insert(wrap)
+            return body
+
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        outer = QVBoxLayout(wrap)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        card = QFrame()
+        card.setObjectName("chatAssistCard")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        card.setStyleSheet(
+            f"QFrame#chatAssistCard {{ background: {T.CHAT_BUBBLE}; "
+            f"border: none; border-radius: {T.CHAT_BUBBLE_RADIUS}px; }}"
         )
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(12, 9, 12, 10)
-        lay.setSpacing(4)
-        tag = QLabel(who)
-        tag.setFont(QFont(T.FONT_UI, 7, QFont.Weight.Bold))
-        tag.setStyleSheet(f"color: {accent}; background: transparent; letter-spacing: 1px;")
-        lay.addWidget(tag)
+        col = QVBoxLayout(card)
+        col.setContentsMargins(18, 16, 18, 18)
+        col.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        head.addWidget(_ChatAvatar("assistant"), alignment=Qt.AlignmentFlag.AlignTop)
+        name = QLabel("J.A.R.V.I.S.")
+        name.setFont(QFont(T.CHAT_FONT, 13, QFont.Weight.Bold))
+        name.setStyleSheet(f"color: {T.CHAT_ASSIST_ACCENT}; background: transparent;")
+        head.addWidget(name, alignment=Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+        time = QLabel(ts)
+        time.setFont(QFont(T.CHAT_FONT, 10))
+        time.setStyleSheet(f"color: {T.CHAT_TEXT_DIM}; background: transparent;")
+        head.addWidget(time, alignment=Qt.AlignmentFlag.AlignTop)
+        col.addLayout(head)
+
         body = _AutoText()
-        body.setFont(QFont(T.FONT_UI, 10))
-        lay.addWidget(body)
-        self._insert(frame)
+        body.setFont(QFont(T.CHAT_FONT, 15))
+        body.setStyleSheet(f"color: {T.CHAT_TEXT}; background: transparent;")
+        self._track_body_scroll(body)
+        col.addWidget(body)
+        outer.addWidget(card)
+        self._insert(wrap)
         return body
 
-    # ----- public API ------------------------------------------------------
     def add_user(self, text: str):
-        body = self._bubble("user", "YOU", T.GREEN)
-        body.setHtml(markdown_to_html(text))
+        self._bubble("user").setHtml(self._chat_html(text))
 
     def add_assistant(self, text: str):
-        body = self._bubble("assistant", "JARVIS", T.CYAN)
-        body.setHtml(markdown_to_html(text))
+        self._bubble("assistant").setHtml(self._chat_html(text))
 
     def add_activity(self, label: str, detail: str = ""):
         self._insert(_ActivityItem(label, detail))
@@ -1130,28 +2314,26 @@ class ConversationView(QWidget):
     def add_artifact_card(self, kind: str, title: str, payload: str = "", path: str = ""):
         frame = QFrame()
         frame.setStyleSheet(
-            f"QFrame {{ background: {T.BG_PANEL}; border: 1px solid {T.BORDER_HI}; "
-            f"border-radius: 10px; }}"
+            f"QFrame {{ background: {T.BG_ELEVATED}; border: 1px solid {T.BORDER}; border-radius: 12px; }}"
         )
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(12, 9, 12, 10)
+        lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(6)
 
         head = QHBoxLayout()
         icon = {"web": "🌐", "code": "</>", "text": "▤"}.get(kind, "▤")
         tag = QLabel(f"{icon}  {title or kind.title()}")
-        tag.setFont(QFont(T.FONT_UI, 9, QFont.Weight.Bold))
-        tag.setStyleSheet(f"color: {T.CYAN}; background: transparent;")
+        tag.setFont(QFont(T.CHAT_FONT, 11, QFont.Weight.DemiBold))
+        tag.setStyleSheet(f"color: {T.CHAT_ASSIST_ACCENT}; background: transparent;")
         head.addWidget(tag)
         head.addStretch()
         if path:
             open_btn = QPushButton("Open")
             open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_btn.setFont(QFont(T.FONT_UI, 8))
+            open_btn.setFont(QFont(T.CHAT_FONT, 10))
             open_btn.setStyleSheet(
-                f"QPushButton {{ background: transparent; color: {T.TEXT_MED}; "
-                f"border: 1px solid {T.BORDER}; border-radius: 6px; padding: 2px 10px; }}"
-                f"QPushButton:hover {{ color: {T.CYAN}; border-color: {T.CYAN_DIM}; }}"
+                f"QPushButton {{ background: transparent; color: {T.CHAT_TEXT_DIM}; "
+                f"border: 1px solid {T.BORDER}; border-radius: 8px; padding: 2px 10px; }}"
             )
             open_btn.clicked.connect(lambda _, p=path: QDesktopServices.openUrl(
                 QUrl.fromLocalFile(p) if not str(p).startswith("http") else QUrl(p)
@@ -1161,7 +2343,7 @@ class ConversationView(QWidget):
 
         if kind == "web" and _WEB_ENGINE and (path or payload):
             view = QWebEngineView()
-            view.setFixedHeight(320)
+            view.setFixedHeight(280)
             try:
                 if path and str(path).startswith("http"):
                     view.setUrl(QUrl(path))
@@ -1174,57 +2356,55 @@ class ConversationView(QWidget):
             lay.addWidget(view)
         else:
             body = _AutoText()
-            body.setFont(QFont(T.FONT_UI, 10))
+            body.setFont(QFont(T.CHAT_FONT, 13))
             if kind == "code":
                 lang = (Path(path).suffix.lstrip(".") if path else "") or "code"
                 body.setHtml(markdown_to_html(f"```{lang}\n{payload}\n```"))
             else:
                 body.setHtml(markdown_to_html(payload))
             lay.addWidget(body)
-
         self._insert(frame)
 
-    # ----- streaming -------------------------------------------------------
     def stream_delta(self, delta: str):
         if self._stream_view is None:
-            self._stream_view = self._bubble("assistant", "JARVIS", T.CYAN)
+            self._stream_view = self._bubble("assistant")
             self._stream_text = ""
         self._stream_text += delta
-        self._stream_view.setHtml(markdown_to_html(self._stream_text))
-        QTimer.singleShot(0, self._scroll_bottom)
+        self._stream_view.setHtml(self._chat_html(self._stream_text))
+        self._scroll_bottom()
 
     def stream_end(self, full_text: str = ""):
         if self._stream_view is not None:
             final = full_text.strip() or self._stream_text
-            self._stream_view.setHtml(markdown_to_html(final))
+            self._stream_view.setHtml(self._chat_html(final))
             self._stream_view = None
             self._stream_text = ""
         elif full_text.strip():
             self.add_assistant(full_text)
         self.clear_live_activity()
+        self._scroll_bottom(force=True)
 
-    # ----- transient status (Thinking… / Running…) -------------------------
     def set_live_activity(self, label: str):
-        self._status.setText(f"●  {label}…")
+        self._status.setText(f"{label}…")
         self._status.setVisible(True)
 
     def clear_live_activity(self):
         self._status.setVisible(False)
         self._status.setText("")
 
-    # ----- session restore -------------------------------------------------
     def clear(self):
         self._stream_view = None
         self._stream_text = ""
-        while self._feed.count() > 1:  # keep trailing stretch
+        self._message_count = 0
+        while self._feed.count() > 1:
             item = self._feed.takeAt(0)
             w = item.widget()
-            if w is not None and w is not self._empty:
+            if w is not None:
                 w.deleteLater()
-        if self._feed.indexOf(self._empty) == -1:
-            self._feed.insertWidget(0, self._empty)
-        self._empty.setVisible(True)
+        self.messages_changed.emit(False)
         self.clear_live_activity()
+        bar = self._scroll.verticalScrollBar()
+        bar.setValue(0)
 
     def load(self, messages: list[dict], artifacts: list[dict] | None = None):
         self.clear()
@@ -1238,8 +2418,7 @@ class ConversationView(QWidget):
             elif role == "assistant":
                 self.add_assistant(content)
             elif role in ("activity", "tool"):
-                self.add_activity(meta.get("label") or content or "Activity",
-                                  meta.get("detail", ""))
+                self.add_activity(meta.get("label") or content or "Activity", meta.get("detail", ""))
             elif role == "artifact":
                 art = art_by_id.get(meta.get("artifact_id")) or {}
                 self.add_artifact_card(
@@ -1248,125 +2427,154 @@ class ConversationView(QWidget):
                     art.get("payload", ""),
                     art.get("path") or meta.get("path", ""),
                 )
-        QTimer.singleShot(0, self._scroll_bottom)
+        self._scroll_bottom(force=True)
+
+
+class _ChatBarIconButton(QPushButton):
+    def __init__(self, kind: str, size: int = 32, parent=None):
+        super().__init__(parent)
+        self._kind = kind
+        self._muted = False
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            "QPushButton { background: transparent; border: none; border-radius: 16px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.06); }"
+        )
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(T.CHAT_BAR_ICON), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        cx, cy = self.width() / 2, self.height() / 2
+        if self._kind == "attach":
+            p.drawArc(int(cx - 6), int(cy - 8), 12, 12, 30 * 16, 300 * 16)
+            p.drawLine(int(cx - 3), int(cy + 2), int(cx - 3), int(cy + 7))
+            p.drawLine(int(cx + 3), int(cy + 2), int(cx + 3), int(cy + 7))
+        elif self._kind == "mic":
+            color = QColor(T.RED) if self._muted else QColor(T.CHAT_BAR_ICON)
+            pen.setColor(color)
+            p.setPen(pen)
+            p.drawRoundedRect(int(cx - 4), int(cy - 9), 8, 12, 4, 4)
+            p.drawArc(int(cx - 7), int(cy - 1), 14, 10, 0, -180 * 16)
+            p.drawLine(int(cx), int(cy + 9), int(cx), int(cy + 12))
+            if self._muted:
+                p.drawLine(int(cx - 7), int(cy - 7), int(cx + 7), int(cy + 7))
+
+    def set_muted(self, muted: bool) -> None:
+        self._muted = muted
+        self.update()
+
+
+class _ChatSendButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(36, 36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            f"QPushButton {{ background: {T.CHAT_ASSIST_ACCENT}; border: none; border-radius: 18px; }}"
+            f"QPushButton:hover {{ background: #33eeff; }}"
+            f"QPushButton:pressed {{ background: #00c4db; }}"
+        )
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#ffffff"), 2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        cx, cy = self.width() / 2, self.height() / 2
+        p.drawLine(int(cx - 4), int(cy + 3), int(cx + 4), int(cy - 5))
+        p.drawLine(int(cx + 4), int(cy - 5), int(cx + 1), int(cy - 5))
+        p.drawLine(int(cx + 4), int(cy - 5), int(cx + 4), int(cy - 2))
 
 
 class CenterInputBar(QWidget):
     submitted = pyqtSignal(str)
     plan_requested = pyqtSignal()
+    mute_clicked = pyqtSignal()
 
     def __init__(self, providers: list[str], parent=None):
         super().__init__(parent)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 0, 28, 14)
-        lay.setSpacing(7)
+        self._providers = providers or ["Live Voice (Gemini)"]
 
-        input_box = QFrame()
-        input_box.setStyleSheet(f"""
-            QFrame {{
-                background: {T.BG_CARD};
-                border: 1px solid {T.BORDER_HI};
-                border-radius: 14px;
-            }}
-        """)
-        ib_lay = QVBoxLayout(input_box)
-        ib_lay.setContentsMargins(16, 10, 12, 8)
-        ib_lay.setSpacing(6)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
 
-        self._input = QTextEdit()
-        self._input.setPlaceholderText("Напиши или просто скажи, что нужно…")
-        self._input.setFont(QFont(T.FONT_UI, 11))
-        self._input.setMinimumHeight(46)
-        self._input.setMaximumHeight(84)
-        self._input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        host = QWidget()
+        host_lay = QHBoxLayout(host)
+        host_lay.setContentsMargins(T.CHAT_SIDE_PAD, 0, T.CHAT_SIDE_PAD, 20)
+        host_lay.setSpacing(0)
+
+        self._pill = QFrame()
+        self._pill.setObjectName("chatInputPill")
+        self._pill.setFixedHeight(T.CHAT_BAR_HEIGHT)
+        self._pill.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._pill.setStyleSheet(
+            f"QFrame#chatInputPill {{ background: {T.CHAT_BAR_BG}; border: none; border-radius: 26px; }}"
+        )
+
+        row = QHBoxLayout(self._pill)
+        row.setContentsMargins(18, 0, 10, 0)
+        row.setSpacing(4)
+
+        self._attach = _ChatBarIconButton("attach", 32)
+        self._attach.clicked.connect(self._show_extras_menu)
+        row.addWidget(self._attach)
+
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Message J.A.R.V.I.S....")
+        self._input.setFont(QFont(T.CHAT_FONT, 15))
+        self._input.setFrame(False)
+        self._input.setMinimumHeight(36)
         self._input.setStyleSheet(f"""
-            QTextEdit {{
-                background: transparent; color: {T.WHITE};
-                border: none; padding: 0;
+            QLineEdit {{
+                background: transparent; color: {T.CHAT_BAR_TEXT}; border: none; padding: 0 8px;
             }}
-            QScrollBar:vertical {{ background: transparent; width: 5px; }}
-            QScrollBar::handle:vertical {{ background: {T.BORDER_HI}; border-radius: 2px; }}
+            QLineEdit::placeholder {{ color: {T.CHAT_BAR_PLACEHOLDER}; }}
         """)
-        ib_lay.addWidget(self._input)
-        self._input.installEventFilter(self)
+        self._input.returnPressed.connect(self._submit)
+        row.addWidget(self._input, stretch=1)
 
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
-        plus = QPushButton("+")
-        plus.setFixedSize(26, 26)
-        plus.setCursor(Qt.CursorShape.PointingHandCursor)
-        plus.setFont(QFont(T.FONT_UI, 12, QFont.Weight.Bold))
-        plus.setStyleSheet(self._chip_style())
-        bottom.addWidget(plus)
+        self._mic = _ChatBarIconButton("mic", 32)
+        self._mic.clicked.connect(self.mute_clicked.emit)
+        row.addWidget(self._mic)
 
-        self._provider_combo = QComboBox()
-        models = providers or ["Live Voice (Gemini)"]
-        self._provider_combo.addItems(models)
-        self._provider_combo.setFixedHeight(26)
-        self._provider_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._provider_combo.setStyleSheet(f"""
-            QComboBox {{
-                background: {T.BG_PANEL}; color: {T.TEXT_MED};
-                border: 1px solid {T.BORDER}; border-radius: 13px;
-                padding: 2px 12px; min-width: 170px; font-size: 11px;
-            }}
-            QComboBox::drop-down {{ border: none; width: 18px; }}
-            QComboBox QAbstractItemView {{
-                background: {T.BG_CARD}; color: {T.WHITE};
-                selection-background-color: rgba(0,209,255,0.15);
-            }}
-        """)
-        bottom.addWidget(self._provider_combo)
+        self._send = _ChatSendButton()
+        self._send.clicked.connect(self._submit)
+        row.addWidget(self._send)
 
-        plan = QPushButton("✧ Plan")
-        plan.setFixedHeight(26)
-        plan.setCursor(Qt.CursorShape.PointingHandCursor)
-        plan.setFont(QFont(T.FONT_UI, 8, QFont.Weight.Bold))
-        plan.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {T.TEXT_MED};
-                border: 1px solid {T.BORDER}; border-radius: 13px; padding: 0 12px;
-            }}
-            QPushButton:hover {{ color: {T.CYAN}; border-color: {T.CYAN_DIM}; }}
-        """)
-        plan.clicked.connect(self.plan_requested.emit)
-        bottom.addWidget(plan)
+        host_lay.addWidget(self._pill, stretch=1)
+        root.addWidget(host)
 
-        bottom.addStretch()
+        self._provider_combo = QComboBox(self)
+        self._provider_combo.addItems(self._providers)
+        self._provider_combo.hide()
 
-        send = QPushButton("Send  ↵")
-        send.setFixedHeight(28)
-        send.setCursor(Qt.CursorShape.PointingHandCursor)
-        send.setFont(QFont(T.FONT_UI, 8, QFont.Weight.Bold))
-        send.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(0,209,255,0.14); color: {T.CYAN};
-                border: 1px solid {T.CYAN_DIM}; border-radius: 14px; padding: 0 16px;
-            }}
-            QPushButton:hover {{ background: rgba(0,209,255,0.24); }}
-        """)
-        send.clicked.connect(self._submit)
-        bottom.addWidget(send)
-        ib_lay.addLayout(bottom)
-        lay.addWidget(input_box)
-
-        hint = QLabel("🎙  Voice is always on · Enter to send · Shift+Enter for a new line")
-        hint.setFont(QFont(T.FONT_UI, 7))
-        hint.setStyleSheet(f"color: {T.TEXT_DIM}; background: transparent;")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(hint)
-
-    def _chip_style(self) -> str:
-        return f"""
-            QPushButton {{
-                background: {T.BG_PANEL}; color: {T.TEXT_MED};
-                border: 1px solid {T.BORDER}; border-radius: 13px;
-            }}
-            QPushButton:hover {{ color: {T.CYAN}; border-color: {T.CYAN_DIM}; }}
-        """
+    def _show_extras_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: {T.BG_CARD}; color: {T.CHAT_TEXT}; border: 1px solid {T.BORDER}; padding: 6px 0; }}"
+            "QMenu::item { padding: 8px 18px; }"
+            "QMenu::item:selected { background: rgba(255,255,255,0.08); }"
+        )
+        prov_menu = menu.addMenu("Model")
+        for item in self._providers:
+            action = prov_menu.addAction(item)
+            action.triggered.connect(lambda _, t=item: self._provider_combo.setCurrentText(t))
+        menu.addSeparator()
+        plan_action = menu.addAction("Plan mode")
+        plan_action.triggered.connect(self.plan_requested.emit)
+        menu.exec(self._attach.mapToGlobal(QPoint(0, -8)))
 
     def _submit(self):
-        text = self._input.toPlainText().strip()
+        text = self._input.text().strip()
         if text:
             self._input.clear()
             self.submitted.emit(text)
@@ -1378,10 +2586,135 @@ class CenterInputBar(QWidget):
             return "auto"
         return text.split(" — ")[0].strip().lower()
 
-    def eventFilter(self, obj, event):
-        if obj is self._input and event.type() == QEvent.Type.KeyPress:
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    self._submit()
-                    return True
-        return super().eventFilter(obj, event)
+    def set_muted(self, muted: bool) -> None:
+        self._mic.set_muted(bool(muted))
+
+
+class ChatCenterPane(QWidget):
+    """Screenshot-matched center workspace: header, HUD, chat feed, input bar."""
+
+    submitted = pyqtSignal(str)
+    plan_requested = pyqtSignal()
+    mute_clicked = pyqtSignal()
+
+    def __init__(self, providers: list[str], dashboard_hud: QWidget | None = None, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"background: {T.CHAT_BG};")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self._top = QWidget()
+        self._top.setFixedHeight(44)
+        self._top.setStyleSheet(f"background: {T.BG}; border: none;")
+        tl = QHBoxLayout(self._top)
+        tl.setContentsMargins(20, 0, 20, 0)
+        self._online_label = QLabel("●  SYSTEM ONLINE")
+        self._online_label.setFont(QFont(T.CHAT_FONT, 11, QFont.Weight.Medium))
+        self._online_label.setStyleSheet(f"color: {T.SB_STATUS_ON}; background: transparent;")
+        tl.addWidget(self._online_label)
+        tl.addStretch()
+
+        self.model_combo = QComboBox()
+        model_items = providers or ["Live Voice (Gemini)", "Auto Router"]
+        self.model_combo.addItems(model_items)
+        self.model_combo.setFixedHeight(30)
+        self.model_combo.setMinimumWidth(140)
+        self.model_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.model_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {T.BG_CARD}; color: {T.CHAT_TEXT};
+                border: 1px solid {T.BORDER}; border-radius: 15px; padding: 0 14px;
+            }}
+            QComboBox::drop-down {{ border: none; width: 18px; }}
+            QComboBox QAbstractItemView {{
+                background: {T.BG_ELEVATED}; color: {T.CHAT_TEXT};
+                selection-background-color: rgba(64,224,208,0.15);
+            }}
+        """)
+        tl.addWidget(self.model_combo)
+        lay.addWidget(self._top)
+
+        self._stack = QStackedWidget()
+        lay.addWidget(self._stack, stretch=1)
+
+        # Dashboard — same HudCanvas look as Chat, with voice-reactive motion
+        dash_hud = dashboard_hud if dashboard_hud is not None else hud_widget
+        self._dashboard = DashboardHeroView(dash_hud)
+        self._dashboard.submitted.connect(self.submitted.emit)
+        self._dashboard.mute_clicked.connect(self.mute_clicked.emit)
+        self._stack.addWidget(self._dashboard)
+
+        # Chat — HUD top-right + screenshot feed + input
+        self._chat_page = QWidget()
+        self._chat_page.setStyleSheet(f"background: {T.CHAT_BG};")
+        chat_lay = QVBoxLayout(self._chat_page)
+        chat_lay.setContentsMargins(0, 0, 0, 0)
+        chat_lay.setSpacing(0)
+
+        self._hud_header = _ChatHudHeader()
+        chat_lay.addWidget(self._hud_header, stretch=0)
+
+        self._chat_body = QStackedWidget()
+        self._chat_body.setStyleSheet(f"background: {T.CHAT_BG};")
+        self._empty_hero = _ChatEmptyHero()
+        self._conv = ConversationView()
+        self._conv.messages_changed.connect(self._on_messages_changed)
+        self._chat_body.addWidget(self._empty_hero)
+        self._chat_body.addWidget(self._conv)
+        chat_lay.addWidget(self._chat_body, stretch=1)
+
+        self._input_bar = CenterInputBar(providers)
+        self._input_bar.submitted.connect(self.submitted.emit)
+        self._input_bar.plan_requested.connect(self.plan_requested.emit)
+        self._input_bar.mute_clicked.connect(self.mute_clicked.emit)
+        chat_lay.addWidget(self._input_bar)
+
+        self._stack.addWidget(self._chat_page)
+        self._stack.setCurrentIndex(0)
+
+        self._hud = self._hud_header.orb_widget()
+        self._hud_host = QWidget()
+        self._hud_host.hide()
+
+        self._on_messages_changed(self._conv.has_messages())
+
+    def chat_orb(self) -> _JarvisChatOrb:
+        return self._hud
+
+    @property
+    def conv(self) -> ConversationView:
+        return self._conv
+
+    @property
+    def input_bar(self) -> CenterInputBar:
+        return self._input_bar
+
+    def set_hud_compact(self, compact: bool) -> None:
+        self._hud_header.set_compact(compact)
+
+    def set_view_mode(self, mode: str) -> None:
+        """Dashboard = hero HUD; chat = screenshot conversation layout."""
+        dashboard = mode == "dashboard"
+        self._top.setVisible(dashboard)
+        self._stack.setCurrentIndex(0 if dashboard else 1)
+
+    def set_muted(self, muted: bool) -> None:
+        self._input_bar.set_muted(muted)
+        self._dashboard.set_muted(muted)
+        self._hud.muted = bool(muted)
+
+    def set_speaking(self, speaking: bool) -> None:
+        self._dashboard.set_speaking(speaking)
+        self._hud.speaking = bool(speaking)
+
+    def set_voice_level(self, level: float) -> None:
+        self._dashboard.set_voice_level(level)
+        self._hud.set_voice_level(level)
+
+    def set_state(self, state: str) -> None:
+        self._hud.state = state
+
+    def _on_messages_changed(self, has_messages: bool) -> None:
+        self._chat_body.setCurrentIndex(1 if has_messages else 0)

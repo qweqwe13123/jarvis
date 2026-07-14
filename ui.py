@@ -30,10 +30,23 @@ from PyQt6.QtWidgets import (
 )
 
 from memory import workspace_manager as ws
-from jarvis_ui.components import NavSidebar, ChatPanel, JarvisConsole, CenterInputBar, PreviewPanel, ConversationView, WORKFLOW_STEPS
+from jarvis_ui.components import (
+    NavSidebar, ChatPanel, JarvisConsole, CenterInputBar, PreviewPanel,
+    ConversationView, ChatCenterPane, WORKFLOW_STEPS,
+)
 from jarvis_ui.website_builder import WebsiteBuilderView
 from jarvis_ui.code_assistant import CodeAssistantView
+from jarvis_ui.deep_research import DeepResearchView
 from jarvis_ui.maps_prospector import MapsProspectorView
+from jarvis_ui.connectors import ConnectorsView
+from jarvis_ui.computer_use import ComputerUseView
+from jarvis_ui.coming_soon import ComingSoonView
+from jarvis_ui.almost_ready import AlmostReadyView
+from jarvis_ui.early_access import EarlyAccessView
+from jarvis_ui.floating_overlay import FloatingOverlay
+from jarvis_ui.global_hotkey import GlobalHotkeyService, default_hotkey, hotkey_display
+from jarvis_ui.app_tray import AppTrayController
+from jarvis_ui import theme as T
 from core.updater.controller import UpdateController
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
@@ -48,8 +61,9 @@ API_FILE   = CONFIG_DIR / "api_keys.json"
 
 _DEFAULT_W, _DEFAULT_H = 1480, 920
 _MIN_W,     _MIN_H     = 1180, 720
-_LEFT_W  = 268
-_RIGHT_W = 500
+_LEFT_W  = 220
+_LEFT_MIN = 200
+_LEFT_MAX = 300
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
@@ -60,10 +74,10 @@ class C:
     PANEL2    = "#0c1824"
     BORDER    = "#143040"
     BORDER_B  = "#1e4a62"
-    BORDER_A  = "#1a3d54"
+    BORDER_A  = "#1e4a62"
     PRI       = "#00d1ff"
     PRI_DIM   = "#0a6a88"
-    PRI_GHO   = "#0a2030"
+    PRI_GHO   = "rgba(0,209,255,0.10)"
     ACC       = "#ff5c00"
     ACC2      = "#ffcc00"
     GREEN     = "#00ff94"
@@ -282,6 +296,93 @@ class HudCanvas(QWidget):
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._step)
         self._tmr.start(16)
+        self._compact = False
+        self._dashboard_mode = False
+        self._header_strip = False
+        self._voice_level = 0.0
+        self._smooth_voice = 0.0
+        self.user_speaking = False
+
+    def set_dashboard_mode(self, enabled: bool) -> None:
+        self._dashboard_mode = bool(enabled)
+        if enabled:
+            self.set_compact(False)
+            self._header_strip = False
+        self.update()
+
+    def set_header_strip(self, enabled: bool) -> None:
+        """Compact chat header — circle only, no status line or waveform."""
+        self._header_strip = bool(enabled)
+        if enabled:
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+        else:
+            self.setMinimumSize(300, 300)
+            self.setMaximumHeight(16777215)
+        self.update()
+
+    def _paint_header_badge(self, p: QPainter, w: int, h: int) -> None:
+        """Crisp top-right chat orb — readable at ~76px."""
+        from jarvis_ui import theme as chat_t
+
+        p.fillRect(0, 0, w, h, QColor(chat_t.CHAT_BG))
+        cx, cy = w / 2.0, h / 2.0
+        fw = min(w, h)
+        accent = QColor(chat_t.CHAT_ASSIST_ACCENT)
+        if self.muted:
+            accent = QColor(chat_t.RED)
+        active = self.speaking or self.user_speaking or self.state in (
+            "THINKING", "PROCESSING", "SPEAKING",
+        )
+        pulse = 1.0 + (0.08 if active else 0.0) + min(0.12, self._smooth_voice * 0.12)
+
+        for i, (r_frac, alpha) in enumerate(
+            ((0.46, 35), (0.38, 55), (0.30, 80), (0.22, 110))
+        ):
+            rr = fw * r_frac * pulse
+            p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), alpha), 1.1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QRectF(cx - rr, cy - rr, rr * 2, rr * 2))
+
+        for idx, (r_frac, arc_len) in enumerate(((0.42, 95), (0.34, 70))):
+            ring_r = fw * r_frac
+            a_val = 170 - idx * 40
+            p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), a_val), 1.6))
+            rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
+            start = int(self._rings[idx] * 16)
+            p.drawArc(rect, start, int(arc_len * 16))
+
+        p.setPen(QPen(accent, 1.3))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(cx - fw * 0.13, cy - fw * 0.13, fw * 0.26, fw * 0.26))
+
+        font = QFont(chat_t.CHAT_FONT, max(6, int(fw * 0.105)), QFont.Weight.DemiBold)
+        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 108)
+        p.setFont(font)
+        p.setPen(QPen(accent))
+        p.drawText(
+            QRectF(cx - fw * 0.34, cy - fw * 0.11, fw * 0.68, fw * 0.22),
+            Qt.AlignmentFlag.AlignCenter,
+            "J.A.R.V.I.S.",
+        )
+
+    def set_voice_level(self, level: float) -> None:
+        self._voice_level = max(0.0, float(level))
+        if self.muted:
+            self._voice_level = 0.0
+
+    def set_compact(self, compact: bool) -> None:
+        compact = bool(compact)
+        if compact == self._compact:
+            return
+        self._compact = compact
+        if compact:
+            self.setMinimumHeight(100)
+            self.setMaximumHeight(140)
+        else:
+            self.setMinimumHeight(300)
+            self.setMaximumHeight(16777215)
+        self.updateGeometry()
 
     def _load_face(self, path: str):
         try:
@@ -303,8 +404,19 @@ class HudCanvas(QWidget):
     def _step(self):
         self._tick += 1
         now = time.time()
-        if now - self._last_t > (0.12 if self.speaking else 0.5):
-            if self.speaking:
+
+        voice_threshold = 380.0
+        target_voice = 1.0 if self._voice_level > voice_threshold and not self.muted else 0.0
+        self._smooth_voice += (target_voice - self._smooth_voice) * 0.28
+        self.user_speaking = self._voice_level > voice_threshold and not self.muted
+        voice_boost = min(1.0, self._voice_level / 3200.0) if self.user_speaking else 0.0
+
+        interval = 0.10 if (self.speaking or self.user_speaking) else 0.5
+        if now - self._last_t > interval:
+            if self.user_speaking:
+                self._tgt_scale = random.uniform(1.04, 1.10 + voice_boost * 0.06)
+                self._tgt_halo  = random.uniform(130, 185 + voice_boost * 40)
+            elif self.speaking:
                 self._tgt_scale = random.uniform(1.06, 1.14)
                 self._tgt_halo  = random.uniform(145, 190)
             elif self.muted:
@@ -315,25 +427,33 @@ class HudCanvas(QWidget):
                 self._tgt_halo  = random.uniform(48, 68)
             self._last_t = now
 
-        sp = 0.38 if self.speaking else 0.15
+        active = self.speaking or self.user_speaking
+        sp = 0.38 if active else 0.15
         self._scale += (self._tgt_scale - self._scale) * sp
         self._halo  += (self._tgt_halo  - self._halo)  * sp
 
-        speeds = [1.3, -0.9, 2.0] if self.speaking else [0.55, -0.35, 0.9]
+        if self.user_speaking:
+            speeds = [2.2 + voice_boost, -1.6 - voice_boost, 2.8 + voice_boost]
+        elif self.speaking:
+            speeds = [1.3, -0.9, 2.0]
+        else:
+            speeds = [0.55, -0.35, 0.9]
         for i, spd in enumerate(speeds):
             self._rings[i] = (self._rings[i] + spd) % 360
 
-        self._scan  = (self._scan  + (3.0 if self.speaking else 1.3)) % 360
-        self._scan2 = (self._scan2 + (-2.0 if self.speaking else -0.75)) % 360
+        scan_spd = 4.5 if self.user_speaking else (3.0 if self.speaking else 1.3)
+        self._scan  = (self._scan  + scan_spd) % 360
+        self._scan2 = (self._scan2 + (-scan_spd * 0.7)) % 360
 
         fw  = min(self.width(), self.height())
         lim = fw * 0.74
-        spd = 4.2 if self.speaking else 2.0
+        spd = 5.5 if self.user_speaking else (4.2 if self.speaking else 2.0)
         self._pulses = [r + spd for r in self._pulses if r + spd < lim]
-        if len(self._pulses) < 3 and random.random() < (0.07 if self.speaking else 0.025):
+        pulse_chance = 0.18 if self.user_speaking else (0.07 if self.speaking else 0.025)
+        if len(self._pulses) < 4 and random.random() < pulse_chance:
             self._pulses.append(0.0)
 
-        if self.speaking and random.random() < 0.28:
+        if (self.speaking or self.user_speaking) and random.random() < 0.28:
             cx, cy = self.width() / 2, self.height() / 2
             ang = random.uniform(0, 2 * math.pi)
             r_s = fw * 0.28
@@ -356,17 +476,21 @@ class HudCanvas(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), qcol(C.BG))
-
         W, H = self.width(), self.height()
+        if self._header_strip:
+            self._paint_header_badge(p, W, H)
+            return
+
+        p.fillRect(self.rect(), qcol(C.BG))
         cx, cy = W / 2, H / 2
         fw = min(W, H)
 
-        # grid dots
-        p.setPen(QPen(qcol(C.PRI_GHO), 1))
-        for x in range(0, W, 48):
-            for y in range(0, H, 48):
-                p.drawPoint(x, y)
+        # grid dots (hidden in compact chat header strip)
+        if not self._header_strip:
+            p.setPen(QPen(qcol(C.PRI_GHO), 1))
+            for x in range(0, W, 48):
+                for y in range(0, H, 48):
+                    p.drawPoint(x, y)
 
         r_face = fw * 0.31
 
@@ -431,18 +555,8 @@ class HudCanvas(QWidget):
         p.drawLine(QPointF(cx, cy - ch_r), QPointF(cx, cy - gap_h))
         p.drawLine(QPointF(cx, cy + gap_h), QPointF(cx, cy + ch_r))
 
-        # corner brackets
-        bl = 24
-        bc = qcol(C.PRI, 210)
-        hl, hr = cx - fw // 2, cx + fw // 2
-        ht, hb = cy - fw // 2, cy + fw // 2
-        p.setPen(QPen(bc, 2))
-        for bx, by, dx, dy in [(hl,ht,1,1),(hr,ht,-1,1),(hl,hb,1,-1),(hr,hb,-1,-1)]:
-            p.drawLine(QPointF(bx, by), QPointF(bx + dx * bl, by))
-            p.drawLine(QPointF(bx, by), QPointF(bx, by + dy * bl))
-
-        # face
-        if self._face_px:
+        # face — dashboard hero uses the same text-only core as chat fallback
+        if self._face_px and not self._dashboard_mode:
             fsz    = int(fw * 0.62 * self._scale)
             scaled = self._face_px.scaled(
                 fsz, fsz,
@@ -460,10 +574,18 @@ class HudCanvas(QWidget):
                 p.setBrush(QBrush(QColor(int(oc[0]*frc), int(oc[1]*frc), int(oc[2]*frc), a)))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(cx - r2, cy - r2, r2 * 2, r2 * 2))
+            label_size = 22 if self._dashboard_mode else 13
             p.setPen(QPen(qcol(C.PRI, min(255, int(self._halo * 2))), 1))
-            p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-            p.drawText(QRectF(cx - 80, cy - 14, 160, 28),
-                       Qt.AlignmentFlag.AlignCenter, "J.A.R.V.I.S")
+            label_font = QFont(
+                T.CHAT_FONT if self._dashboard_mode else "Courier New",
+                label_size,
+                QFont.Weight.DemiBold if self._dashboard_mode else QFont.Weight.Bold,
+            )
+            if self._dashboard_mode:
+                label_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 138)
+            p.setFont(label_font)
+            p.drawText(QRectF(cx - fw * 0.22, cy - 18, fw * 0.44, 36),
+                       Qt.AlignmentFlag.AlignCenter, "J.A.R.V.I.S.")
 
         # particles
         for pt in self._particles:
@@ -472,43 +594,45 @@ class HudCanvas(QWidget):
             p.setBrush(QBrush(qcol(C.PRI, a)))
             p.drawEllipse(QPointF(pt[0], pt[1]), 2.5, 2.5)
 
-        # status text
-        sy = cy + fw * 0.40
-        if self.muted:
-            txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
-        elif self.speaking:
-            txt, col = "●  SPEAKING",  qcol(C.ACC)
-        elif self.state == "THINKING":
-            sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
-        elif self.state == "PROCESSING":
-            sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
-        elif self.state == "LISTENING":
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
-        else:
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  {self.state}", qcol(C.PRI)
-
-        p.setPen(QPen(col, 1))
-        p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
-        p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
-
-        # waveform
-        wy = sy + 30
-        N, bw = 36, 8
-        wx0 = (W - N * bw) / 2
-        for i in range(N):
+        # status text + waveform (hidden on dashboard hero / compact chat header)
+        if not self._dashboard_mode and not self._header_strip:
+            sy = cy + fw * 0.40
             if self.muted:
-                hgt, cl = 2, qcol(C.MUTED_C)
+                txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
             elif self.speaking:
-                hgt = random.randint(3, 20)
-                cl  = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
+                txt, col = "●  SPEAKING",  qcol(C.ACC)
+            elif self.user_speaking:
+                txt, col = "●  HEARING YOU", qcol(C.GREEN)
+            elif self.state == "THINKING":
+                sym = "◈" if self._blink else "◇"
+                txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
+            elif self.state == "PROCESSING":
+                sym = "▷" if self._blink else "▶"
+                txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
+            elif self.state == "LISTENING":
+                sym = "●" if self._blink else "○"
+                txt, col = f"{sym}  Always Ready",  qcol(C.GREEN)
             else:
-                hgt = int(3 + 2 * math.sin(self._tick * 0.09 + i * 0.6))
-                cl  = qcol(C.BORDER_B)
-            p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
+                sym = "●" if self._blink else "○"
+                txt, col = f"{sym}  {self.state}", qcol(C.PRI)
+
+            p.setPen(QPen(col, 1))
+            p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+            p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
+
+            wy = sy + 30
+            N, bw = 36, 8
+            wx0 = (W - N * bw) / 2
+            for i in range(N):
+                if self.muted:
+                    hgt, cl = 2, qcol(C.MUTED_C)
+                elif self.speaking or self.user_speaking:
+                    hgt = random.randint(3, 20)
+                    cl  = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
+                else:
+                    hgt = int(3 + 2 * math.sin(self._tick * 0.09 + i * 0.6))
+                    cl  = qcol(C.BORDER_B)
+                p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
 
 class MetricBar(QWidget):
 
@@ -866,16 +990,26 @@ class _DropCanvas(QWidget):
 
 
 class SetupOverlay(QWidget):
+    """First-boot gate: Gemini key + OS. Premium glass card with key guide link."""
+
     done = pyqtSignal(str, str)
+
+    GEMINI_KEY_URL = "https://aistudio.google.com/apikey"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("SetupOverlay")
         self.setStyleSheet(f"""
-            SetupOverlay {{
-                background: rgba(0, 6, 10, 245);
-                border: 1px solid {C.BORDER_B};
-                border-radius: 6px;
+            QWidget#SetupOverlay {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(5, 12, 22, 252),
+                    stop:0.45 rgba(8, 22, 36, 250),
+                    stop:1 rgba(4, 10, 18, 252)
+                );
+                border: 1px solid rgba(0, 209, 255, 0.28);
+                border-radius: 18px;
             }}
         """)
 
@@ -885,111 +1019,187 @@ class SetupOverlay(QWidget):
         self._sel_os = detected
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 22, 30, 22)
-        layout.setSpacing(8)
+        layout.setContentsMargins(28, 26, 28, 26)
+        layout.setSpacing(0)
 
-        def _lbl(txt, font_size=9, bold=False, color=C.PRI,
-                 align=Qt.AlignmentFlag.AlignCenter):
-            w = QLabel(txt)
-            w.setAlignment(align)
-            w.setFont(QFont("Courier New", font_size,
-                            QFont.Weight.Bold if bold else QFont.Weight.Normal))
-            w.setStyleSheet(f"color: {color}; background: transparent;")
-            return w
-
-        layout.addWidget(_lbl("◈  INITIALISATION REQUIRED", 13, True))
-        layout.addWidget(_lbl("Configure J.A.R.V.I.S. before first boot.", 9, color=C.PRI_DIM))
+        brand = QLabel("AURA")
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand.setFont(QFont("SF Pro Display", 11, QFont.Weight.Bold))
+        brand.setStyleSheet(
+            f"color: {C.PRI}; background: transparent; letter-spacing: 4px;"
+        )
+        layout.addWidget(brand)
         layout.addSpacing(6)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep)
-        layout.addSpacing(4)
+        title = QLabel("Initialize your workspace")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setFont(QFont("SF Pro Display", 18, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
+        layout.addWidget(title)
+        layout.addSpacing(6)
 
-        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM,
-                               align=Qt.AlignmentFlag.AlignLeft))
+        subtitle = QLabel(
+            "Add a free Gemini API key once — AURA routes voice, agents,\n"
+            "and tools through your key. Nothing leaves your machine by default."
+        )
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setFont(QFont("SF Pro Text", 11))
+        subtitle.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        layout.addWidget(subtitle)
+        layout.addSpacing(18)
+
+        key_hdr = QHBoxLayout()
+        key_lbl = QLabel("Gemini API key")
+        key_lbl.setFont(QFont("SF Pro Text", 10, QFont.Weight.Medium))
+        key_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        key_hdr.addWidget(key_lbl)
+        key_hdr.addStretch()
+        layout.addLayout(key_hdr)
+        layout.addSpacing(8)
+
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_input.setPlaceholderText("AIza…")
-        self._key_input.setFont(QFont("Courier New", 10))
-        self._key_input.setFixedHeight(32)
+        self._key_input.setPlaceholderText("Paste key · starts with AIza…")
+        self._key_input.setFont(QFont("SF Mono", 12))
+        self._key_input.setFixedHeight(44)
         self._key_input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d12; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+                background: rgba(0, 12, 20, 0.85);
+                color: {C.WHITE};
+                border: 1px solid {C.BORDER_B};
+                border-radius: 12px;
+                padding: 0 14px;
+                selection-background-color: {C.PRI_DIM};
             }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+            QLineEdit:focus {{
+                border: 1px solid {C.PRI};
+                background: rgba(0, 18, 28, 0.95);
+            }}
         """)
         layout.addWidget(self._key_input)
-        layout.addSpacing(12)
+        layout.addSpacing(10)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep2)
+        link = QLabel(
+            f'<a href="{self.GEMINI_KEY_URL}" '
+            f'style="color:{C.PRI}; text-decoration:none;">'
+            f"Get a free Gemini API key at Google AI Studio →</a>"
+        )
+        link.setOpenExternalLinks(True)
+        link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        link.setFont(QFont("SF Pro Text", 11))
+        link.setStyleSheet("background: transparent;")
+        layout.addWidget(link)
+
+        hint = QLabel("Takes ~30 seconds · free tier · no credit card required")
+        hint.setFont(QFont("SF Pro Text", 9))
+        hint.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        layout.addWidget(hint)
+        layout.addSpacing(20)
+
+        os_lbl = QLabel("Operating system")
+        os_lbl.setFont(QFont("SF Pro Text", 10, QFont.Weight.Medium))
+        os_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        layout.addWidget(os_lbl)
         layout.addSpacing(4)
 
-        layout.addWidget(_lbl("OPERATING SYSTEM", 8, color=C.TEXT_DIM,
-                               align=Qt.AlignmentFlag.AlignLeft))
         det_name = {"windows": "Windows", "mac": "macOS", "linux": "Linux"}[detected]
-        layout.addWidget(_lbl(f"Auto-detected: {det_name}", 8, color=C.ACC2,
-                               align=Qt.AlignmentFlag.AlignLeft))
+        det = QLabel(f"Auto-detected: {det_name}")
+        det.setFont(QFont("SF Pro Text", 9))
+        det.setStyleSheet(f"color: {C.ACC2}; background: transparent;")
+        layout.addWidget(det)
+        layout.addSpacing(10)
 
-        os_row = QHBoxLayout(); os_row.setSpacing(6)
+        os_row = QHBoxLayout()
+        os_row.setSpacing(8)
         self._os_btns: dict[str, QPushButton] = {}
-        for key, label in [("windows","⊞  Windows"),("mac","  macOS"),("linux","🐧  Linux")]:
+        for key, label in (("windows", "Windows"), ("mac", "macOS"), ("linux", "Linux")):
             btn = QPushButton(label)
-            btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-            btn.setFixedHeight(32)
+            btn.setFont(QFont("SF Pro Text", 11, QFont.Weight.Medium))
+            btn.setFixedHeight(40)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, k=key: self._sel(k))
             os_row.addWidget(btn)
             self._os_btns[key] = btn
         layout.addLayout(os_row)
         self._sel(detected)
-        layout.addSpacing(12)
+        layout.addSpacing(22)
 
-        init_btn = QPushButton("▸  INITIALISE SYSTEMS")
-        init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        init_btn.setFixedHeight(36)
+        init_btn = QPushButton("Start AURA")
+        init_btn.setFont(QFont("SF Pro Text", 13, QFont.Weight.DemiBold))
+        init_btn.setFixedHeight(48)
         init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         init_btn.setStyleSheet(f"""
             QPushButton {{
-                background: transparent; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00b8e6, stop:1 #00d1ff
+                );
+                color: #041018;
+                border: none;
+                border-radius: 14px;
             }}
             QPushButton:hover {{
-                background: {C.PRI_GHO}; border: 1px solid {C.PRI};
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00d1ff, stop:1 #5ae4ff
+                );
+            }}
+            QPushButton:pressed {{
+                background: #00a8cc;
             }}
         """)
         init_btn.clicked.connect(self._submit)
         layout.addWidget(init_btn)
+        layout.addSpacing(8)
+
+        foot = QLabel("Keys stay in config/api_keys.json on this device.")
+        foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        foot.setFont(QFont("SF Pro Text", 9))
+        foot.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        layout.addWidget(foot)
 
     def _sel(self, key: str):
         self._sel_os = key
-        pal = {"windows":(C.PRI,"#001a22"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#001a0d")}
         for k, btn in self._os_btns.items():
             if k == key:
-                fg, bg = pal[k]
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: {fg}; color: {bg};
-                        border: none; border-radius: 3px; font-weight: bold;
+                        background: rgba(0, 209, 255, 0.16);
+                        color: {C.WHITE};
+                        border: 1px solid {C.PRI};
+                        border-radius: 12px;
+                        font-weight: 600;
                     }}
                 """)
             else:
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: #000d12; color: {C.TEXT_DIM};
-                        border: 1px solid {C.BORDER}; border-radius: 3px;
+                        background: rgba(0, 12, 20, 0.6);
+                        color: {C.TEXT_DIM};
+                        border: 1px solid {C.BORDER};
+                        border-radius: 12px;
                     }}
-                    QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+                    QPushButton:hover {{
+                        color: {C.TEXT};
+                        border: 1px solid {C.BORDER_B};
+                        background: rgba(0, 18, 28, 0.85);
+                    }}
                 """)
 
     def _submit(self):
         key = self._key_input.text().strip()
         if not key:
-            self._key_input.setStyleSheet(
-                self._key_input.styleSheet() +
-                f" QLineEdit {{ border: 1px solid {C.RED}; }}"
-            )
+            self._key_input.setStyleSheet(f"""
+                QLineEdit {{
+                    background: rgba(0, 12, 20, 0.85);
+                    color: {C.WHITE};
+                    border: 1px solid {C.RED};
+                    border-radius: 12px;
+                    padding: 0 14px;
+                }}
+            """)
+            self._key_input.setFocus()
             return
         self.done.emit(key, self._sel_os)
 
@@ -1139,6 +1349,7 @@ class MainWindow(QMainWindow):
     _code_delta_sig = pyqtSignal(str)
     _code_done_sig = pyqtSignal(str)
     _code_err_sig = pyqtSignal(str)
+    _user_voice_sig = pyqtSignal(float)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1160,6 +1371,7 @@ class MainWindow(QMainWindow):
         self._muted           = False
         self._current_file: str | None = None
         self._active_agent = "general"
+        self._center_view_mode = "dashboard"
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -1173,34 +1385,59 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
 
         self._nav = NavSidebar()
-        self._nav.setFixedWidth(_LEFT_W)
-        body.addWidget(self._nav, stretch=0)
+        self._nav.setMinimumWidth(_LEFT_MIN)
+        self._nav.setMaximumWidth(_LEFT_MAX)
 
-        self._workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._workspace_splitter.setHandleWidth(2)
-        self._workspace_splitter.setChildrenCollapsible(False)
-        self._workspace_splitter.setStyleSheet(f"""
-            QSplitter::handle {{ background: {C.BORDER}; }}
-            QSplitter::handle:hover {{ background: {C.PRI_DIM}; }}
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Invisible handle: the sidebar scrollbar is the only visual divider.
+        # Keep a slim hit-target so the sidebar can still be resized by dragging.
+        self._main_splitter.setHandleWidth(3)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background: transparent;
+                border: none;
+                margin: 0;
+                padding: 0;
+            }
+            QSplitter::handle:hover { background: transparent; }
+            QSplitter::handle:pressed { background: transparent; }
         """)
-        self._center_panel = self._build_center_panel(face_path)
-        self._right_panel = self._build_right_panel()
-        self._workspace_splitter.addWidget(self._center_panel)
-        self._workspace_splitter.addWidget(self._right_panel)
-        self._workspace_splitter.setSizes([max(520, self.width() - _LEFT_W - _RIGHT_W), _RIGHT_W])
+        self._main_splitter.addWidget(self._nav)
 
-        # The main work area swaps between the default voice workspace and the
-        # full-screen Website Builder (chat + live preview) depending on the
-        # selected agent.
+        self._center_panel = self._build_center_panel(face_path)
+        self._init_hidden_services()
+
         self._workspace_stack = QStackedWidget()
-        self._workspace_stack.addWidget(self._workspace_splitter)   # index 0 (default)
+        self._workspace_stack.addWidget(self._center_panel)
         self._builder = WebsiteBuilderView()
-        self._workspace_stack.addWidget(self._builder)              # index 1 (website)
+        self._workspace_stack.addWidget(self._builder)
         self._code_assistant = CodeAssistantView()
-        self._workspace_stack.addWidget(self._code_assistant)       # index 2 (code)
+        self._workspace_stack.addWidget(self._code_assistant)
         self._maps_prospector = MapsProspectorView()
-        self._workspace_stack.addWidget(self._maps_prospector)      # index 3 (maps_prospector)
-        body.addWidget(self._workspace_stack, stretch=1)
+        self._workspace_stack.addWidget(self._maps_prospector)
+        self._deep_research = DeepResearchView()
+        self._workspace_stack.addWidget(self._deep_research)
+        self._connectors = ConnectorsView()
+        self._workspace_stack.addWidget(self._connectors)
+        self._computer_use = ComputerUseView()
+        self._workspace_stack.addWidget(self._computer_use)
+        self._coming_soon = ComingSoonView()
+        self._workspace_stack.addWidget(self._coming_soon)
+        self._almost_ready = AlmostReadyView()
+        self._workspace_stack.addWidget(self._almost_ready)
+        self._early_access = EarlyAccessView()
+        self._workspace_stack.addWidget(self._early_access)
+        self._main_splitter.addWidget(self._workspace_stack)
+
+        saved_w = int(ws.get_settings().get("sidebar_width", _LEFT_W) or _LEFT_W)
+        saved_w = max(_LEFT_MIN, min(_LEFT_MAX, saved_w))
+        self._main_splitter.setSizes([saved_w, max(800, self.width() - saved_w)])
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
+        self._main_splitter.splitterMoved.connect(self._on_sidebar_resized)
+
+        body.addWidget(self._main_splitter, stretch=1)
 
         root.addLayout(body, stretch=1)
 
@@ -1225,20 +1462,171 @@ class MainWindow(QMainWindow):
         self._chat_user_sig.connect(self._on_user_message)
         self._chat_ai_sig.connect(self._on_ai_chat_response)
         self._preview_sig.connect(self._on_preview)
-        self._stream_delta_sig.connect(self._conv.stream_delta)
+        self._stream_delta_sig.connect(self._on_stream_delta)
         self._stream_end_sig.connect(self._on_stream_end)
         self._activity_sig.connect(self._on_activity)
+        self._user_voice_sig.connect(self._on_user_voice_level)
         self._load_active_conversation()
 
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
+        # Show key gate AFTER first paint, and BEFORE native hotkeys (those can SIGTRAP).
         if not self._ready:
-            self._show_setup()
+            QTimer.singleShot(50, self._ensure_setup_overlay)
 
         sc_mute = QShortcut(QKeySequence("F4"), self)
         sc_mute.activated.connect(self._toggle_mute)
         sc_full = QShortcut(QKeySequence("F11"), self)
         sc_full.activated.connect(self._toggle_fullscreen)
+
+        self._force_quit = False
+        self._float_session = False
+        # Defer native tray/hotkey/wake UI — they caused macOS SIGTRAP before setup painted.
+        QTimer.singleShot(1500, self._safe_init_floating_overlay)
+
+    def _safe_init_floating_overlay(self) -> None:
+        try:
+            self._init_floating_overlay()
+        except Exception as e:
+            print(f"[AURA] Floating overlay / hotkey init deferred: {e}")
+    def _init_floating_overlay(self) -> None:
+        """Create once: floating launcher, global hotkey, system tray."""
+        self._float = FloatingOverlay()
+        self._float.submitted.connect(self._on_float_submit)
+        self._float.home_clicked.connect(self._on_float_home)
+        self._float.voice_clicked.connect(self._toggle_mute)
+        self._float.dismissed.connect(lambda: setattr(self, "_float_session", False))
+        self._float_skip_user_mirror = False
+
+        self._hotkeys = GlobalHotkeyService(self)
+        self._hotkeys.set_host(self)
+        self._hotkeys.triggered.connect(self._float.toggle)
+        self._hotkeys.status_changed.connect(self._computer_use.set_hotkey_status)
+        combo = ws.get_settings().get("overlay_hotkey") or default_hotkey()
+        self._hotkeys.start(combo)
+
+        self._computer_use.hotkey_changed.connect(self._hotkeys.rebind)
+        self._computer_use.open_overlay.connect(self._float.show_animated)
+
+        self._tray = AppTrayController(self)
+        self._tray.open_requested.connect(self._on_tray_open)
+        self._tray.settings_requested.connect(self._open_settings)
+        self._tray.update_requested.connect(self._on_tray_check_updates)
+        self._tray.quit_requested.connect(self._quit_app)
+        self._tray.start()
+
+        self._show_keyboard_shortcuts_overlay_hint()
+        self._start_cloud_entitlement_sync()
+
+    def _start_cloud_entitlement_sync(self) -> None:
+        """Refresh plan from AURA API periodically and on focus."""
+        self._entitlement_timer = QTimer(self)
+        self._entitlement_timer.setInterval(5 * 60 * 1000)
+        self._entitlement_timer.timeout.connect(self._sync_cloud_entitlements)
+        self._entitlement_timer.start()
+        QTimer.singleShot(1500, self._sync_cloud_entitlements)
+
+    def _sync_cloud_entitlements(self) -> None:
+        try:
+            from jarvis_ui import user_account as UA
+
+            if not UA.get_access_token():
+                return
+            UA.refresh_entitlements()
+            if hasattr(self, "_nav"):
+                self._nav.refresh_user_account()
+        except Exception:
+            pass
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        try:
+            from PyQt6.QtCore import QEvent
+
+            if event.type() == QEvent.Type.WindowActivate:
+                self._sync_cloud_entitlements()
+        except Exception:
+            pass
+        super().changeEvent(event)
+
+    def _show_keyboard_shortcuts_overlay_hint(self) -> None:
+        # Extend shortcuts help text next time it's opened — also log once.
+        hk = hotkey_display(ws.get_settings().get("overlay_hotkey") or default_hotkey())
+        if hasattr(self, "_log"):
+            self._log.append_log(f"SYS: Floating overlay ready — press {hk} anytime.")
+
+    def _on_float_submit(self, text: str) -> None:
+        # Stay in the floating window — do not raise the main app.
+        self._float_session = True
+        self._float_skip_user_mirror = True
+        if self.isVisible():
+            self._center_view_mode = "chat"
+            if hasattr(self, "_chat_center"):
+                self._chat_center.set_view_mode("chat")
+            self._active_agent = "general"
+        self._float.add_user(text)
+        self._send_from_bar(text)
+
+    def _on_float_home(self) -> None:
+        self._float.hide_animated()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._on_agent_selected("dashboard")
+
+    def _float_visible(self) -> bool:
+        return hasattr(self, "_float") and self._float.isVisible() and not self._float._closing
+
+    def _ensure_float_for_live(self) -> None:
+        """If main window is hidden, surface the floating chat for voice/replies."""
+        if not hasattr(self, "_float"):
+            return
+        if self.isVisible() and not getattr(self, "_float_session", False):
+            return
+        if not self._float_visible():
+            self._float_session = True
+            self._float.show_animated()
+
+    def _on_tray_open(self) -> None:
+        # Prefer floating overlay; open main only via Home.
+        self._float_session = True
+        self._float.show_animated()
+
+    def _on_tray_check_updates(self) -> None:
+        updater = getattr(self, "_updater_ref", None)
+        if updater is not None and hasattr(updater, "_service"):
+            updater._service.check_for_updates(background=False)
+            if hasattr(self, "_log"):
+                self._log.append_log("SYS: Checking for updates…")
+            return
+        QMessageBox.information(self, "Updates", "Checking for updates…")
+
+    def _quit_app(self) -> None:
+        self._force_quit = True
+        if hasattr(self, "_hotkeys"):
+            self._hotkeys.stop()
+        if hasattr(self, "_tray"):
+            self._tray.stop()
+        if hasattr(self, "_float"):
+            self._float.close()
+            self._float.deleteLater()
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        if self._force_quit:
+            if hasattr(self, "_hotkeys"):
+                self._hotkeys.stop()
+            event.accept()
+            return
+        # Hide to tray / menu bar — do not quit.
+        event.ignore()
+        self.hide()
+        if hasattr(self, "_tray") and self._tray._tray is not None:
+            self._tray.show_message(
+                "Jarvis",
+                f"Still running in the background. "
+                f"Press {hotkey_display(ws.get_settings().get('overlay_hotkey') or default_hotkey())} "
+                f"for the floating bar.",
+            )
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1249,11 +1637,11 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._overlay and self._overlay.isVisible():
-            ow, oh = 460, 390
+            ow, oh = 520, 560
             cw = self.centralWidget()
             self._overlay.setGeometry(
-                (cw.width()  - ow) // 2,
-                (cw.height() - oh) // 2,
+                max(12, (cw.width()  - ow) // 2),
+                max(12, (cw.height() - oh) // 2),
                 ow, oh,
             )
 
@@ -1382,48 +1770,33 @@ class MainWindow(QMainWindow):
         return items
 
     def _build_center_panel(self, face_path: str) -> QWidget:
-        w = QWidget()
-        w.setStyleSheet(f"background: {C.BG};")
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
+        self._dashboard_hud = HudCanvas(face_path)
+        self._dashboard_hud.set_dashboard_mode(True)
+        self._dashboard_hud.setMinimumHeight(360)
 
-        top = QWidget()
-        top.setFixedHeight(44)
-        top.setStyleSheet(f"background: {C.BG}; border-bottom: 1px solid {C.BORDER};")
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(20, 0, 20, 0)
-        online = QLabel("● SYSTEM ONLINE")
-        online.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
-        online.setStyleSheet(f"color: {C.GREEN}; background: transparent; letter-spacing: 1px;")
-        title = QLabel("J.A.R.V.I.S")
-        title.setFont(QFont("Menlo", 14, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 4px;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_top = QLabel("STATUS LISTENING")
-        self._status_top.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
-        self._status_top.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 1px;")
-        self._status_top.setAlignment(Qt.AlignmentFlag.AlignRight)
-        tl.addWidget(online, stretch=1)
-        tl.addWidget(title, stretch=0)
-        tl.addWidget(self._status_top, stretch=1)
-        lay.addWidget(top)
+        self._chat_center = ChatCenterPane(
+            self._available_providers(), dashboard_hud=self._dashboard_hud,
+        )
+        self.hud = self._chat_center.chat_orb()
+        self._conv = self._chat_center.conv
+        self._input_bar = self._chat_center.input_bar
+        self._chat_center.submitted.connect(self._send_from_bar)
+        self._chat_center.plan_requested.connect(self._send_plan_mode)
+        self._chat_center.mute_clicked.connect(self._toggle_mute)
 
-        # Center stays minimal and focused on the JARVIS visualization.
-        self.hud = HudCanvas(face_path)
-        self.hud.setMinimumHeight(320)
-        self.hud.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        lay.addWidget(self.hud, stretch=1)
-
-        # Compatibility shim: chat history now lives in the right Activity stream.
         self._chat = ChatPanel()
         self._chat.hide()
+        self._chat_center.set_view_mode("dashboard")
+        return self._chat_center
 
-        self._input_bar = CenterInputBar(self._available_providers())
-        self._input_bar.submitted.connect(self._send_from_bar)
-        self._input_bar.plan_requested.connect(self._send_plan_mode)
-        lay.addWidget(self._input_bar)
-        return w
+    def _sync_hero_compact(self):
+        if getattr(self, "_center_view_mode", "chat") == "dashboard":
+            if hasattr(self, "_chat_center"):
+                self._chat_center.set_hud_compact(False)
+            return
+        has_messages = hasattr(self, "_conv") and self._conv.has_messages()
+        if hasattr(self, "_chat_center"):
+            self._chat_center.set_hud_compact(has_messages)
 
     def _wire_navigation(self):
         self._nav.new_chat.connect(self._on_new_chat)
@@ -1438,6 +1811,7 @@ class MainWindow(QMainWindow):
         self._nav.chat_delete.connect(self._on_chat_delete)
         self._nav.chat_pin.connect(self._on_chat_pin)
         self._nav.settings_requested.connect(self._open_settings)
+        self._nav.profile_menu_action.connect(self._on_profile_menu_action)
         sc = QShortcut(QKeySequence("Ctrl+N"), self)
         sc.activated.connect(self._on_new_chat)
         sc2 = QShortcut(QKeySequence("Meta+N"), self)
@@ -1453,6 +1827,83 @@ class MainWindow(QMainWindow):
         self._code_err_sig.connect(self._code_assistant.set_error)
         self._code_history: list[dict] = []
 
+    def _on_sidebar_resized(self, _pos: int, _index: int) -> None:
+        w = self._nav.width()
+        if _LEFT_MIN <= w <= _LEFT_MAX:
+            ws.save_settings({"sidebar_width": w})
+
+    def _show_keyboard_shortcuts(self) -> None:
+        QMessageBox.information(
+            self,
+            "Keyboard Shortcuts",
+            "⌘N / Ctrl+N — New session\n"
+            f"{hotkey_display(ws.get_settings().get('overlay_hotkey') or default_hotkey())} — Floating overlay\n"
+            "F4 — Toggle mute\n"
+            "F11 — Fullscreen\n"
+            "Enter — Send message\n"
+            "Esc — Hide floating overlay",
+        )
+
+    def _on_profile_menu_action(self, action: str) -> None:
+        from jarvis_ui import user_account as UA
+
+        if action == "profile":
+            QMessageBox.information(
+                self,
+                "Profile",
+                f"Signed in as {UA.get_display_name()}.\nPlan: {UA.get_subtitle()}",
+            )
+        elif action == "settings":
+            self._open_settings()
+        elif action == "subscription":
+            if UA.is_authenticated():
+                UA.open_account()
+                self._log.append_log("SYS: Opening account / billing on the web…")
+            else:
+                UA.open_account()
+                self._log.append_log("SYS: Opening web account — sign in to subscribe.")
+        elif action == "referral":
+            QMessageBox.information(
+                self,
+                "Referral Program",
+                "Share AURA with your team.\nReferral rewards coming soon.",
+            )
+        elif action == "shortcuts":
+            self._show_keyboard_shortcuts()
+        elif action == "help":
+            import webbrowser
+            webbrowser.open(f"{UA._web_base()}/docs.html")
+            self._log.append_log("SYS: Help & Support opened in browser.")
+        elif action == "sign_in":
+            try:
+                self._log.append_log("SYS: Opening browser for AURA sign-in…")
+                ok = UA.sign_in()
+                self._nav.refresh_user_account()
+                if ok and UA.is_authenticated():
+                    self._log.append_log(
+                        f"SYS: Signed in as {UA.get_display_name()} · {UA.get_subtitle()}"
+                    )
+                else:
+                    QMessageBox.warning(self, "Sign-in", "Sign-in did not complete.")
+            except Exception as e:
+                QMessageBox.warning(self, "Sign-in failed", str(e))
+        elif action == "create_account":
+            try:
+                self._log.append_log("SYS: Opening browser to create AURA account…")
+                ok = UA.sign_in()
+                self._nav.refresh_user_account()
+                if ok and UA.is_authenticated():
+                    self._log.append_log(
+                        f"SYS: Account ready · {UA.get_display_name()} · {UA.get_subtitle()}"
+                    )
+                else:
+                    QMessageBox.warning(self, "Sign-in", "Account setup did not complete.")
+            except Exception as e:
+                QMessageBox.warning(self, "Sign-in failed", str(e))
+        elif action == "sign_out":
+            UA.sign_out()
+            self._nav.refresh_user_account()
+            self._log.append_log("SYS: Signed out — Guest mode.")
     def _refresh_sidebar(self):
         workspaces = ws.list_workspaces()
         chats = ws.list_chats()
@@ -1464,13 +1915,13 @@ class MainWindow(QMainWindow):
         state = ws.get_session_state()
         if hasattr(self, "_conv"):
             self._conv.load(state.get("messages", []), state.get("artifacts", []))
+        self._sync_hero_compact()
 
     def _reset_session_view(self):
-        """Reset right panel to default when a new session starts."""
+        """Reset center panel when a new session starts."""
         if hasattr(self, "_conv"):
             self._conv.clear()
-        if hasattr(self, "_switch_tab"):
-            self._switch_tab("preview")
+        self._sync_hero_compact()
 
     def _on_new_chat(self):
         ws.create_chat()
@@ -1478,19 +1929,54 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar()
 
     def _on_agent_selected(self, agent_key: str):
+        if agent_key == "dashboard":
+            self._center_view_mode = "dashboard"
+            self._workspace_stack.setCurrentIndex(0)
+            if hasattr(self, "_chat_center"):
+                self._chat_center.set_view_mode("dashboard")
+            return
+        if agent_key == "chat":
+            self._center_view_mode = "chat"
+            self._workspace_stack.setCurrentIndex(0)
+            if hasattr(self, "_chat_center"):
+                self._chat_center.set_view_mode("chat")
+            self._sync_hero_compact()
+            agent_key = "general"
+
+        if agent_key == "connectors":
+            self._workspace_stack.setCurrentIndex(5)
+            return
+        if agent_key == "computer_use":
+            self._workspace_stack.setCurrentIndex(6)
+            return
+        if agent_key == "coming_soon":
+            self._workspace_stack.setCurrentIndex(7)
+            return
+        if agent_key == "almost_ready":
+            self._workspace_stack.setCurrentIndex(8)
+            return
+        # Website Builder / Code Assistant gated until founding clients.
+        if agent_key in ("website", "code"):
+            feature = (
+                "Website Builder" if agent_key == "website" else "Code Assistant"
+            )
+            self._early_access.set_feature(feature)
+            self._workspace_stack.setCurrentIndex(9)
+            self._active_agent = agent_key
+            if hasattr(self, "_log"):
+                self._log.append_log(f"SYS: Early access — {feature}")
+            return
+
         from core.agents import get_agent
         agent = get_agent(agent_key)
         self._active_agent = agent_key
         if hasattr(self, "_log"):
             self._log.append_log(f"SYS: Agent mode → {agent.name}")
-        # Dedicated workspaces for website and code agents.
-        if agent_key == "website":
-            self._workspace_stack.setCurrentIndex(1)
-        elif agent_key == "code":
-            self._workspace_stack.setCurrentIndex(2)
-        elif agent_key == "maps_prospector":
+        if agent_key == "maps_prospector":
             self._maps_prospector.reset_overlay()
             self._workspace_stack.setCurrentIndex(3)
+        elif agent_key == "researcher":
+            self._workspace_stack.setCurrentIndex(4)
         else:
             self._workspace_stack.setCurrentIndex(0)
 
@@ -1560,6 +2046,17 @@ class MainWindow(QMainWindow):
         parts.append(f"User: {history[-1]['content']}")
         prompt = "\n\n".join(parts)
 
+        ctx = ""
+        if hasattr(self, "_code_assistant"):
+            ctx = self._code_assistant.get_workspace_context()
+        if ctx:
+            prompt += (
+                "\n\n## Open project context\n"
+                f"{ctx}\n\n"
+                "Apply changes directly to this project. When writing files, always include "
+                "`# file: relative/path` as the first line inside each code fence."
+            )
+
         pref = "auto"
         low = (provider or "").lower()
         if "gemini" in low:
@@ -1592,7 +2089,6 @@ class MainWindow(QMainWindow):
         ws.set_active_chat(chat_id)
         self._load_active_conversation()
         self._refresh_sidebar()
-        self._switch_tab("preview")
 
     def _on_workspace_selected(self, ws_id: str):
         ws.set_active_workspace(ws_id)
@@ -1631,12 +2127,10 @@ class MainWindow(QMainWindow):
             self._refresh_sidebar()
 
     def _on_chat_delete(self, chat_id: str):
-        r = QMessageBox.question(self, "Delete Session", "Delete this session?")
-        if r == QMessageBox.StandardButton.Yes:
-            ws.delete_chat(chat_id)
-            self._reset_session_view()
-            self._load_active_conversation()
-            self._refresh_sidebar()
+        ws.delete_chat(chat_id)
+        self._reset_session_view()
+        self._load_active_conversation()
+        self._refresh_sidebar()
 
     def _on_chat_pin(self, chat_id: str):
         ws.toggle_pin_chat(chat_id)
@@ -1646,6 +2140,8 @@ class MainWindow(QMainWindow):
         if section == "automation_create":
             ws.save_automation("New Workflow", "Describe automation goal…", "draft")
             self._refresh_sidebar()
+        elif section == "automations_more":
+            self._workspace_stack.setCurrentIndex(7)
         elif section.startswith("run_auto:"):
             auto_id = section.split(":", 1)[1]
             self._log.append_log(f"SYS: Running automation {auto_id}")
@@ -1671,6 +2167,15 @@ class MainWindow(QMainWindow):
         self._conv.add_user(text)
         ws.add_message("user", text)
         self._refresh_sidebar()
+        self._sync_hero_compact()
+        # Mirror into floating overlay (voice or text) without opening main window.
+        if getattr(self, "_float_session", False) or self._float_visible() or not self.isVisible():
+            self._ensure_float_for_live()
+            if hasattr(self, "_float") and self._float_visible():
+                # Avoid duplicating the bubble we already added on submit.
+                if not getattr(self, "_float_skip_user_mirror", False):
+                    self._float.add_user(text)
+                self._float_skip_user_mirror = False
 
     def _on_ai_chat_response(self, text: str):
         if not hasattr(self, "_conv"):
@@ -1679,6 +2184,18 @@ class MainWindow(QMainWindow):
         self._conv.add_assistant(text)
         ws.add_message("assistant", text)
         self._refresh_sidebar()
+        if getattr(self, "_float_session", False) or self._float_visible() or not self.isVisible():
+            self._ensure_float_for_live()
+            if hasattr(self, "_float") and self._float_visible():
+                self._float.add_assistant(text)
+
+    def _on_stream_delta(self, text: str):
+        if hasattr(self, "_conv"):
+            self._conv.stream_delta(text)
+        if getattr(self, "_float_session", False) or self._float_visible() or not self.isVisible():
+            self._ensure_float_for_live()
+            if hasattr(self, "_float") and self._float_visible():
+                self._float.stream_delta(text)
 
     def _on_stream_end(self, text: str):
         if not hasattr(self, "_conv"):
@@ -1687,13 +2204,55 @@ class MainWindow(QMainWindow):
         if text.strip():
             ws.add_message("assistant", text)
             self._refresh_sidebar()
+        if hasattr(self, "_float") and self._float_visible():
+            self._float.stream_end(text)
+
+    def _normalize_workflow_label(self, step: str) -> str:
+        """Map internal progress to a user-facing chat status line."""
+        raw = (step or "").strip()
+        if not raw:
+            return "Thinking"
+        low = raw.lower()
+        if low == "thinking":
+            return "Thinking"
+        if "search" in low or "deep research" in low:
+            return "Searching"
+        if "read" in low and ("file" in low or "page" in low):
+            return "Reading files"
+        if "writing report" in low or ("writ" in low and "code" in low):
+            return "Writing code"
+        if "generat" in low and "image" in low:
+            return "Generating image"
+        if "generat" in low and "file" in low:
+            return "Generating files"
+        if low.startswith("running "):
+            tool = raw[8:].strip().lower()
+            if "search" in tool or "research" in tool or "fetch" in tool:
+                return "Searching"
+            if "browser" in tool:
+                return "Browsing"
+            if "write" in tool or "file" in tool:
+                return "Writing code"
+            return "Thinking"
+        if low.startswith("using tool:"):
+            tool = raw.split(":", 1)[-1].strip().lower()
+            if "search" in tool or "research" in tool or "fetch" in tool:
+                return "Searching"
+            if "browser" in tool:
+                return "Browsing"
+            if "write" in tool or "file" in tool:
+                return "Writing code"
+            return "Thinking"
+        if "planning" in low or "iteration" in low:
+            return "Thinking"
+        return raw.split(":", 1)[-1].strip().title() if ":" in raw else raw
 
     def _on_workflow_step(self, step: str):
         if hasattr(self, "_conv"):
             if step in ("Finished", "", None):
                 self._conv.clear_live_activity()
             else:
-                self._conv.set_live_activity(step)
+                self._conv.set_live_activity(self._normalize_workflow_label(step))
 
     def _on_activity(self, data: dict):
         if not hasattr(self, "_conv"):
@@ -1724,9 +2283,22 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _current_provider(self) -> str:
+        if hasattr(self, "_chat_center"):
+            text = self._chat_center.model_combo.currentText().strip()
+            low = text.lower()
+            if "live voice" in low or "claude" in low or "opus" in low:
+                return "auto"
+            return text.split(" — ")[0].strip().lower()
+        if hasattr(self, "_input_bar"):
+            return self._input_bar.get_provider()
+        return "auto"
+
     def _send_from_bar(self, text: str):
         if not text:
             return
+        if getattr(self, "_center_view_mode", "chat") == "dashboard":
+            self._on_agent_selected("chat")
         if not ws.get_active_chat():
             ws.create_chat(text[:40])
         self._on_user_message(text)
@@ -1738,12 +2310,12 @@ class MainWindow(QMainWindow):
             return
 
         self._conv.set_live_activity("Thinking")
-        provider = self._input_bar.get_provider()
+        provider = self._current_provider()
         model = ""
         # Specialized sidebar agents run through the local agent runtime:
         # own system prompt + toolset (web search, deep research, files) +
         # persistent per-agent session memory. General chat keeps the
-        # live-voice pipeline below.
+        # live-voice pipeline below (Gemini Live + real tool calls).
         if self._active_agent in ("writer", "researcher", "designer", "automation"):
             self._log.append_log(f"You: {text}")
             threading.Thread(
@@ -1752,11 +2324,10 @@ class MainWindow(QMainWindow):
                 daemon=True,
             ).start()
             return
-        # Force local Ollama Qwen3 for General Chat text requests.
-        if self._active_agent == "general":
-            provider = "ollama"
-            model = "qwen3:8b"
-        mode = "auto"
+        # General Chat MUST go through Live session so camera/browser/OS tools work.
+        # mode=auto previously forced a plain Ollama reply with NO tools — that is
+        # why "open site" / "turn on camera" got chatbot refusals instead of actions.
+        mode = "live"
         payload = f"[JCFG mode={mode} provider={provider} model={model}] {text}"
         self._log.append_log(f"You: {text}")
         if self.on_text_command:
@@ -1819,148 +2390,51 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             self._chat_ai_sig.emit(f"Image generation failed: {e}")
-    def _build_right_panel(self) -> QWidget:
-        w = QWidget()
-        w.setMinimumWidth(360)
-        w.setStyleSheet(f"background: {C.PANEL}; border-left: 1px solid {C.BORDER};")
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(10)
+    def _init_hidden_services(self) -> None:
+        """Background widgets (log, metrics) — no visible right panel."""
+        sink = QWidget(self)
+        sink.hide()
 
-        def _sec(txt):
-            l = QLabel(txt)
-            l.setFont(QFont("Menlo", 7, QFont.Weight.Bold))
-            l.setStyleSheet(f"color: {C.PRI}; background: transparent; letter-spacing: 1px;")
-            return l
+        self._log = LogWidget(sink)
+        self._log.hide()
+        self._live_status = QLabel("ACTIVE", sink)
+        self._live_status.hide()
 
-        # Tab toggles: Preview (primary) | Activity
-        self._tab_btns: dict[str, QPushButton] = {}
-        tabrow = QHBoxLayout()
-        tabrow.setSpacing(6)
-        for key, label in [("preview", "💬  Conversation"), ("activity", "≣  System")]:
-            b = QPushButton(label)
-            b.setCheckable(True)
-            b.setFixedHeight(30)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFont(QFont("Menlo", 8, QFont.Weight.Bold))
-            b.clicked.connect(lambda _, k=key: self._switch_tab(k))
-            self._tab_btns[key] = b
-            tabrow.addWidget(b)
-        tabrow.addStretch()
-        self._uptime_lbl = QLabel("--:--")
-        self._uptime_lbl.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        self._uptime_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
-        upt = QLabel("UPTIME")
-        upt.setFont(QFont("Menlo", 6))
-        upt.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        upcol = QVBoxLayout(); upcol.setSpacing(0)
-        upcol.addWidget(upt); upcol.addWidget(self._uptime_lbl)
-        tabrow.addLayout(upcol)
-        lay.addLayout(tabrow)
+        self._uptime_lbl = QLabel("--:--", sink)
+        self._uptime_lbl.hide()
+        self._bar_cpu = MetricBar("CPU", C.PRI, sink)
+        self._bar_mem = MetricBar("MEM", C.ACC2, sink)
+        self._bar_net = MetricBar("NET", C.GREEN, sink)
+        self._bar_gpu = MetricBar("GPU", C.ACC, sink)
+        self._bar_tmp = MetricBar("TMP", "#ff6688", sink)
+        for w in (self._bar_cpu, self._bar_mem, self._bar_net, self._bar_gpu, self._bar_tmp):
+            w.hide()
 
-        self._right_stack = QStackedWidget()
-        lay.addWidget(self._right_stack, stretch=1)
-
-        # --- Conversation page (single continuous chat feed) ---
-        self._conv = ConversationView()
-        self._right_stack.addWidget(self._conv)
-
-        # --- System page (monitor + AI status) ---
-        activity = QWidget()
-        activity.setStyleSheet("background: transparent;")
-        al = QVBoxLayout(activity)
-        al.setContentsMargins(0, 0, 0, 0)
-        al.setSpacing(10)
-
-        al.addWidget(_sec("SYSTEM MONITOR"))
-        mon = QWidget()
-        mon.setStyleSheet(f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 8px;")
-        ml = QVBoxLayout(mon)
-        ml.setContentsMargins(8, 6, 8, 6)
-        ml.setSpacing(3)
-        self._bar_cpu = MetricBar("CPU", C.PRI)
-        self._bar_mem = MetricBar("MEM", C.ACC2)
-        self._bar_net = MetricBar("NET", C.GREEN)
-        self._bar_gpu = MetricBar("GPU", C.ACC)
-        self._bar_tmp = MetricBar("TMP", "#ff6688")
-        for bar in [self._bar_cpu, self._bar_mem, self._bar_net, self._bar_gpu, self._bar_tmp]:
-            ml.addWidget(bar)
-        self._proc_lbl = QLabel("PROC  --")
-        self._proc_lbl.setFont(QFont("Courier New", 7))
-        self._proc_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
-        ml.addWidget(self._proc_lbl)
-        al.addWidget(mon)
-
-        al.addWidget(_sec("AI STATUS"))
-        status_box = QWidget()
-        status_box.setStyleSheet("background: transparent; border: none;")
-        grid = QGridLayout(status_box)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(6)
+        self._proc_lbl = QLabel("PROC  --", sink)
+        self._proc_lbl.hide()
         self._ai_model_lbl = self._ai_cell("Current Model", "gemini-live")
         self._ai_state_lbl = self._ai_cell("AI Status", "Listening")
         self._ai_provider_lbl = self._ai_cell("Provider", "gemini-live")
         self._wake_lbl = self._ai_cell("Wake Word", "Jarvis")
         self._ai_mem_lbl = self._ai_cell("Memory", "Persistent")
         self._ai_index_lbl = self._ai_cell("Tools", "25 ready")
-        # kept for compatibility with _apply_ai_status references
         self._ai_ctx_lbl = self._ai_mem_lbl
         self._ai_plugins_lbl = self._ai_index_lbl
-        cells = [
-            self._ai_model_lbl, self._ai_state_lbl,
-            self._ai_provider_lbl, self._wake_lbl,
-            self._ai_mem_lbl, self._ai_index_lbl,
-        ]
-        for i, cell in enumerate(cells):
-            grid.addWidget(cell, i // 2, i % 2)
-        al.addWidget(status_box)
-        al.addStretch(1)
+        for w in (
+            self._ai_model_lbl, self._ai_state_lbl, self._ai_provider_lbl,
+            self._wake_lbl, self._ai_mem_lbl, self._ai_index_lbl,
+        ):
+            w.setParent(sink)
+            w.hide()
 
-        self._right_stack.addWidget(activity)
-
-        # hidden log sink (kept for append_log calls)
-        self._log = LogWidget()
-        self._log.setMaximumHeight(0)
-        self._log.hide()
-        self._live_status = QLabel("ACTIVE")  # referenced by some flows
-
-        # --- pinned mic control + drop zone ---
-        self._drop_zone = FileDropZone()
-        self._drop_zone.setMaximumHeight(0)
+        self._drop_zone = FileDropZone(sink)
         self._drop_zone.hide()
         self._drop_zone.file_selected.connect(self._on_file_selected)
-        self._file_hint = QLabel("")
+        self._file_hint = QLabel("", sink)
         self._file_hint.hide()
-        lay.addWidget(self._drop_zone)
-
-        self._mute_btn = QPushButton("🎙  MIC ACTIVE")
-        self._mute_btn.setFixedHeight(40)
-        self._mute_btn.setFont(QFont("Menlo", 9, QFont.Weight.Bold))
-        self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._mute_btn.clicked.connect(self._toggle_mute)
-        self._style_mute_btn()
-        lay.addWidget(self._mute_btn)
-
-        self._switch_tab("preview")
-        return w
 
     def _switch_tab(self, key: str):
-        idx = 0 if key == "preview" else 1
-        self._right_stack.setCurrentIndex(idx)
-        for k, b in self._tab_btns.items():
-            active = (k == key)
-            b.setChecked(active)
-            if active:
-                b.setStyleSheet(f"""
-                    QPushButton {{ background: rgba(0,209,255,0.14); color: {C.PRI};
-                        border: 1px solid {C.PRI_DIM}; border-radius: 8px; padding: 0 14px; }}
-                """)
-            else:
-                b.setStyleSheet(f"""
-                    QPushButton {{ background: transparent; color: {C.TEXT_MED};
-                        border: 1px solid {C.BORDER}; border-radius: 8px; padding: 0 14px; }}
-                    QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
-                """)
+        return
 
     def _build_input_row(self) -> QHBoxLayout:
         row = QHBoxLayout(); row.setSpacing(5)
@@ -2099,6 +2573,8 @@ class MainWindow(QMainWindow):
     def _toggle_mute(self):
         self._muted = not self._muted
         self.hud.muted = self._muted
+        if hasattr(self, "_dashboard_hud"):
+            self._dashboard_hud.muted = self._muted
         self._style_mute_btn()
         if self._muted:
             self._apply_state("MUTED")
@@ -2108,41 +2584,53 @@ class MainWindow(QMainWindow):
             self._log.append_log("SYS: Microphone active.")
 
     def _style_mute_btn(self):
-        if self._muted:
-            self._mute_btn.setText("🔇  MIC MUTED")
-            self._mute_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: rgba(255,68,102,0.08); color: {C.MUTED_C};
-                    border: 1px solid {C.MUTED_C}; border-radius: 21px;
-                }}
-            """)
-        else:
-            self._mute_btn.setText("🎙  MIC ACTIVE")
-            self._mute_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: rgba(0,255,148,0.06); color: {C.GREEN};
-                    border: 1px solid {C.GREEN}; border-radius: 21px;
-                }}
-                QPushButton:hover {{ background: rgba(0,255,148,0.12); }}
-            """)
+        if hasattr(self, "_chat_center"):
+            self._chat_center.set_muted(self._muted)
+        elif hasattr(self, "_input_bar"):
+            self._input_bar.set_muted(self._muted)
 
     def _send(self):
         if hasattr(self, "_input_bar"):
-            self._send_from_bar(self._input_bar._input.toPlainText().strip())
+            self._send_from_bar(self._input_bar._input.text().strip())
             self._input_bar._input.clear()
+
+    def _on_user_voice_level(self, level: float) -> None:
+        if hasattr(self, "hud"):
+            self.hud.set_voice_level(level)
+        if hasattr(self, "_dashboard_hud"):
+            self._dashboard_hud.set_voice_level(level)
+        if hasattr(self, "_chat_center"):
+            self._chat_center.set_voice_level(level)
+        if hasattr(self, "_float") and self._float_visible():
+            self._float.set_voice_level(level)
 
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
+        if hasattr(self, "_dashboard_hud"):
+            self._dashboard_hud.state = state
+            self._dashboard_hud.speaking = (state == "SPEAKING")
+        if hasattr(self, "_chat_center"):
+            self._chat_center.set_state(state)
+            self._chat_center.set_speaking(state == "SPEAKING")
+        # Live voice / thinking in the floating overlay without opening main.
+        if state in ("LISTENING", "THINKING", "PROCESSING", "SPEAKING"):
+            if not self.isVisible() or getattr(self, "_float_session", False):
+                self._float_session = True
+                self._ensure_float_for_live()
+        if hasattr(self, "_float") and self._float_visible():
+            self._float.set_status(state)
+            if state == "MUTED":
+                self._float.set_muted(True)
         status_map = {
-            "LISTENING": "STATUS LISTENING",
-            "THINKING": "STATUS THINKING",
-            "PROCESSING": "STATUS PROCESSING",
-            "SPEAKING": "STATUS SPEAKING",
-            "MUTED": "STATUS MUTED",
+            "LISTENING": "Always Ready",
+            "THINKING": "Thinking",
+            "PROCESSING": "Processing",
+            "SPEAKING": "Speaking",
+            "MUTED": "Muted",
         }
         if hasattr(self, "_status_top"):
-            self._status_top.setText(status_map.get(state, f"STATUS {state}"))
+            self._status_top.setText(status_map.get(state, state))
         if state == "THINKING":
             self._workflow_sig.emit("Thinking")
         elif state == "PROCESSING":
@@ -2156,19 +2644,36 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
+    def _ensure_setup_overlay(self):
+        if self._ready:
+            return
+        if self._overlay is not None and self._overlay.isVisible():
+            return
+        self._show_setup()
+
     def _show_setup(self):
+        if self._overlay is not None:
+            try:
+                self._overlay.close()
+            except Exception:
+                pass
+            self._overlay = None
         ov = SetupOverlay(self.centralWidget())
         cw = self.centralWidget()
-        ow, oh = 460, 390
+        ow, oh = 520, 560
         ov.setGeometry(
-            (cw.width()  - ow) // 2,
-            (cw.height() - oh) // 2,
+            max(12, (cw.width()  - ow) // 2),
+            max(12, (cw.height() - oh) // 2),
             ow, oh,
         )
         ov.done.connect(self._on_setup_done)
         ov.show()
+        ov.raise_()
+        ov.activateWindow()
         self._overlay = ov
-
+        # Keep asking until the main window has real size (post-onboarding race).
+        if cw.width() < 200 or cw.height() < 200:
+            QTimer.singleShot(200, self._ensure_setup_overlay)
     def _on_setup_done(self, key: str, os_name: str):
         os.makedirs(CONFIG_DIR, exist_ok=True)
         existing = {}
@@ -2200,7 +2705,7 @@ class MainWindow(QMainWindow):
             self._overlay.hide()
             self._overlay = None
         self._apply_state("LISTENING")
-        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. JARVIS online.")
+        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. AURA online.")
 
 class _RootShim:
     def __init__(self, app: QApplication):
@@ -2215,9 +2720,11 @@ class JarvisUI:
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
+        self._app.setQuitOnLastWindowClosed(False)
         self._win = MainWindow(face_path)
         self._win.show()
         self._updater = UpdateController(self._win, os.getpid())
+        self._win._updater_ref = self._updater
         self.root = _RootShim(self._app)
 
     @property
@@ -2240,6 +2747,9 @@ class JarvisUI:
     @on_text_command.setter
     def on_text_command(self, cb):
         self._win.on_text_command = cb
+
+    def set_user_voice_level(self, level: float):
+        self._win._user_voice_sig.emit(level)
 
     def set_state(self, state: str):
         self._win._state_sig.emit(state)
