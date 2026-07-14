@@ -219,7 +219,7 @@ def is_authenticated() -> bool:
     return bool(data.get("email") or data.get("user_id"))
 
 
-def sign_in(*, timeout: float = 180.0) -> bool:
+def sign_in(*, timeout: float = 300.0) -> bool:
     """
     Cursor-style: open the website login in the browser, wait for localhost
     handoff code, then exchange for desktop tokens via jarvis-saas.
@@ -242,19 +242,23 @@ def sign_in(*, timeout: float = 180.0) -> bool:
                 return
             result["code"] = code
             account_url = f"{_web_base()}/account?desktop=linked"
+            # Delay redirect a few seconds so Yandex Browser users can tap Allow
+            # before the page navigates away (their prompt closes on fast nav).
             html = f"""<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
-<meta http-equiv="refresh" content="0;url={account_url}"/>
 <title>AURA signed in</title>
 </head>
 <body style="font-family:system-ui;background:#050a14;color:#e8f8ff;display:grid;place-items:center;min-height:100vh;margin:0">
 <div style="text-align:center;max-width:28rem;padding:1.5rem">
-  <h2 style="color:#00d1ff;margin:0 0 .75rem">Signed in to AURA</h2>
-  <p style="color:#7eb8d4;margin:0 0 1rem">Desktop linked. Taking you back to your account…</p>
-  <a href="{account_url}" style="color:#00d1ff">Open account on hiauraai.com →</a>
+  <h2 style="color:#00d1ff;margin:0 0 .75rem">AURA подключено</h2>
+  <p style="color:#7eb8d4;margin:0 0 1rem">Если браузер спрашивает доступ — нажмите «Разрешить».</p>
+  <p style="color:#5a8fa8;margin:0 0 1rem;font-size:13px">Через 4 секунды вернём на hiauraai.com…</p>
+  <a href="{account_url}" style="color:#00d1ff">Открыть Account сейчас →</a>
 </div>
-<script>location.replace({account_url!r});</script>
+<script>
+  setTimeout(function() {{ location.replace({account_url!r}); }}, 4000);
+</script>
 </body></html>""".encode(
                 "utf-8"
             )
@@ -297,7 +301,10 @@ def sign_in(*, timeout: float = 180.0) -> bool:
     while not done.is_set():
         if time.time() > deadline:
             httpd.server_close()
-            raise TimeoutError("Sign-in timed out. Finish login in your browser.")
+            raise TimeoutError(
+                "Sign-in timed out. In the browser: click Connect AURA, allow access, "
+                "then Continue to account."
+            )
         try:
             from PyQt6.QtWidgets import QApplication
 
