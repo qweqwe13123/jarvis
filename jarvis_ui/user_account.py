@@ -251,10 +251,10 @@ def sign_in(*, timeout: float = 300.0) -> bool:
 </head>
 <body style="font-family:system-ui;background:#050a14;color:#e8f8ff;display:grid;place-items:center;min-height:100vh;margin:0">
 <div style="text-align:center;max-width:28rem;padding:1.5rem">
-  <h2 style="color:#00d1ff;margin:0 0 .75rem">AURA подключено</h2>
-  <p style="color:#7eb8d4;margin:0 0 1rem">Если браузер спрашивает доступ — нажмите «Разрешить».</p>
-  <p style="color:#5a8fa8;margin:0 0 1rem;font-size:13px">Через 4 секунды вернём на hiauraai.com…</p>
-  <a href="{account_url}" style="color:#00d1ff">Открыть Account сейчас →</a>
+  <h2 style="color:#00d1ff;margin:0 0 .75rem">AURA connected</h2>
+  <p style="color:#7eb8d4;margin:0 0 1rem">If your browser asks for device access, press Allow.</p>
+  <p style="color:#5a8fa8;margin:0 0 1rem;font-size:13px">Returning to hiauraai.com in 4 seconds…</p>
+  <a href="{account_url}" style="color:#00d1ff">Open Account now →</a>
 </div>
 <script>
   setTimeout(function() {{ location.replace({account_url!r}); }}, 4000);

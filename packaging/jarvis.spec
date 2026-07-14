@@ -2,6 +2,8 @@
 import platform
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 ROOT = Path(SPECPATH).resolve().parent
 APP_NAME = "AURA"
 
@@ -9,7 +11,17 @@ datas = [
     (str(ROOT / "core" / "prompt.txt"), "core"),
     (str(ROOT / "config"), "config"),
     (str(ROOT / "jarvis_ui"), "jarvis_ui"),
+    (str(ROOT / "resources" / "skills"), "resources/skills"),
+    (str(ROOT / "packages" / "aura-openclaw" / "aura_openclaw"), "aura_openclaw"),
     (str(ROOT / "packaging" / "updater_stub.py"), "packaging"),
+]
+
+# LiteLLM reads JSON/tokenizer assets relative to its package path at import time.
+# Skip the proxy UI tree — it is huge and unused by the desktop app.
+datas += [
+    (src, dst)
+    for src, dst in collect_data_files("litellm")
+    if "/proxy/" not in Path(src).as_posix()
 ]
 
 hiddenimports = [
@@ -20,6 +32,19 @@ hiddenimports = [
     "cv2",
     "playwright",
     "duckduckgo_search",
+    "aura_openclaw",
+    "aura_openclaw.gateway",
+    "aura_openclaw.gateway.embedded",
+    "aura_openclaw.gateway.client",
+    "aura_openclaw.gateway.protocol",
+    "aura_openclaw.skills",
+    "aura_openclaw.skills.registry",
+    "aura_openclaw.skills.builtin",
+    "core.integrations.openclaw",
+    "core.integrations.openclaw.bootstrap",
+    "core.integrations.openclaw.service",
+    "core.integrations.openclaw.runtime_manager",
+    "core.integrations.openclaw.config_bridge",
 ]
 
 a = Analysis(
@@ -67,11 +92,17 @@ if platform.system() == "Darwin":
         name=f"{APP_NAME}.app",
         icon=str(icon) if icon.exists() else None,
         bundle_identifier="app.hiaura.aura.desktop",
-        version="1.0.0",
+        version="1.0.2",
         info_plist={
-            "CFBundleDisplayName": "A.U.R.A",
-            "NSMicrophoneUsageDescription": "A.U.R.A needs the microphone for voice mode.",
-            "NSCameraUsageDescription": "A.U.R.A needs the camera for vision features.",
+            "CFBundleDisplayName": "AURA",
+            "CFBundleName": "AURA",
+            "CFBundleShortVersionString": "1.0.1",
+            "CFBundleVersion": "1.0.1",
+            "NSMicrophoneUsageDescription": "AURA needs the microphone for voice mode and wake.",
+            "NSCameraUsageDescription": "AURA needs the camera for vision features.",
+            "NSAppleEventsUsageDescription": "AURA uses Apple Events to open apps and automate tasks you request.",
+            "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
+            "LSApplicationCategoryType": "public.app-category.productivity",
         },
     )
