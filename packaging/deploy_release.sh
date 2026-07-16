@@ -14,6 +14,10 @@ VERSION="$("$PY" "$ROOT/packaging/print_version.py")"
 ARCH="$(uname -m)"
 [[ "$ARCH" == "arm64" ]] || ARCH="x64"
 TAG="v${VERSION}"
+# Prefer universal DMG when present (one package for Apple Silicon + Intel).
+if [[ -f "$ROOT/dist/releases/AURA-${VERSION}-macos-universal.dmg" ]]; then
+  ARCH="universal"
+fi
 DMG="$ROOT/dist/releases/AURA-${VERSION}-macos-${ARCH}.dmg"
 ZIP="$ROOT/dist/releases/AURA-${VERSION}-macos-${ARCH}.zip"
 LOCAL_MANIFEST="$ROOT/dist/releases/manifest.json"
@@ -94,25 +98,29 @@ api = subprocess.check_output(
 rel = json.loads(api)
 assets = {a["name"]: a for a in rel.get("assets") or []}
 
-def classify(name: str) -> tuple[str, str] | None:
-    # Returns (platform_key, role) where role is primary|update
+def classify(name: str):
+    # Returns list of (platform_key, role) — universal maps to both Mac keys.
     if not name.startswith(f"AURA-{version}-"):
-        return None
+        return []
+    if name.endswith("-macos-universal.dmg"):
+        return [("darwin-arm64", "primary"), ("darwin-x64", "primary"), ("darwin-universal", "primary")]
+    if name.endswith("-macos-universal.zip"):
+        return [("darwin-arm64", "update"), ("darwin-x64", "update"), ("darwin-universal", "update")]
     if name.endswith("-macos-arm64.dmg"):
-        return "darwin-arm64", "primary"
+        return [("darwin-arm64", "primary")]
     if name.endswith("-macos-arm64.zip"):
-        return "darwin-arm64", "update"
+        return [("darwin-arm64", "update")]
     if name.endswith("-macos-x64.dmg"):
-        return "darwin-x64", "primary"
+        return [("darwin-x64", "primary")]
     if name.endswith("-macos-x64.zip"):
-        return "darwin-x64", "update"
+        return [("darwin-x64", "update")]
     if name.endswith("-win-x64.exe"):
-        return "win-x64", "primary"
+        return [("win-x64", "primary")]
     if name.endswith("-win-x64.zip"):
-        return "win-x64", "update"
+        return [("win-x64", "update")]
     if name.endswith("-linux-x64.zip"):
-        return "linux-x64", "primary"
-    return None
+        return [("linux-x64", "primary")]
+    return []
 
 def sha_of_url(url: str, size: int) -> str:
     req = urllib.request.Request(
@@ -135,28 +143,27 @@ def sha_of_url(url: str, size: int) -> str:
 platforms: dict = {}
 for name, asset in assets.items():
     mapped = classify(name)
-    if mapped is None:
+    if not mapped:
         continue
-    key, role = mapped
-    entry = platforms.setdefault(key, {})
     url = f"{base}/{name}"
-    # Prefer GitHub digest when present (sha256:...)
     digest = (asset.get("digest") or "").removeprefix("sha256:")
     size = int(asset.get("size") or 0)
     if not digest:
         print(f"hashing {name} ({size} bytes)...")
         digest = sha_of_url(asset["url"], size)
-    if role == "primary":
-        entry.update({"url": url, "sha256": digest, "size": size, "filename": name})
-    else:
-        entry.update(
-            {
-                "update_filename": name,
-                "update_url": url,
-                "update_sha256": digest,
-                "update_size": size,
-            }
-        )
+    for key, role in mapped:
+        entry = platforms.setdefault(key, {})
+        if role == "primary":
+            entry.update({"url": url, "sha256": digest, "size": size, "filename": name})
+        else:
+            entry.update(
+                {
+                    "update_filename": name,
+                    "update_url": url,
+                    "update_sha256": digest,
+                    "update_size": size,
+                }
+            )
 
 # Prefer local notarized DMG hashes when present (authoritative).
 dmg = Path("$DMG")
@@ -170,18 +177,19 @@ if dmg.is_file():
         return h.hexdigest()
 
     arch = "$ARCH"
-    key = f"darwin-{arch}"
-    entry = platforms.setdefault(key, {})
-    entry.update(
-        {
-            "url": f"{base}/AURA-{version}-macos-{arch}.dmg",
-            "sha256": sha(dmg),
-            "size": dmg.stat().st_size,
-            "filename": f"AURA-{version}-macos-{arch}.dmg",
-        }
+    keys = (
+        ["darwin-arm64", "darwin-x64", "darwin-universal"]
+        if arch == "universal"
+        else [f"darwin-{arch}"]
     )
+    primary = {
+        "url": f"{base}/AURA-{version}-macos-{arch}.dmg",
+        "sha256": sha(dmg),
+        "size": dmg.stat().st_size,
+        "filename": f"AURA-{version}-macos-{arch}.dmg",
+    }
     if zpath.is_file():
-        entry.update(
+        primary.update(
             {
                 "update_filename": f"AURA-{version}-macos-{arch}.zip",
                 "update_url": f"{base}/AURA-{version}-macos-{arch}.zip",
@@ -189,8 +197,17 @@ if dmg.is_file():
                 "update_size": zpath.stat().st_size,
             }
         )
+    for key in keys:
+        platforms[key] = dict(primary)
 
 prev = json.loads(saas.read_text()) if saas.exists() else {}
+# Keep Windows from the previous site manifest if this tag only refreshed macOS.
+# Linux is intentionally omitted from the public download page for now.
+if "win-x64" not in platforms and "win-x64" in (prev.get("platforms") or {}):
+    platforms["win-x64"] = prev["platforms"]["win-x64"]
+    print("preserved win-x64 from previous site manifest")
+platforms.pop("linux-x64", None)
+
 manifest = {
     "version": version,
     "released_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -222,12 +239,12 @@ PY
 
 echo "=== Push jarvis-saas (triggers Vercel) ==="
 cd "$SAAS"
-git add public/releases/manifest.json
+git add public/releases/manifest.json src/components/download-client.tsx src/lib/platform.ts 2>/dev/null || git add public/releases/manifest.json
 if git diff --cached --quiet; then
-  echo "No manifest changes to commit"
+  echo "No site changes to commit"
 else
   git commit -m "$(cat <<EOF
-Publish AURA ${VERSION} desktop builds to download site
+Publish AURA ${VERSION} desktop builds (universal macOS when present)
 
 EOF
 )"

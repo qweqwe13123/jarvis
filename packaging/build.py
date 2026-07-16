@@ -250,23 +250,155 @@ def _make_dmg(app_path: Path, dmg_path: Path, volume_name: str = "AURA") -> None
     mod.make_dmg(app_path, dmg_path, volume_name=volume_name, staging_parent=DIST)
 
 
-def build_pyinstaller(clean: bool = True) -> Path:
+def build_pyinstaller(
+    clean: bool = True,
+    *,
+    python: str | None = None,
+    distpath: Path | None = None,
+    workpath: Path | None = None,
+    arch_prefix: list[str] | None = None,
+) -> Path:
+    """Run PyInstaller. On macOS returns the .app path."""
     (ROOT / "resources" / "skills").mkdir(parents=True, exist_ok=True)
-    if clean:
-        shutil.rmtree(ROOT / "build", ignore_errors=True)
-        shutil.rmtree(ROOT / "dist" / APP_NAME, ignore_errors=True)
-        shutil.rmtree(ROOT / "dist" / f"{APP_NAME}.app", ignore_errors=True)
-        shutil.rmtree(ROOT / "dist" / "JARVIS", ignore_errors=True)
-        shutil.rmtree(ROOT / "dist" / "JARVIS.app", ignore_errors=True)
-        for leftover in (ROOT / "dist").glob(f"{APP_NAME}*"):
-            if leftover.is_file():
-                leftover.unlink(missing_ok=True)
+    py = python or sys.executable
+    distpath = distpath or (ROOT / "dist")
+    workpath = workpath or (ROOT / "build" / "pyinstaller")
 
-    _run([sys.executable, "-m", "PyInstaller", str(SPEC), "--noconfirm"], check=True)
+    if clean:
+        shutil.rmtree(workpath, ignore_errors=True)
+        shutil.rmtree(distpath / APP_NAME, ignore_errors=True)
+        shutil.rmtree(distpath / f"{APP_NAME}.app", ignore_errors=True)
+        if distpath == ROOT / "dist":
+            shutil.rmtree(ROOT / "dist" / "JARVIS", ignore_errors=True)
+            shutil.rmtree(ROOT / "dist" / "JARVIS.app", ignore_errors=True)
+            for leftover in (ROOT / "dist").glob(f"{APP_NAME}*"):
+                if leftover.is_file():
+                    leftover.unlink(missing_ok=True)
+
+    distpath.mkdir(parents=True, exist_ok=True)
+    workpath.mkdir(parents=True, exist_ok=True)
+    cmd = list(arch_prefix or []) + [
+        py,
+        "-m",
+        "PyInstaller",
+        str(SPEC),
+        "--noconfirm",
+        f"--distpath={distpath}",
+        f"--workpath={workpath}",
+    ]
+    _run(cmd, check=True)
 
     if platform.system() == "Darwin":
-        return ROOT / "dist" / f"{APP_NAME}.app"
-    return ROOT / "dist" / APP_NAME
+        return distpath / f"{APP_NAME}.app"
+    return distpath / APP_NAME
+
+
+def _default_x86_python() -> Path | None:
+    env = (os.environ.get("AURA_X86_PYTHON") or "").strip()
+    if env and Path(env).is_file():
+        return Path(env)
+    candidates = sorted(
+        (ROOT / ".python-x86").glob("cpython-*-macos-x86_64-none/bin/python3.*")
+    )
+    for path in candidates:
+        if path.name.endswith("-config"):
+            continue
+        if path.is_file():
+            return path
+    return None
+
+
+def build_universal_app() -> Path:
+    """Build arm64 + x86_64 apps under Rosetta, lipo-merge into dist/AURA.app."""
+    if platform.system() != "Darwin":
+        raise RuntimeError("--universal is only supported on macOS")
+
+    import importlib.util
+
+    merge_path = ROOT / "packaging" / "merge_universal_app.py"
+    spec = importlib.util.spec_from_file_location("aura_merge_universal_app", merge_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load {merge_path}")
+    merge_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(merge_mod)
+    merge_apps = merge_mod.merge_apps
+
+    x86_py = _default_x86_python()
+    if x86_py is None:
+        raise RuntimeError(
+            "No x86_64 Python found. Install with:\n"
+            "  UV_PYTHON_INSTALL_DIR=.python-x86 "
+            "uv python install cpython-3.12.13-macos-x86_64-none\n"
+            "Or set AURA_X86_PYTHON=/path/to/x86_64/python3"
+        )
+
+    # Ensure Rosetta can run it.
+    probe = subprocess.run(
+        ["arch", "-x86_64", str(x86_py), "-c", "import platform; print(platform.machine())"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0 or "x86_64" not in (probe.stdout or ""):
+        raise RuntimeError(
+            f"x86_64 Python not runnable under Rosetta: {x86_py}\n"
+            f"{probe.stderr or probe.stdout}"
+        )
+
+    venv_x86 = ROOT / ".venv-x86"
+    pip_x86 = venv_x86 / "bin" / "pip"
+    py_x86 = venv_x86 / "bin" / "python"
+    if not py_x86.is_file():
+        print(f"[universal] creating {venv_x86} with {x86_py}")
+        _run(["arch", "-x86_64", str(x86_py), "-m", "venv", str(venv_x86)])
+    print("[universal] installing x86_64 deps (may take a while)…")
+    _run(
+        [
+            "arch",
+            "-x86_64",
+            str(pip_x86),
+            "install",
+            "-q",
+            "--upgrade",
+            "pip",
+        ]
+    )
+    _run(
+        [
+            "arch",
+            "-x86_64",
+            str(pip_x86),
+            "install",
+            "-q",
+            "-r",
+            str(ROOT / "requirements-desktop.txt"),
+            "-r",
+            str(ROOT / "packaging" / "requirements-packaging.txt"),
+        ]
+    )
+
+    arm_dist = ROOT / "dist" / "arm64"
+    x86_dist = ROOT / "dist" / "x86_64"
+    print("[universal] building arm64 app…")
+    arm_app = build_pyinstaller(
+        clean=True,
+        python=sys.executable,
+        distpath=arm_dist,
+        workpath=ROOT / "build" / "arm64",
+    )
+    print("[universal] building x86_64 app under Rosetta…")
+    x86_app = build_pyinstaller(
+        clean=True,
+        python=str(py_x86),
+        distpath=x86_dist,
+        workpath=ROOT / "build" / "x86_64",
+        arch_prefix=["arch", "-x86_64"],
+    )
+
+    out_app = ROOT / "dist" / f"{APP_NAME}.app"
+    print("[universal] merging with lipo…")
+    merge_apps(arm_app, x86_app, out_app)
+    return out_app
 
 
 def build_windows_onefile() -> Path:
@@ -309,14 +441,25 @@ def package_release(
     notarize: bool = False,
     identity: str | None = None,
     notary_profile: str = DEFAULT_NOTARY_PROFILE,
+    universal: bool = False,
 ) -> dict:
     DIST.mkdir(parents=True, exist_ok=True)
     key = _platform_key()
     system = platform.system()
     base = base_url.rstrip("/")
+    mac_keys: list[str] = []
 
     if system == "Darwin":
-        artifact_root = build_pyinstaller(clean=True)
+        if universal:
+            artifact_root = build_universal_app()
+            arch = "universal"
+            mac_keys = ["darwin-arm64", "darwin-x64"]
+            key = "darwin-universal"
+        else:
+            artifact_root = build_pyinstaller(clean=True)
+            arch = "arm64" if key.endswith("arm64") else "x64"
+            mac_keys = [key]
+
         embed_wake_helper(artifact_root)
 
         if sign or notarize:
@@ -326,7 +469,6 @@ def package_release(
             print(f"[Sign] identity={ident}")
             codesign_app(artifact_root, ident, ENTITLEMENTS)
 
-        arch = "arm64" if key.endswith("arm64") else "x64"
         primary_name = "AURA-%s-macos-%s.dmg" % (version, arch)
         primary_path = DIST / primary_name
         _make_dmg(artifact_root, primary_path, volume_name="AURA")
@@ -411,7 +553,13 @@ def package_release(
         entry["update_sha256"] = _sha256(update_path)
         entry["update_size"] = update_path.stat().st_size
 
-    manifest["platforms"][key] = entry
+    # Universal macOS: same DMG for Apple Silicon + Intel download keys.
+    targets = mac_keys if system == "Darwin" and mac_keys else [key]
+    for platform_key in targets:
+        manifest["platforms"][platform_key] = dict(entry)
+    if system == "Darwin" and universal:
+        manifest["platforms"]["darwin-universal"] = dict(entry)
+
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print("Built: %s (%s bytes)" % (primary_path, entry["size"]))
     if update_name != primary_name:
@@ -458,6 +606,11 @@ def main() -> int:
         default=os.environ.get("AURA_NOTARY_PROFILE", DEFAULT_NOTARY_PROFILE),
         help="notarytool keychain profile name",
     )
+    parser.add_argument(
+        "--universal",
+        action="store_true",
+        help="macOS: build arm64+x86_64, lipo-merge into one .app/.dmg",
+    )
     args = parser.parse_args()
     sign = args.sign or args.notarize
     package_release(
@@ -468,6 +621,7 @@ def main() -> int:
         notarize=args.notarize,
         identity=args.identity,
         notary_profile=args.notary_profile,
+        universal=args.universal,
     )
     return 0
 
