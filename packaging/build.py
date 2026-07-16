@@ -93,6 +93,7 @@ def _make_dmg(app_path: Path, dmg_path: Path, volume_name: str = "A.U.R.A") -> N
 
 
 def build_pyinstaller(clean: bool = True) -> Path:
+    (ROOT / "resources" / "skills").mkdir(parents=True, exist_ok=True)
     if clean:
         shutil.rmtree(ROOT / "build", ignore_errors=True)
         shutil.rmtree(ROOT / "dist" / APP_NAME, ignore_errors=True)
