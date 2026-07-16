@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 from jarvis_ui.markdown_utils import markdown_to_html
 from jarvis_ui import theme as T
 from jarvis_ui import user_account as UA
+from jarvis_ui.avatar import AvatarCircle
 from jarvis_ui.dashboard_hud import DashboardHeroView
 
 try:
@@ -669,12 +670,37 @@ class _LineIcon(QWidget):
             p.drawRoundedRect(R(5, 10, 14, 10), 2 * s, 2 * s)
             p.drawLine(P(5, 14), P(19, 14))
             p.drawLine(P(12, 10), P(12, 20))
+            # Bow
+            p.drawArc(R(6.5, 5.5, 5.5, 5.5), 20 * 16, 200 * 16)
+            p.drawArc(R(12, 5.5, 5.5, 5.5), -40 * 16, 200 * 16)
+            p.drawLine(P(12, 7.5), P(12, 10))
         elif n == "user":
             p.drawEllipse(R(8, 4, 8, 8))
             p.drawArc(R(5, 13, 14, 9), 0, -180 * 16)
+        elif n == "keyboard":
+            # Modern outline keyboard (Cursor / Lucide style).
+            p.drawRoundedRect(R(2.5, 6.5, 19, 12), 2.2 * s, 2.2 * s)
+            for x in (5.2, 8.4, 11.6, 14.8, 18.0):
+                p.drawRoundedRect(R(x - 1.0, 9.0, 2.0, 2.0), 0.4 * s, 0.4 * s)
+            for x in (6.8, 10.0, 13.2, 16.4):
+                p.drawRoundedRect(R(x - 1.0, 12.2, 2.0, 2.0), 0.4 * s, 0.4 * s)
+            p.drawRoundedRect(R(7.0, 15.4, 10.0, 1.8), 0.5 * s, 0.5 * s)
         elif n == "help":
-            p.drawEllipse(R(4, 4, 16, 16))
-            p.drawArc(R(8, 7, 8, 8), 60 * 16, 240 * 16)
+            # Help circle with a proper question mark (not a “C”).
+            p.drawEllipse(R(3.5, 3.5, 17, 17))
+            path = QPainterPath()
+            path.moveTo(P(9.2, 9.2))
+            path.cubicTo(P(9.2, 7.0), P(10.6, 6.0), P(12.0, 6.0))
+            path.cubicTo(P(13.6, 6.0), P(15.0, 7.1), P(15.0, 8.8))
+            path.cubicTo(P(15.0, 10.2), P(14.0, 11.0), P(12.6, 11.6))
+            path.lineTo(P(12.0, 12.0))
+            path.lineTo(P(12.0, 14.0))
+            p.drawPath(path)
+            p.setBrush(QColor(self._color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(R(11.0, 16.2, 2.0, 2.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(pen)
         elif n == "logout":
             p.drawRoundedRect(R(4, 5, 10, 14), 2 * s, 2 * s)
             p.drawLine(P(14, 12), P(20, 12))
@@ -711,21 +737,197 @@ class _LineIcon(QWidget):
                 p.setBrush(QColor(self._color))
                 p.drawEllipse(R(cx - 1.5, 10.5, 3, 3))
             p.setBrush(Qt.BrushStyle.NoBrush)
+        elif n == "shield":
+            # Premium security shield + check (sidebar Permissions).
+            path = QPainterPath()
+            path.moveTo(12, 2.8)
+            path.cubicTo(16.8, 3.4, 19.4, 5.2, 19.4, 7.6)
+            path.lineTo(19.4, 12.8)
+            path.cubicTo(19.4, 17.2, 15.8, 19.8, 12, 21.2)
+            path.cubicTo(8.2, 19.8, 4.6, 17.2, 4.6, 12.8)
+            path.lineTo(4.6, 7.6)
+            path.cubicTo(4.6, 5.2, 7.2, 3.4, 12, 2.8)
+            path.closeSubpath()
+            p.drawPath(path)
+            pen2 = QPen(QColor(self._color), max(1.6, 1.7 * s))
+            pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen2.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen2)
+            p.drawLine(P(8.6, 12.2), P(11.0, 14.6))
+            p.drawLine(P(11.0, 14.6), P(15.8, 9.4))
+
+
+class _SidebarShieldBadge(QWidget):
+    """Soft cyan plate + shield mark for the Permissions sidebar row."""
+
+    def __init__(self, size: int = 22, parent=None):
+        super().__init__(parent)
+        self._d = int(size)
+        self._hot = False
+        self.setFixedSize(self._d, self._d)
+
+    def set_hot(self, hot: bool) -> None:
+        if self._hot != hot:
+            self._hot = hot
+            self.update()
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        d = float(self._d)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Plate
+        alpha_fill = 48 if self._hot else 28
+        alpha_ring = 110 if self._hot else 70
+        p.setPen(QPen(QColor(0, 209, 255, alpha_ring), 1.1))
+        p.setBrush(QColor(0, 209, 255, alpha_fill))
+        p.drawRoundedRect(QRectF(0.5, 0.5, d - 1.0, d - 1.0), 6.0, 6.0)
+
+        # Shield
+        s = d / 22.0
+        path = QPainterPath()
+        path.moveTo(11 * s, 3.2 * s)
+        path.cubicTo(15.2 * s, 3.7 * s, 17.6 * s, 5.2 * s, 17.6 * s, 7.2 * s)
+        path.lineTo(17.6 * s, 11.4 * s)
+        path.cubicTo(17.6 * s, 15.0 * s, 14.4 * s, 17.2 * s, 11 * s, 18.4 * s)
+        path.cubicTo(7.6 * s, 17.2 * s, 4.4 * s, 15.0 * s, 4.4 * s, 11.4 * s)
+        path.lineTo(4.4 * s, 7.2 * s)
+        path.cubicTo(4.4 * s, 5.2 * s, 6.8 * s, 3.7 * s, 11 * s, 3.2 * s)
+        path.closeSubpath()
+        cyan = QColor(T.SB_ACCENT if self._hot else T.SB_TEXT_MUTED)
+        if not self._hot:
+            cyan = QColor(0, 209, 255, 200)
+        p.setPen(QPen(cyan, max(1.3, 1.35 * s)))
+        p.setBrush(QColor(0, 209, 255, 22 if self._hot else 14))
+        p.drawPath(path)
+
+        # Check
+        pen = QPen(cyan, max(1.4, 1.45 * s))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(QPointF(7.8 * s, 10.8 * s), QPointF(9.8 * s, 12.8 * s))
+        p.drawLine(QPointF(9.8 * s, 12.8 * s), QPointF(14.2 * s, 8.4 * s))
+        p.end()
+
+
+class _SidebarPermissionsRow(QFrame):
+    """Dedicated Permissions entry above the profile chip."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SidebarPermissionsRow")
+        self._hover = False
+        self.setFixedHeight(T.SB_ROW_H + 2)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(10)
+
+        self._badge = _SidebarShieldBadge(22)
+        lay.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._label = QLabel("Permissions")
+        self._label.setFont(QFont(T.SB_FONT, T.SB_FONT_SIZE, QFont.Weight.Medium))
+        lay.addWidget(self._label, stretch=1)
+
+        self._chev = QLabel("›")
+        self._chev.setFont(QFont(T.SB_FONT, 16, QFont.Weight.Light))
+        lay.addWidget(self._chev, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._apply()
+
+    def _apply(self) -> None:
+        bg = "rgba(0, 209, 255, 0.08)" if self._hover else "rgba(0, 209, 255, 0.04)"
+        border = "rgba(0, 209, 255, 0.28)" if self._hover else "rgba(0, 209, 255, 0.14)"
+        self.setStyleSheet(
+            f"""
+            QFrame#SidebarPermissionsRow {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
+            """
+        )
+        self._badge.set_hot(self._hover)
+        fg = T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT
+        self._label.setStyleSheet(
+            f"color: {fg}; background: transparent; border: none;"
+        )
+        self._chev.setStyleSheet(
+            f"color: {T.SB_ACCENT if self._hover else T.SB_TEXT_MUTED}; "
+            "background: transparent; border: none;"
+        )
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            e.accept()
+            return
+        super().mousePressEvent(e)
 
 
 class _SidebarLogo(QWidget):
-    """Compact wordmark at the top of the sidebar."""
+    """Compact AURA mark + wordmark at the top of the sidebar."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(28)
+        self._pix = None
+        try:
+            from pathlib import Path
+
+            from PyQt6.QtGui import QPixmap
+
+            roots = []
+            try:
+                from jarvis_ui.paths import resource_dir
+
+                roots.append(Path(resource_dir()))
+            except Exception:
+                pass
+            roots.append(Path(__file__).resolve().parents[1])
+            for root in roots:
+                for name in ("aura_logo.png", "aura_logo_onboarding.png"):
+                    path = root / "assets" / name
+                    if path.is_file():
+                        pix = QPixmap(str(path))
+                        if not pix.isNull():
+                            self._pix = pix.scaled(
+                                22,
+                                22,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                            break
+                if self._pix is not None:
+                    break
+        except Exception:
+            self._pix = None
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        x = 4
+        if self._pix is not None:
+            p.drawPixmap(x, (self.height() - self._pix.height()) // 2, self._pix)
+            x += self._pix.width() + 8
         p.setPen(QPen(QColor(T.SB_TEXT_ACTIVE)))
         p.setFont(QFont(T.SB_FONT, 14, QFont.Weight.DemiBold))
-        p.drawText(4, 20, "J.A.R.V.I.S")
+        p.drawText(x, 20, "AURA")
 
 
 class _SidebarNewSessionBtn(QFrame):
@@ -966,16 +1168,13 @@ class ProfileMenuPopover(QWidget):
 
         header = QHBoxLayout()
         header.setContentsMargins(6, 4, 6, 8)
-        self._avatar = QLabel("U")
-        self._avatar.setFixedSize(32, 32)
-        self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._avatar.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        self._avatar = AvatarCircle(32)
         header.addWidget(self._avatar)
         col = QVBoxLayout()
         col.setSpacing(0)
-        self._name = QLabel("User")
+        self._name = QLabel("Sign in")
         self._name.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
-        self._subtitle = QLabel("Free Plan")
+        self._subtitle = QLabel("")
         self._subtitle.setFont(QFont(T.SB_FONT, 10))
         col.addWidget(self._name)
         col.addWidget(self._subtitle)
@@ -1006,10 +1205,6 @@ class ProfileMenuPopover(QWidget):
             f"QFrame#profileMenuCard {{ background: {T.BG_CARD}; "
             f"border: 1px solid {T.BORDER_HI}; border-radius: 14px; }}"
         )
-        self._avatar.setStyleSheet(
-            f"background: {T.BG_ELEVATED}; color: {T.SB_ACCENT}; "
-            f"border: 1px solid {T.SB_ACCENT_BORDER}; border-radius: 16px;"
-        )
         self._name.setStyleSheet(f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;")
         self._subtitle.setStyleSheet(f"color: {T.SB_TEXT_MUTED}; background: transparent; border: none;")
 
@@ -1037,15 +1232,29 @@ class ProfileMenuPopover(QWidget):
 
     def refresh(self, *, authenticated: bool | None = None) -> None:
         authed = UA.is_authenticated() if authenticated is None else authenticated
-        name = UA.get_display_name()
-        self._name.setText(name)
-        self._subtitle.setText(UA.get_subtitle(authenticated=authed))
-        self._avatar.setText(name[:1].upper())
+        if authed:
+            name = UA.get_display_name() or "User"
+            subtitle = UA.get_subtitle(authenticated=True)
+            self._name.setText(name)
+            self._subtitle.setText(subtitle)
+            self._subtitle.setVisible(bool(subtitle))
+            self._avatar.set_profile(
+                initial=name[:1],
+                url=UA.get_avatar_url(),
+                authenticated=True,
+            )
+        else:
+            # Cursor-style guest chip in the menu header.
+            self._name.setText("Sign in")
+            self._subtitle.setText("")
+            self._subtitle.setVisible(False)
+            self._avatar.set_profile(initial="", url="", authenticated=False)
         self._clear_items()
         if authed:
             for action, label, icon in (
                 ("profile", "Profile", "user"),
                 ("settings", "Settings", "settings"),
+                ("permissions", "Permissions", "shield"),
                 ("subscription", "Subscription", "subscription"),
                 ("referral", "Referral Program", "gift"),
                 ("shortcuts", "Keyboard Shortcuts", "keyboard"),
@@ -1072,60 +1281,68 @@ class ProfileMenuPopover(QWidget):
 
 
 class _SidebarProfileFooter(QFrame):
+    """Bottom-left account chip — Cursor-style Sign in when guest; photo+email when authed."""
+
     menu_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._hover = False
-        name = UA.get_display_name()
-        initial = name[:1].upper()
-
+        self.setObjectName("SidebarProfileFooter")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(8)
+        lay.setSpacing(10)
 
-        self._avatar = QLabel(initial)
-        self._avatar.setFixedSize(28, 28)
-        self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._avatar.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Bold))
-        lay.addWidget(self._avatar)
+        self._avatar = AvatarCircle(28)
+        lay.addWidget(self._avatar, 0, Qt.AlignmentFlag.AlignVCenter)
 
         info = QVBoxLayout()
-        info.setSpacing(0)
-        self._name = QLabel(name)
+        info.setSpacing(1)
+        info.setContentsMargins(0, 0, 0, 0)
+        self._name = QLabel("Sign in")
         self._name.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
-        self._plan = QLabel(UA.get_subtitle())
+        self._plan = QLabel("")
         self._plan.setFont(QFont(T.SB_FONT, 10))
         info.addWidget(self._name)
         info.addWidget(self._plan)
         lay.addLayout(info, stretch=1)
-        self._apply()
+        self.refresh_account()
 
     def refresh_account(self) -> None:
-        name = UA.get_display_name()
         authed = UA.is_authenticated()
-        self._name.setText(name)
-        self._plan.setText(UA.get_subtitle(authenticated=authed))
-        self._avatar.setText(name[:1].upper())
+        if authed:
+            name = UA.get_display_name() or "User"
+            subtitle = UA.get_subtitle(authenticated=True)
+            self._name.setText(name)
+            self._plan.setText(subtitle)
+            self._plan.setVisible(bool(subtitle))
+            self._avatar.set_profile(
+                initial=name[:1],
+                url=UA.get_avatar_url(),
+                authenticated=True,
+            )
+        else:
+            self._name.setText("Sign in")
+            self._plan.setText("")
+            self._plan.setVisible(False)
+            self._avatar.set_profile(initial="", url="", authenticated=False)
         self._apply(authenticated=authed)
 
     def _apply(self, *, authenticated: bool | None = None) -> None:
         authed = UA.is_authenticated() if authenticated is None else authenticated
         bg = T.SB_HOVER if self._hover else "transparent"
         self.setStyleSheet(
-            f"_SidebarProfileFooter {{ background: {bg}; border: none; border-radius: 8px; }}"
+            f"QFrame#SidebarProfileFooter {{ background: {bg}; border: none; border-radius: 8px; }}"
         )
-        accent = T.SB_ACCENT if authed else T.SB_TEXT_MUTED
-        self._avatar.setStyleSheet(
-            f"background: {T.BG_ELEVATED}; color: {accent}; "
-            f"border-radius: 14px; border: 1px solid {'rgba(0,209,255,0.35)' if authed else 'transparent'};"
+        self._name.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;"
         )
-        self._name.setStyleSheet(f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;")
         self._plan.setStyleSheet(
-            f"color: {T.SB_ACCENT if authed else T.SB_TEXT_MUTED}; "
+            f"color: {T.SB_TEXT_MUTED if authed else T.SB_TEXT_MUTED}; "
             f"background: transparent; border: none;"
         )
+
     def enterEvent(self, e):
         self._hover = True
         self._apply()
@@ -1449,7 +1666,11 @@ class NavSidebar(QWidget):
         foot_wrap = QWidget()
         foot_lay = QVBoxLayout(foot_wrap)
         foot_lay.setContentsMargins(0, 0, 10, 0)
-        foot_lay.setSpacing(0)
+        foot_lay.setSpacing(6)
+        # Permissions sits directly above the profile chip.
+        self._perm_btn = _SidebarPermissionsRow()
+        self._perm_btn.clicked.connect(self._open_permissions)
+        foot_lay.addWidget(self._perm_btn)
         self._footer = _SidebarProfileFooter()
         self._footer.menu_requested.connect(self._open_profile_menu)
         foot_lay.addWidget(self._footer)
@@ -1644,9 +1865,23 @@ class NavSidebar(QWidget):
         self._profile_menu.popup_above(self._footer)
 
     def _on_profile_menu_action(self, action: str) -> None:
+        if action == "permissions":
+            self._open_permissions()
+            return
         if action == "settings":
             self.settings_requested.emit()
         self.profile_menu_action.emit(action)
+
+    def _open_permissions(self) -> None:
+        try:
+            from jarvis_ui.permissions_panel import PermissionsDialog
+
+            dlg = PermissionsDialog(self.window() or self)
+            dlg.exec()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Permissions", str(e))
 
     def refresh_user_account(self) -> None:
         self._footer.refresh_account()
@@ -2718,3 +2953,6 @@ class ChatCenterPane(QWidget):
 
     def _on_messages_changed(self, has_messages: bool) -> None:
         self._chat_body.setCurrentIndex(1 if has_messages else 0)
+
+# AvatarCircle
+# _open_permissions

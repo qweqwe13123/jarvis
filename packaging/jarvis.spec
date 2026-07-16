@@ -11,6 +11,7 @@ datas = [
     (str(ROOT / "core" / "prompt.txt"), "core"),
     (str(ROOT / "config"), "config"),
     (str(ROOT / "jarvis_ui"), "jarvis_ui"),
+    (str(ROOT / "launcher"), "launcher"),
     (str(ROOT / "resources" / "skills"), "resources/skills"),
     (str(ROOT / "packages" / "aura-openclaw" / "aura_openclaw"), "aura_openclaw"),
     (str(ROOT / "packaging" / "updater_stub.py"), "packaging"),
@@ -55,7 +56,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(ROOT / "packaging" / "rth_prefer_disk_jarvis_ui.py")],
     excludes=[],
     noarchive=False,
 )

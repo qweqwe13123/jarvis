@@ -1481,8 +1481,11 @@ class MainWindow(QMainWindow):
 
         self._force_quit = False
         self._float_session = False
+        self._sub_gate = None
         # Defer native tray/hotkey/wake UI — they caused macOS SIGTRAP before setup painted.
         QTimer.singleShot(1500, self._safe_init_floating_overlay)
+        # If the free preview was already used, show soft Pro gate after paint.
+        QTimer.singleShot(900, self._check_subscription_gate_on_launch)
 
     def _safe_init_floating_overlay(self) -> None:
         try:
@@ -1519,22 +1522,27 @@ class MainWindow(QMainWindow):
         self._start_cloud_entitlement_sync()
 
     def _start_cloud_entitlement_sync(self) -> None:
-        """Refresh plan from AURA API periodically and on focus."""
+        """Refresh plan from AURA API periodically and on focus (never blocks UI)."""
         self._entitlement_timer = QTimer(self)
         self._entitlement_timer.setInterval(5 * 60 * 1000)
         self._entitlement_timer.timeout.connect(self._sync_cloud_entitlements)
         self._entitlement_timer.start()
+        self._sign_in_worker = None
         QTimer.singleShot(1500, self._sync_cloud_entitlements)
 
     def _sync_cloud_entitlements(self) -> None:
         try:
             from jarvis_ui import user_account as UA
+            from jarvis_ui.auth_async import refresh_entitlements_async
 
             if not UA.get_access_token():
                 return
-            UA.refresh_entitlements()
-            if hasattr(self, "_nav"):
-                self._nav.refresh_user_account()
+
+            def _done(_profile) -> None:
+                if hasattr(self, "_nav"):
+                    self._nav.refresh_user_account()
+
+            refresh_entitlements_async(_done)
         except Exception:
             pass
 
@@ -1542,11 +1550,82 @@ class MainWindow(QMainWindow):
         try:
             from PyQt6.QtCore import QEvent
 
+            # Debounce activate sync — avoid network storms while switching apps.
             if event.type() == QEvent.Type.WindowActivate:
-                self._sync_cloud_entitlements()
+                QTimer.singleShot(400, self._sync_cloud_entitlements)
         except Exception:
             pass
         super().changeEvent(event)
+
+    def _begin_sign_in(self, *, reason: str = "sign_in") -> None:
+        """Open browser login without freezing the main window.
+
+        Repeated taps cancel any stuck previous attempt and start a fresh
+        device session (so the website always opens again).
+        """
+        try:
+            from jarvis_ui.auth_async import start_sign_in_worker
+        except Exception as e:
+            QMessageBox.warning(self, "Sign-in", str(e))
+            return
+
+        label = "create AURA account" if reason == "create_account" else "AURA sign-in"
+        prev = getattr(self, "_sign_in_worker", None)
+        if prev is not None and prev.isRunning():
+            try:
+                self._log.append_log("SYS: Restarting sign-in — opening a fresh browser tab…")
+            except Exception:
+                pass
+        else:
+            try:
+                self._log.append_log(f"SYS: Opening browser for {label}…")
+            except Exception:
+                pass
+
+        worker = start_sign_in_worker(self, timeout=180.0, replace_running=True)
+        if worker is None:
+            return
+
+        def _ok() -> None:
+            if getattr(self, "_sign_in_worker", None) is worker:
+                self._sign_in_worker = None
+            if hasattr(self, "_nav"):
+                self._nav.refresh_user_account()
+            try:
+                from jarvis_ui import user_account as UA
+
+                if UA.is_authenticated():
+                    self._log.append_log(
+                        f"SYS: Signed in as {UA.get_display_name()} · {UA.get_subtitle()}"
+                    )
+                else:
+                    QMessageBox.warning(self, "Sign-in", "Sign-in did not complete.")
+            except Exception as e:
+                QMessageBox.warning(self, "Sign-in", str(e))
+            self._sync_cloud_entitlements()
+
+        def _err(msg: str) -> None:
+            if getattr(self, "_sign_in_worker", None) is worker:
+                self._sign_in_worker = None
+            low = (msg or "").lower()
+            if "cancelled" in low:
+                try:
+                    self._log.append_log("SYS: Previous sign-in cancelled.")
+                except Exception:
+                    pass
+                return
+            QMessageBox.warning(self, "Sign-in failed", msg)
+
+        def _browser(_url: str) -> None:
+            try:
+                self._log.append_log("SYS: Browser opened — finish login on hiauraai.com.")
+            except Exception:
+                pass
+
+        worker.succeeded.connect(_ok)
+        worker.failed.connect(_err)
+        worker.browser_opened.connect(_browser)
+        worker.start()
 
     def _show_keyboard_shortcuts_overlay_hint(self) -> None:
         # Extend shortcuts help text next time it's opened — also log once.
@@ -1855,6 +1934,13 @@ class MainWindow(QMainWindow):
             )
         elif action == "settings":
             self._open_settings()
+        elif action == "permissions":
+            try:
+                from jarvis_ui.permissions_panel import PermissionsDialog
+
+                PermissionsDialog(self).exec()
+            except Exception as e:
+                QMessageBox.warning(self, "Permissions", str(e))
         elif action == "subscription":
             if UA.is_authenticated():
                 UA.open_account()
@@ -1863,46 +1949,21 @@ class MainWindow(QMainWindow):
                 UA.open_account()
                 self._log.append_log("SYS: Opening web account — sign in to subscribe.")
         elif action == "referral":
-            QMessageBox.information(
-                self,
-                "Referral Program",
-                "Share AURA with your team.\nReferral rewards coming soon.",
-            )
+            UA.open_referral()
+            self._log.append_log("SYS: Referral program opened in browser.")
         elif action == "shortcuts":
             self._show_keyboard_shortcuts()
         elif action == "help":
-            import webbrowser
-            webbrowser.open(f"{UA._web_base()}/docs.html")
+            UA.open_support()
             self._log.append_log("SYS: Help & Support opened in browser.")
         elif action == "sign_in":
-            try:
-                self._log.append_log("SYS: Opening browser for AURA sign-in…")
-                ok = UA.sign_in()
-                self._nav.refresh_user_account()
-                if ok and UA.is_authenticated():
-                    self._log.append_log(
-                        f"SYS: Signed in as {UA.get_display_name()} · {UA.get_subtitle()}"
-                    )
-                else:
-                    QMessageBox.warning(self, "Sign-in", "Sign-in did not complete.")
-            except Exception as e:
-                QMessageBox.warning(self, "Sign-in failed", str(e))
+            self._begin_sign_in(reason="sign_in")
         elif action == "create_account":
-            try:
-                self._log.append_log("SYS: Opening browser to create AURA account…")
-                ok = UA.sign_in()
-                self._nav.refresh_user_account()
-                if ok and UA.is_authenticated():
-                    self._log.append_log(
-                        f"SYS: Account ready · {UA.get_display_name()} · {UA.get_subtitle()}"
-                    )
-                else:
-                    QMessageBox.warning(self, "Sign-in", "Account setup did not complete.")
-            except Exception as e:
-                QMessageBox.warning(self, "Sign-in failed", str(e))
+            self._begin_sign_in(reason="create_account")
         elif action == "sign_out":
-            UA.sign_out()
-            self._nav.refresh_user_account()
+            from jarvis_ui.auth_async import sign_out_async
+
+            sign_out_async(lambda: self._nav.refresh_user_account())
             self._log.append_log("SYS: Signed out — Guest mode.")
     def _refresh_sidebar(self):
         workspaces = ws.list_workspaces()
@@ -1929,6 +1990,21 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar()
 
     def _on_agent_selected(self, agent_key: str):
+        # Browse dashboard / chat freely; paid surfaces re-open Pro gate after preview.
+        _paid_surfaces = {
+            "computer_use",
+            "connectors",
+            "researcher",
+            "writer",
+            "designer",
+            "automation",
+            "maps_prospector",
+            "website",
+            "code",
+        }
+        if agent_key in _paid_surfaces and not self._require_subscription():
+            return
+
         if agent_key == "dashboard":
             self._center_view_mode = "dashboard"
             self._workspace_stack.setCurrentIndex(0)
@@ -1981,6 +2057,8 @@ class MainWindow(QMainWindow):
             self._workspace_stack.setCurrentIndex(0)
 
     def _on_builder_submit(self, prompt: str):
+        if not self._require_subscription():
+            return
         from core.agents import get_agent
         agent = get_agent("website")
         self._builder.add_user(prompt)
@@ -2154,6 +2232,87 @@ class MainWindow(QMainWindow):
             dlg.save()
             self._log.append_log("SYS: Settings updated.")
 
+    def _subscription_allows_use(self) -> bool:
+        """True if Pro or free preview still available."""
+        try:
+            from jarvis_ui.preview_access import can_start_turn, is_pro
+
+            return bool(is_pro() or can_start_turn())
+        except Exception:
+            return True
+
+    def _require_subscription(self) -> bool:
+        """Allow action, or show soft Pro gate and return False."""
+        if self._subscription_allows_use():
+            return True
+        self._show_subscription_gate(reason="preview")
+        return False
+
+    def _check_subscription_gate_on_launch(self) -> None:
+        try:
+            from jarvis_ui.preview_access import can_start_turn, is_pro
+
+            if is_pro() or can_start_turn():
+                return
+            self._show_subscription_gate(reason="preview")
+        except Exception as e:
+            print(f"[AURA] Subscription gate check failed: {e}")
+
+    def _show_subscription_gate(self, *, reason: str = "preview") -> None:
+        try:
+            from jarvis_ui.preview_access import is_pro
+            from jarvis_ui.subscription_gate import SubscriptionGateDialog
+        except Exception as e:
+            print(f"[AURA] Could not load subscription gate: {e}")
+            return
+        if is_pro():
+            return
+        if self._sub_gate is not None and self._sub_gate.isVisible():
+            self._sub_gate.raise_()
+            self._sub_gate.activateWindow()
+            return
+        dlg = SubscriptionGateDialog(self, reason=reason)
+        dlg.unlocked.connect(self._on_subscription_unlocked)
+        dlg.dismissed.connect(self._on_subscription_dismissed)
+        self._sub_gate = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        try:
+            self._log.append_log(
+                "SYS: Pro required — you can browse the app; chat/voice reopen this."
+            )
+        except Exception:
+            pass
+
+    def _on_subscription_dismissed(self) -> None:
+        self._sub_gate = None
+        try:
+            self._log.append_log(
+                "SYS: Back to app — subscribe when you chat, speak, or run an agent."
+            )
+        except Exception:
+            pass
+
+    def _on_subscription_unlocked(self) -> None:
+        self._sub_gate = None
+        try:
+            self._log.append_log("SYS: Pro unlocked — unlimited desktop access.")
+        except Exception:
+            pass
+
+    def _maybe_consume_preview(self, text: str) -> None:
+        try:
+            from jarvis_ui.preview_access import note_assistant_success
+
+            if note_assistant_success(text):
+                # Let the user see the one free reply, then require Pro.
+                QTimer.singleShot(
+                    1100, lambda: self._show_subscription_gate(reason="preview")
+                )
+        except Exception as e:
+            print(f"[AURA] Preview consume failed: {e}")
+
     def _on_log_line(self, text: str):
         self._log.append_log(text)
         low = text.lower()
@@ -2161,9 +2320,17 @@ class MainWindow(QMainWindow):
             msg = text.split(":", 1)[1].strip()
             self._on_ai_chat_response(msg)
 
-    def _on_user_message(self, text: str):
+    def _on_user_message(self, text: str) -> bool:
+        try:
+            from jarvis_ui.preview_access import note_user_turn
+
+            if not note_user_turn():
+                self._show_subscription_gate(reason="preview")
+                return False
+        except Exception:
+            pass
         if not hasattr(self, "_conv"):
-            return
+            return False
         self._conv.add_user(text)
         ws.add_message("user", text)
         self._refresh_sidebar()
@@ -2176,6 +2343,7 @@ class MainWindow(QMainWindow):
                 if not getattr(self, "_float_skip_user_mirror", False):
                     self._float.add_user(text)
                 self._float_skip_user_mirror = False
+        return True
 
     def _on_ai_chat_response(self, text: str):
         if not hasattr(self, "_conv"):
@@ -2188,6 +2356,7 @@ class MainWindow(QMainWindow):
             self._ensure_float_for_live()
             if hasattr(self, "_float") and self._float_visible():
                 self._float.add_assistant(text)
+        self._maybe_consume_preview(text)
 
     def _on_stream_delta(self, text: str):
         if hasattr(self, "_conv"):
@@ -2204,6 +2373,7 @@ class MainWindow(QMainWindow):
         if text.strip():
             ws.add_message("assistant", text)
             self._refresh_sidebar()
+            self._maybe_consume_preview(text)
         if hasattr(self, "_float") and self._float_visible():
             self._float.stream_end(text)
 
@@ -2297,11 +2467,14 @@ class MainWindow(QMainWindow):
     def _send_from_bar(self, text: str):
         if not text:
             return
+        if not self._require_subscription():
+            return
         if getattr(self, "_center_view_mode", "chat") == "dashboard":
             self._on_agent_selected("chat")
         if not ws.get_active_chat():
             ws.create_chat(text[:40])
-        self._on_user_message(text)
+        if not self._on_user_message(text):
+            return
         # In General Chat, route image requests to local FLUX generator.
         if self._active_agent == "general" and self._looks_like_image_request(text):
             self._conv.set_live_activity("Generating image")
@@ -2571,6 +2744,9 @@ class MainWindow(QMainWindow):
             threading.Thread(target=self.on_text_command, args=(msg,), daemon=True).start()
 
     def _toggle_mute(self):
+        # Unmuting starts live voice — require Pro after free preview.
+        if self._muted and not self._require_subscription():
+            return
         self._muted = not self._muted
         self.hud.muted = self._muted
         if hasattr(self, "_dashboard_hud"):
@@ -2726,6 +2902,13 @@ class JarvisUI:
         self._updater = UpdateController(self._win, os.getpid())
         self._win._updater_ref = self._updater
         self.root = _RootShim(self._app)
+        # Frozen AURA may reinstall a legacy wake plist; restore clap-filter from disk.
+        try:
+            from jarvis_ui.wake_bootstrap import ensure_clap_wake_async
+
+            ensure_clap_wake_async(delay_s=2.5)
+        except Exception:
+            pass
 
     @property
     def muted(self) -> bool:

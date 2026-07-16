@@ -8,10 +8,15 @@ runtime/
 *.log
 .DS_Store
 config/api_keys.json
+config/*.bak
+config/*.newuser_bak
+memory/account.json
+memory/account_secrets.json
 memory/conversation_log.jsonl
 memory/language_state.json
 memory/long_term.json
 memory/vector_memory.jsonl
 memory/workspaces.json
+vendor/
 .env*
 !.env.example

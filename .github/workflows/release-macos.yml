@@ -97,8 +97,9 @@ jobs:
             --notes "## A.U.R.A ${{ steps.ver.outputs.version }}
 
           - Signed + notarized macOS Apple Silicon (.dmg)
-          - Premium drag-to-Applications installer
-          - Double-clap wake (AURA Wake)" \
+          - Improved double-clap wake (fewer false triggers)
+          - Permissions panel polish + Sign-in / Pro gate UX
+          - Windows + Linux desktop builds" \
             "${EXTRA[@]}"
 
       - name: Verify Gatekeeper acceptance

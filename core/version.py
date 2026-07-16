@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Bump this for every public release. Keep in sync with packaging/build.py.
-VERSION = "1.0.2"
+VERSION = "1.0.4"
 
 APP_NAME = "A.U.R.A"
 APP_ID = "app.hiaura.aura.desktop"

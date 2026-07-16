@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -24,7 +24,7 @@ class UpdateDialog(QDialog):
         self.setModal(True)
         self.resize(520, 420)
 
-        self._title = QLabel(f"A new version of JARVIS is available")
+        self._title = QLabel("A new version of AURA is available")
         self._title.setStyleSheet("font-size: 18px; font-weight: 600; color: #e8f8ff;")
 
         self._version = QLabel("")
@@ -66,8 +66,12 @@ class UpdateDialog(QDialog):
         layout.addLayout(actions)
 
         self.setStyleSheet("background: #050a14;")
-        self._service.on_change(self._on_state)
+        # Progress updates come from a worker thread — schedule UI on the GUI thread.
+        self._service.on_change(self._schedule_render)
         self._render(self._service.state)
+
+    def _schedule_render(self, _state: UpdateState) -> None:
+        QTimer.singleShot(0, lambda: self._render(self._service.state))
 
     def _render(self, state: UpdateState) -> None:
         release = state.release
@@ -96,11 +100,10 @@ class UpdateDialog(QDialog):
             self._status.setText(state.error)
             self._update_btn.setEnabled(True)
         else:
-            self._status.setText("The update will download in the background and install automatically.")
+            self._status.setText(
+                "The update will download in the background and install automatically."
+            )
             self._update_btn.setEnabled(True)
-
-    def _on_state(self, state: UpdateState) -> None:
-        self._render(state)
 
     def _start_update(self) -> None:
         self._service.download_and_apply(self._parent_pid)

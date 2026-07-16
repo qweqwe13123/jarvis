@@ -121,7 +121,8 @@ def save_iconset(logo: Image.Image) -> None:
 def main() -> None:
     ASSETS.mkdir(exist_ok=True)
     logo = make_logo()
-    logo.save(ASSETS / "jarvis_logo.png")
+    # Canonical brand asset is aura_logo.png (legacy jarvis_logo removed).
+    logo.save(ASSETS / "aura_logo.png")
     logo.resize((512, 512), Image.Resampling.LANCZOS).save(ROOT / "face.png")
     save_iconset(logo)
     icns_path = ASSETS / "JarvisMark.icns"
@@ -136,7 +137,7 @@ def main() -> None:
             subprocess.run(["iconutil", "-c", "icns", str(ICONSET), "-o", str(icns_path)], check=True)
         except Exception:
             print("ICNS generation failed; PNG logo was generated.")
-    print(f"Generated logo: {ASSETS / 'jarvis_logo.png'}")
+    print(f"Generated logo: {ASSETS / 'aura_logo.png'}")
 
 
 if __name__ == "__main__":

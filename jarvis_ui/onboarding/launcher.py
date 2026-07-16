@@ -9,7 +9,7 @@ from jarvis_ui.onboarding.window import OnboardingWindow
 
 
 def run_onboarding_if_needed() -> bool:
-    """Show premium onboarding once. Returns True if it was shown."""
+    """Show premium Antigravity onboarding once. Returns True if it was shown."""
     if is_onboarding_done():
         return False
 
@@ -18,6 +18,16 @@ def run_onboarding_if_needed() -> bool:
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    try:
+        from jarvis_ui.user_account import (
+            install_deep_link_handler,
+            install_update_controller_fix,
+        )
+
+        install_deep_link_handler()
+        install_update_controller_fix()
+    except Exception:
+        pass
 
     win = OnboardingWindow(preview=False)
     # Destroying mid-transition causes macOS SIGTRAP with Qt animations.
@@ -61,5 +71,5 @@ def run_onboarding_if_needed() -> bool:
             mark_shown()
         except Exception:
             pass
-
-    return True
+        return True
+    return False

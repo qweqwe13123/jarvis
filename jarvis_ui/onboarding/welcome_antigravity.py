@@ -126,13 +126,37 @@ class _GlowLogo(QWidget):
         self._rise = 0.0
         self._pix: QPixmap | None = None
 
-        root = Path(__file__).resolve().parents[2]
-        for candidate in (
-            root / "assets" / "aura_logo_onboarding.png",
-            root / "assets" / "aura_logo.png",
-            root / "assets" / "jarvis_logo.png",
-        ):
-            if not candidate.exists():
+        names = (
+            "aura_logo_onboarding.png",
+            "aura_logo.png",
+            "aura_logo_square_bg.png",
+        )
+        roots: list[Path] = []
+        here = Path(__file__).resolve()
+        # Dev: repo root (…/jarvis_ui/onboarding → parents[2])
+        roots.append(here.parents[2])
+        # Frozen: MEIPASS / Contents/{Resources,Frameworks}
+        meipass = getattr(__import__("sys"), "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(meipass))
+        try:
+            contents = Path(__import__("sys").executable).resolve().parent.parent
+            roots.extend([contents / "Resources", contents / "Frameworks"])
+        except Exception:
+            pass
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        candidates: list[Path] = []
+        for root in roots:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            for name in names:
+                candidates.append(root / "assets" / name)
+
+        for candidate in candidates:
+            if not candidate.is_file():
                 continue
             img = QPixmap(str(candidate))
             if img.isNull():
@@ -217,6 +241,38 @@ class _GlowLogo(QWidget):
         p.end()
 
 
+def _asset_candidates(*names: str) -> list[Path]:
+    """Resolve brand assets across repo, frozen Resources, and Frameworks."""
+    roots: list[Path] = []
+    try:
+        from jarvis_ui.paths import resource_dir
+
+        roots.append(Path(resource_dir()))
+    except Exception:
+        pass
+    here = Path(__file__).resolve()
+    # …/jarvis_ui/onboarding/this.py → repo root or Frameworks/
+    roots.append(here.parents[2])
+    # …/Contents/Resources when loaded from Frameworks/jarvis_ui
+    try:
+        contents = here.parents[3]
+        roots.append(contents / "Resources")
+        roots.append(contents / "Frameworks")
+    except Exception:
+        pass
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        for name in names:
+            path = root / "assets" / name
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(path)
+    return out
+
+
 class _GoogleG(QWidget):
     """Official multicolor Google G (SVG / PNG), matching Sign-in chrome."""
 
@@ -228,11 +284,14 @@ class _GoogleG(QWidget):
         self._pix: QPixmap | None = None
         self._svg = None
 
-        root = Path(__file__).resolve().parents[2]
-        png = root / "assets" / "google_g.png"
-        svg = root / "assets" / "google_g.svg"
-
-        if png.exists():
+        for png in _asset_candidates(
+            "google_g.png",
+            "google_g_72.png",
+            "google_g_54.png",
+            "google_g_36.png",
+        ):
+            if not png.is_file():
+                continue
             pm = QPixmap(str(png))
             if not pm.isNull():
                 self._pix = pm.scaled(
@@ -241,16 +300,23 @@ class _GoogleG(QWidget):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-        if self._pix is None and svg.exists():
-            try:
-                from PyQt6.QtCore import QByteArray
-                from PyQt6.QtSvg import QSvgRenderer
+                break
 
-                self._svg = QSvgRenderer(QByteArray(svg.read_bytes()))
-                if not self._svg.isValid():
+        if self._pix is None:
+            for svg in _asset_candidates("google_g.svg"):
+                if not svg.is_file():
+                    continue
+                try:
+                    from PyQt6.QtCore import QByteArray
+                    from PyQt6.QtSvg import QSvgRenderer
+
+                    self._svg = QSvgRenderer(QByteArray(svg.read_bytes()))
+                    if not self._svg.isValid():
+                        self._svg = None
+                    else:
+                        break
+                except Exception:
                     self._svg = None
-            except Exception:
-                self._svg = None
 
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QPainter(self)
@@ -434,27 +500,57 @@ class AntigravityWelcomePage(QWidget):
         self.continue_clicked.emit()
 
     def _on_google(self) -> None:
-        # Real cloud sign-in (blocks on localhost callback). Failures stay on welcome.
+        # Non-blocking cloud sign-in — keep welcome animations smooth.
+        # Repeated taps cancel a stuck attempt and open a fresh browser session.
         try:
-            from jarvis_ui.user_account import sign_in
-
-            ok = sign_in()
-            if not ok:
-                return
+            from jarvis_ui.auth_async import start_sign_in_worker
         except Exception as e:
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(self, "Sign-in failed", str(e))
+            except Exception:
+                pass
+            return
+
+        self._btn.setEnabled(False)
+        self._btn.setCursor(Qt.CursorShape.BusyCursor)
+        worker = start_sign_in_worker(self, timeout=180.0, replace_running=True)
+        if worker is None:
+            self._btn.setEnabled(True)
+            self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            return
+
+        def _ok() -> None:
+            self._btn.setEnabled(True)
+            self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            if getattr(self, "_sign_in_worker", None) is worker:
+                self._sign_in_worker = None
+            self.google_sign_in_clicked.emit()
+            self.continue_clicked.emit()
+
+        def _err(msg: str) -> None:
+            self._btn.setEnabled(True)
+            self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            if getattr(self, "_sign_in_worker", None) is worker:
+                self._sign_in_worker = None
+            if "cancelled" in (msg or "").lower():
+                # User (or a newer tap) cancelled — allow immediate retry.
+                return
             try:
                 from PyQt6.QtWidgets import QMessageBox
 
                 QMessageBox.warning(
                     self,
                     "Sign-in failed",
-                    f"Could not complete Google / AURA sign-in.\n\n{e}",
+                    f"Could not complete Google / AURA sign-in.\n\n{msg}",
                 )
             except Exception:
                 pass
-            return
-        self.google_sign_in_clicked.emit()
-        self.continue_clicked.emit()
+
+        worker.succeeded.connect(_ok)
+        worker.failed.connect(_err)
+        worker.start()
 
     def _anim(
         self,

@@ -1748,8 +1748,33 @@ class JarvisLive:
                 backoff = min(backoff * 2, 30)  # exponential backoff, capped
 
 def _ensure_double_clap_wake() -> None:
-    """Install/refresh the macOS LaunchAgent that opens Jarvis on double clap."""
+    """Install/refresh the macOS LaunchAgent that opens AURA on double clap."""
     try:
+        # Prefer on-disk clap-filter installer (survives frozen-app overwrites).
+        from pathlib import Path
+        import importlib.util
+
+        candidates = [
+            Path.home() / "Library/Application Support/AURA/wake/install_launch_agent.py",
+            Path(__file__).resolve().parent / "launcher" / "install_launch_agent.py",
+            Path("/Applications/AURA.app/Contents/Frameworks/launcher/install_launch_agent.py"),
+            Path("/Applications/AURA.app/Contents/Resources/launcher/install_launch_agent.py"),
+        ]
+        for path in candidates:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            # New installer copies listener into Application Support (clap-filter gaps).
+            if "_sync_listener" not in text and "1.80" not in text and "0.90" not in text:
+                continue
+            spec = importlib.util.spec_from_file_location("aura_wake_install", path)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.install()
+            return
+
         from launcher.install_launch_agent import install as install_wake_agent
 
         install_wake_agent()
@@ -1777,7 +1802,8 @@ def main():
         target=_wake_later, daemon=True, name="WakeAgentInstall"
     ).start()
 
-    # First-run welcome + permissions + Gemini key (before main window).
+    # First-run welcome → permissions → Gemini key, then desktop with one free preview.
+    # Pro is required after the preview (soft Cursor-style gate inside the main UI).
     try:
         from jarvis_ui.onboarding import run_onboarding_if_needed
 

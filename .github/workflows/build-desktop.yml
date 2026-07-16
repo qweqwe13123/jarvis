@@ -47,11 +47,26 @@ jobs:
           pip install -r packaging/requirements-packaging.txt
           python -m playwright install chromium || true
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V=$(python3 packaging/print_version.py)
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
       - name: Build release artifacts
         env:
           AURA_UPDATE_MANIFEST_URL: https://www.hiauraai.com/api/releases/latest
+        shell: bash
         run: |
-          python packaging/build.py --version 1.0.0 --base-url https://www.hiauraai.com/releases
+          V="${{ steps.ver.outputs.version }}"
+          python packaging/build.py \
+            --version "$V" \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/v${V}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -73,18 +88,24 @@ jobs:
           path: artifacts
 
       - name: Merge manifests and collect files
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
+          RELEASE_REPO: ${{ github.repository }}
         run: |
           python3 <<'PY'
-          import json, shutil
+          import json, os, shutil
           from pathlib import Path
 
           out = Path("dist/releases")
           out.mkdir(parents=True, exist_ok=True)
+          tag = os.environ.get("RELEASE_REF") or "v0.0.0"
+          ver = tag[1:] if tag.startswith("v") else tag
+          repo = os.environ.get("RELEASE_REPO") or "qweqwe13123/jarvis"
           merged = {
-              "version": "1.0.0",
+              "version": ver,
               "released_at": "",
-              "notes": "## A.U.R.A 1.0.0\n\n- Unsigned desktop builds for macOS, Windows, Linux",
-              "releases_base_url": "https://www.hiauraai.com/releases",
+              "notes": f"## A.U.R.A {ver}\n\n- Desktop builds for macOS, Windows, Linux",
+              "releases_base_url": f"https://github.com/{repo}/releases/download/v{ver}",
               "platforms": {},
           }
           for art in Path("artifacts").iterdir():

@@ -8,34 +8,37 @@ import hashlib
 import json
 import secrets
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+
+from jarvis_ui.paths import cloud_config_path, data_dir, support_dir
 
 
 def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    """Writable data root (Application Support when frozen)."""
+    return data_dir()
 
 
-ACCOUNT_PATH = _base_dir() / "memory" / "account.json"
-SECRETS_PATH = _base_dir() / "memory" / "account_secrets.json"
-API_KEYS_PATH = _base_dir() / "config" / "api_keys.json"
+ACCOUNT_PATH = data_dir() / "memory" / "account.json"
+SECRETS_PATH = data_dir() / "memory" / "account_secrets.json"
+API_KEYS_PATH = data_dir() / "config" / "api_keys.json"
 
-DEFAULT_API_BASE = "http://localhost:3000"
-DEFAULT_WEB_BASE = "http://localhost:3000"
+# Deep-link inbox (aura://auth?code=…) — Cursor-style, no localhost UX.
+_SUPPORT_DIR = support_dir()
+AUTH_INBOX_PATH = _SUPPORT_DIR / "auth_inbox.json"
+
+# Production defaults — never silently talk to localhost in a shipped build.
+DEFAULT_API_BASE = "https://www.hiauraai.com"
+DEFAULT_WEB_BASE = "https://www.hiauraai.com"
 
 
 def _api_base() -> str:
     try:
-        cfg = _base_dir() / "config" / "aura_cloud.json"
+        cfg = cloud_config_path()
         if cfg.exists():
             data = json.loads(cfg.read_text(encoding="utf-8"))
             return str(data.get("api_base_url") or DEFAULT_API_BASE).rstrip("/")
@@ -46,7 +49,7 @@ def _api_base() -> str:
 
 def _web_base() -> str:
     try:
-        cfg = _base_dir() / "config" / "aura_cloud.json"
+        cfg = cloud_config_path()
         if cfg.exists():
             data = json.loads(cfg.read_text(encoding="utf-8"))
             return str(data.get("web_base_url") or DEFAULT_WEB_BASE).rstrip("/")
@@ -145,6 +148,223 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+def _write_auth_inbox(code: str) -> None:
+    try:
+        AUTH_INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        AUTH_INBOX_PATH.write_text(
+            json.dumps({"code": code, "ts": time.time()}),
+            encoding="utf-8",
+        )
+        try:
+            AUTH_INBOX_PATH.chmod(0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def take_auth_inbox_code(*, max_age: float = 600.0) -> str | None:
+    """Consume a one-time code delivered via aura:// deep link."""
+    if not AUTH_INBOX_PATH.exists():
+        return None
+    try:
+        data = json.loads(AUTH_INBOX_PATH.read_text(encoding="utf-8"))
+        AUTH_INBOX_PATH.unlink(missing_ok=True)
+        code = str(data.get("code") or "").strip()
+        ts = float(data.get("ts") or 0)
+        if not code or (time.time() - ts) > max_age:
+            return None
+        return code
+    except Exception:
+        try:
+            AUTH_INBOX_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+
+def handle_aura_deep_link(url: str) -> bool:
+    """Parse aura://auth?code=… and stash for sign_in() / exchange."""
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    raw = (url or "").strip()
+    if not raw.lower().startswith("aura:"):
+        return False
+    try:
+        parsed = urlparse(raw)
+        # aura://auth?code=… or aura:auth?code=…
+        qs = parse_qs(parsed.query)
+        code = (qs.get("code") or [""])[0]
+        if not code and parsed.path:
+            # aura://auth/CODE rare form
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] != "auth":
+                code = parts[-1]
+        code = unquote(code or "").strip()
+        if not code:
+            return False
+        _write_auth_inbox(code)
+        return True
+    except Exception:
+        return False
+
+
+_deep_link_filter = None
+_update_gui_bridge = None
+
+
+def install_update_controller_fix() -> None:
+    """Ensure update UI is opened only on the Qt GUI thread (macOS crash fix).
+
+    Crash was: worker thread → QDialog.open() → NSWindow off-main-thread → SIGABRT.
+    Bake-time UpdateController may still call `_on_state` from a worker; marshal it.
+    """
+    global _update_gui_bridge
+    try:
+        from PyQt6.QtCore import QObject, pyqtSignal
+        from PyQt6.QtWidgets import QApplication
+        from core.updater.controller import UpdateController
+    except Exception:
+        return
+
+    if getattr(UpdateController, "_aura_gui_thread_fixed", False):
+        return
+
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    class _UpdateGuiBridge(QObject):
+        open_update = pyqtSignal(object, object)  # controller, state
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.open_update.connect(self._open)
+
+        def _open(self, controller, state) -> None:  # noqa: ANN001
+            if state is None or not getattr(state, "release", None):
+                return
+            if getattr(state, "downloading", False):
+                return
+            if getattr(controller, "_dialog", None) is not None:
+                return
+            try:
+                from jarvis_ui.update_dialog import UpdateDialog
+            except Exception:
+                return
+            pid = getattr(controller, "_parent_pid", None)
+            if pid is None:
+                pid = getattr(controller, "_pid", 0)
+            window = getattr(controller, "_window", None)
+            service = getattr(controller, "_service", None)
+            if service is None:
+                return
+            dialog = UpdateDialog(service, int(pid or 0), parent=window)
+            controller._dialog = dialog
+            clear = getattr(controller, "_clear_dialog", None)
+            if callable(clear):
+                dialog.finished.connect(clear)
+            else:
+                dialog.finished.connect(lambda *_: setattr(controller, "_dialog", None))
+            dialog.open()
+
+    if _update_gui_bridge is None:
+        _update_gui_bridge = _UpdateGuiBridge()
+        _update_gui_bridge.moveToThread(app.thread())
+
+    bridge = _update_gui_bridge
+
+    def _on_state(self, state) -> None:  # noqa: ANN001
+        # Queued to GUI thread even when called from a worker.
+        bridge.open_update.emit(self, state)
+
+    def _on_state_main(self, state) -> None:  # noqa: ANN001
+        bridge.open_update.emit(self, state)
+
+    UpdateController._on_state = _on_state  # type: ignore[method-assign]
+    UpdateController._on_state_main = _on_state_main  # type: ignore[attr-defined]
+    UpdateController._aura_gui_thread_fixed = True  # type: ignore[attr-defined]
+
+    # Marshal UpdateService listener callbacks onto the GUI thread.
+    try:
+        from core.updater.service import UpdateService
+
+        if not getattr(UpdateService, "_aura_emit_main_thread", False):
+
+            class _EmitBridge(QObject):
+                dispatch = pyqtSignal(object)
+
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.dispatch.connect(self._run)
+
+                def _run(self, fn) -> None:  # noqa: ANN001
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+
+            emit_bridge = _EmitBridge()
+            emit_bridge.moveToThread(app.thread())
+
+            def _emit_main(self) -> None:  # noqa: ANN001
+                snapshot = self.state
+                listeners = list(self._listeners)
+
+                def _run() -> None:
+                    for cb in listeners:
+                        try:
+                            cb(snapshot)
+                        except Exception:
+                            pass
+
+                emit_bridge.dispatch.emit(_run)
+
+            UpdateService._emit = _emit_main  # type: ignore[method-assign]
+            UpdateService._aura_emit_main_thread = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def install_deep_link_handler() -> None:
+    """Install QFileOpenEvent filter so aura:// opens while AURA is running."""
+    global _deep_link_filter
+    try:
+        install_update_controller_fix()
+    except Exception:
+        pass
+    try:
+        from PyQt6.QtCore import QEvent, QObject
+        from PyQt6.QtWidgets import QApplication
+    except Exception:
+        return
+
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    # Cold-start: macOS may pass the URL on argv.
+    for arg in sys.argv[1:]:
+        if isinstance(arg, str) and arg.lower().startswith("aura:"):
+            handle_aura_deep_link(arg)
+
+    if _deep_link_filter is not None:
+        return
+
+    class _AuraUrlFilter(QObject):
+        def eventFilter(self, _obj, event):  # noqa: N802
+            try:
+                if event.type() == QEvent.Type.FileOpen:
+                    handle_aura_deep_link(event.url().toString())
+                    return True
+            except Exception:
+                pass
+            return False
+
+    _deep_link_filter = _AuraUrlFilter(app)
+    app.installEventFilter(_deep_link_filter)
+
+
 def _apply_profile(user: dict[str, Any] | None) -> None:
     if not user:
         return
@@ -185,27 +405,52 @@ def get_access_token() -> str | None:
     return str(_load_secrets().get("access_token") or "") or None
 
 
+def get_email() -> str:
+    return str(_load_account().get("email") or "").strip()
+
+
 def get_display_name() -> str:
+    """Account name when signed in. Empty string for guests (UI shows “Sign in”)."""
+    if not is_authenticated():
+        return ""
     data = _load_account()
     name = str(data.get("display_name", "")).strip()
     if name:
         return name
-    email = str(data.get("email") or "").strip()
+    email = get_email()
     if email:
         return email.split("@")[0]
-    return getpass.getuser().replace(".", " ").replace("_", " ").title() or "User"
+    return "User"
+
+
+def get_avatar_url() -> str:
+    """Google / account profile photo URL when signed in."""
+    if not is_authenticated():
+        return ""
+    data = _load_account()
+    return str(data.get("avatar_url") or data.get("picture") or "").strip()
 
 
 def get_plan() -> str:
-    return str(_load_account().get("plan") or "free")
+    return str(_load_account().get("plan") or "free").lower()
+
+
+def has_active_subscription() -> bool:
+    """True when the cloud account has a paid plan (Pro / Team / Enterprise)."""
+    return get_plan() in ("pro", "team", "enterprise")
 
 
 def get_subtitle(*, authenticated: bool | None = None) -> str:
     authed = is_authenticated() if authenticated is None else authenticated
     if not authed:
-        return "Guest"
+        return ""
+    email = get_email()
+    if email:
+        return email
+    if not has_active_subscription():
+        return "Free plan"
     plan = get_plan().replace("_", " ").title()
-    return f"{plan} Plan"
+    return f"{plan} plan"
 
 
 def is_authenticated() -> bool:
@@ -219,108 +464,168 @@ def is_authenticated() -> bool:
     return bool(data.get("email") or data.get("user_id"))
 
 
-def sign_in(*, timeout: float = 300.0) -> bool:
+def _open_browser(url: str) -> None:
+    """Open URL reliably on macOS (webbrowser.open can silently no-op)."""
+    import subprocess
+
+    url = (url or "").strip()
+    if not url:
+        raise RuntimeError("Sign-in failed: empty verification URL")
+    opened = False
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(["open", url], check=False, timeout=8)
+            opened = True
+        except Exception:
+            opened = False
+    if not opened:
+        try:
+            opened = bool(webbrowser.open(url, new=2))
+        except Exception:
+            opened = False
+    if not opened and sys.platform == "darwin":
+        try:
+            subprocess.Popen(["open", "-a", "Safari", url])
+            opened = True
+        except Exception:
+            pass
+    if not opened:
+        raise RuntimeError(
+            f"Could not open the browser. Open this link manually:\n{url}"
+        )
+
+
+def sign_in(
+    *,
+    timeout: float = 180.0,
+    pump_events: bool = False,
+    cancel_event: Any | None = None,
+    is_current: Any | None = None,
+    on_browser_opened: Any | None = None,
+) -> bool:
     """
-    Cursor-style: open the website login in the browser, wait for localhost
-    handoff code, then exchange for desktop tokens via jarvis-saas.
+    Cursor-style domain login: browser stays on hiauraai.com, then opens
+    aura://auth?code=… (or we poll the domain API as a backup).
+
+    Prefer running via ``jarvis_ui.auth_async.SignInWorker`` so the UI thread
+    never blocks. Pass ``is_current`` / ``cancel_event`` so a new Sign in can
+    abort a stuck previous attempt.
     """
-    from urllib.parse import urlencode
+    install_deep_link_handler()
+    take_auth_inbox_code()  # clear stale
+
+    def _cancelled() -> bool:
+        if cancel_event is not None and cancel_event.is_set():
+            return True
+        if callable(is_current):
+            try:
+                return not bool(is_current())
+            except Exception:
+                return False
+        return False
+
+    if _cancelled():
+        raise RuntimeError("Sign-in cancelled.")
 
     verifier, challenge = _pkce_pair()
 
-    result: dict[str, str] = {}
-    done = threading.Event()
+    try:
+        start = _http_json(
+            "POST",
+            "/api/auth/device/start",
+            body={"challenge": challenge},
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not start domain login on {_web_base()}. "
+            f"Check that the site is online and DATABASE_URL is configured. ({e})"
+        ) from e
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            qs = parse_qs(urlparse(self.path).query)
-            code = (qs.get("code") or [""])[0]
-            if not code:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Missing code")
-                return
-            result["code"] = code
-            account_url = f"{_web_base()}/account?desktop=linked"
-            # Delay redirect a few seconds so Yandex Browser users can tap Allow
-            # before the page navigates away (their prompt closes on fast nav).
-            html = f"""<!doctype html>
-<html><head>
-<meta charset="utf-8"/>
-<title>AURA signed in</title>
-</head>
-<body style="font-family:system-ui;background:#050a14;color:#e8f8ff;display:grid;place-items:center;min-height:100vh;margin:0">
-<div style="text-align:center;max-width:28rem;padding:1.5rem">
-  <h2 style="color:#00d1ff;margin:0 0 .75rem">AURA connected</h2>
-  <p style="color:#7eb8d4;margin:0 0 1rem">If your browser asks for device access, press Allow.</p>
-  <p style="color:#5a8fa8;margin:0 0 1rem;font-size:13px">Returning to hiauraai.com in 4 seconds…</p>
-  <a href="{account_url}" style="color:#00d1ff">Open Account now →</a>
-</div>
-<script>
-  setTimeout(function() {{ location.replace({account_url!r}); }}, 4000);
-</script>
-</body></html>""".encode(
-                "utf-8"
-            )
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html)
-            done.set()
-        def log_message(self, *_a):  # noqa: N802
-            return
+    if _cancelled():
+        raise RuntimeError("Sign-in cancelled.")
 
-    httpd = None
-    port = 8765
-    for candidate in range(8765, 8785):
-        try:
-            httpd = HTTPServer(("127.0.0.1", candidate), Handler)
-            port = candidate
-            break
-        except OSError:
-            continue
-    if httpd is None:
-        raise RuntimeError("Could not bind localhost callback port")
-    desktop_redirect = f"http://127.0.0.1:{port}/callback"
-
-    thread = threading.Thread(target=httpd.handle_request, daemon=True)
-    thread.start()
-
-    # Next.js login (not legacy login.html)
-    login_q = urlencode(
-        {
-            "from": "desktop",
-            "next": "/account",
-            "desktop_redirect": desktop_redirect,
-            "code_challenge": challenge,
-        }
+    device_id = str(start.get("device_id") or "")
+    device_secret = str(start.get("device_secret") or "")
+    verify_url = str(
+        start.get("verification_uri_complete")
+        or f"{_web_base()}/auth/desktop?device_id={device_id}&challenge={challenge}"
     )
-    webbrowser.open(f"{_web_base()}/login?{login_q}")
+    if not device_id or not device_secret:
+        raise RuntimeError("Sign-in failed: invalid device session from server")
 
-    deadline = time.time() + timeout
-    while not done.is_set():
-        if time.time() > deadline:
-            httpd.server_close()
-            raise TimeoutError(
-                "Sign-in timed out. In the browser: click Connect AURA, allow access, "
-                "then Continue to account."
-            )
+    interval = max(1.0, float(start.get("interval") or 2))
+    _open_browser(verify_url)
+    if callable(on_browser_opened):
         try:
-            from PyQt6.QtWidgets import QApplication
-
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents()
+            on_browser_opened(verify_url)
         except Exception:
             pass
-        done.wait(0.05)
 
-    httpd.server_close()
-    code = result.get("code")
+    code = ""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _cancelled():
+            raise RuntimeError("Sign-in cancelled. Tap Sign in again.")
+
+        if pump_events:
+            try:
+                from PyQt6.QtWidgets import QApplication
+
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents()
+            except Exception:
+                pass
+
+        # Prefer deep-link handoff (aura://) over poll.
+        inbox = take_auth_inbox_code()
+        if inbox:
+            code = inbox
+            break
+
+        try:
+            poll = _http_json(
+                "POST",
+                "/api/auth/device/poll",
+                body={"device_id": device_id, "device_secret": device_secret},
+            )
+        except RuntimeError as e:
+            msg = str(e)
+            if "403" in msg:
+                raise RuntimeError("Desktop login denied.") from e
+            if "410" in msg or "expired" in msg.lower():
+                raise TimeoutError(
+                    "Sign-in expired. Open Sign In from AURA again."
+                ) from e
+            # Brief sleep in slices so cancel reacts quickly.
+            end = time.time() + interval
+            while time.time() < end:
+                if _cancelled():
+                    raise RuntimeError("Sign-in cancelled. Tap Sign in again.")
+                time.sleep(min(0.25, end - time.time()))
+            continue
+
+        status = str(poll.get("status") or "")
+        if status == "ready" and poll.get("code"):
+            code = str(poll["code"])
+            break
+        if status in ("expired", "denied"):
+            raise RuntimeError(f"Sign-in {status}. Try Sign In again from AURA.")
+        end = time.time() + interval
+        while time.time() < end:
+            if _cancelled():
+                raise RuntimeError("Sign-in cancelled. Tap Sign in again.")
+            time.sleep(min(0.25, end - time.time()))
+
+    if _cancelled():
+        raise RuntimeError("Sign-in cancelled. Tap Sign in again.")
+
     if not code:
-        raise RuntimeError("Sign-in failed: no code")
+        raise TimeoutError(
+            "Sign-in timed out. Tap Sign in again to reopen the website, "
+            "then click Yes, Log In on hiauraai.com."
+        )
 
-    # jarvis-saas: PUT /api/auth/desktop-code exchanges the one-time code
     tokens = _http_json(
         "PUT",
         "/api/auth/desktop-code",
@@ -343,26 +648,33 @@ def sign_in(*, timeout: float = 300.0) -> bool:
 
 
 def refresh_entitlements() -> dict[str, Any] | None:
-    """Sync plan from server when legacy refresh endpoints exist."""
+    """Sync live plan from jarvis-saas /api/auth/me (after website Checkout)."""
     secrets = _load_secrets()
-    access = secrets.get("access_token")
-    refresh = secrets.get("refresh_token")
+    access = str(secrets.get("access_token") or "")
+    refresh = str(secrets.get("refresh_token") or "")
     if not access and not refresh:
         return None
 
-    # Desktop stub tokens from Next.js don't support /me Bearer yet — keep local profile.
-    if str(access or "").startswith("desktop_"):
-        data = _load_account()
-        if data.get("authenticated"):
-            return {
-                "id": data.get("user_id"),
-                "email": data.get("email"),
-                "name": data.get("display_name"),
-                "plan": data.get("plan") or "free",
-            }
-        return None
+    # Legacy stub tokens cannot call /me — force a clean sign-in next time.
+    if access.startswith("desktop_") or refresh.startswith("desktop_refresh_"):
+        return {
+            "id": _load_account().get("user_id"),
+            "email": _load_account().get("email"),
+            "name": _load_account().get("display_name"),
+            "plan": _load_account().get("plan") or "free",
+            "needs_reauth": True,
+        }
 
     def _load_user(tok: str) -> dict:
+        try:
+            me = _http_json("GET", "/api/auth/me", token=tok)
+            if isinstance(me.get("user"), dict):
+                user = dict(me["user"])
+                if me.get("plan"):
+                    user["plan"] = me["plan"]
+                return user
+        except Exception:
+            pass
         try:
             synced = _http_json("POST", "/billing/sync", body={}, token=tok)
             if isinstance(synced.get("user"), dict):
@@ -373,7 +685,7 @@ def refresh_entitlements() -> dict[str, Any] | None:
 
     try:
         if access:
-            user = _load_user(str(access))
+            user = _load_user(access)
             _apply_profile(user)
             return user
     except Exception:
@@ -395,14 +707,28 @@ def refresh_entitlements() -> dict[str, Any] | None:
     return None
 
 
-def sign_out() -> None:
+def ensure_paid_access(*, sync: bool = True) -> tuple[bool, str]:
+    """Returns (ok, reason). When sync=True, refresh plan from the website first."""
+    if not is_authenticated() or not get_access_token():
+        return False, "sign_in"
+    if sync:
+        try:
+            refresh_entitlements()
+        except Exception:
+            pass
+    if has_active_subscription():
+        return True, "ok"
+    return False, "upgrade"
+
+
+def sign_out(*, revoke_remote_async: bool = True) -> None:
+    """Clear local session immediately. Optionally revoke refresh token off-thread."""
+    import threading
+
     secrets = _load_secrets()
     refresh = secrets.get("refresh_token")
-    try:
-        if refresh and not str(refresh).startswith("desktop_"):
-            _http_json("POST", "/auth/logout", body={"refresh_token": refresh})
-    except Exception:
-        pass
+
+    # Local clear first — UI must feel instant.
     _save_secrets({})
     data = _load_account()
     data["authenticated"] = False
@@ -420,6 +746,19 @@ def sign_out() -> None:
         set_tier_from_server("free")
     except Exception:
         pass
+
+    def _revoke() -> None:
+        try:
+            if refresh and not str(refresh).startswith("desktop_"):
+                _http_json("POST", "/auth/logout", body={"refresh_token": refresh})
+        except Exception:
+            pass
+
+    if refresh and not str(refresh).startswith("desktop_"):
+        if revoke_remote_async:
+            threading.Thread(target=_revoke, daemon=True, name="AuraSignOut").start()
+        else:
+            _revoke()
 
 
 def create_account(display_name: str = "") -> None:
@@ -452,6 +791,16 @@ def open_pricing() -> None:
 
 def open_account() -> None:
     webbrowser.open(f"{_web_base()}/account")
+
+
+def open_support() -> None:
+    """Help & Support — docs / contact on the website."""
+    webbrowser.open(f"{_web_base()}/support")
+
+
+def open_referral() -> None:
+    """Referral program dashboard on the website."""
+    webbrowser.open(f"{_web_base()}/referral")
 
 
 def open_billing_portal() -> None:

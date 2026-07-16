@@ -35,7 +35,7 @@ def aura_logo(size: int = 88) -> QLabel:
     root = Path(__file__).resolve().parents[2]
     for candidate in (
         root / "assets" / "aura_logo.png",
-        root / "assets" / "jarvis_logo.png",
+        root / "assets" / "aura_logo_onboarding.png",
     ):
         if candidate.exists():
             pm = QPixmap(str(candidate))
