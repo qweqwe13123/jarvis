@@ -70,8 +70,21 @@ jobs:
       - name: Generate Retina DMG artwork
         run: python packaging/dmg_background.py
 
+      - name: Detect signing secrets
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          if [[ -n "${MACOS_CERTIFICATE_P12_BASE64}" && -n "${APPLE_API_KEY_BASE64}" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Signing secrets missing — macOS job will build unsigned; upload a locally notarized DMG for Gatekeeper."
+          fi
+
       - name: Import signing + notary credentials
-        if: ${{ github.event_name == 'push' || inputs.notarize }}
+        if: ${{ steps.signing.outputs.available == 'true' && (github.event_name == 'push' || inputs.notarize) }}
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -87,9 +100,13 @@ jobs:
           AURA_CODESIGN_IDENTITY: ${{ env.AURA_CODESIGN_IDENTITY }}
           AURA_NOTARY_PROFILE: ${{ env.AURA_NOTARY_PROFILE }}
         run: |
-          EXTRA=(--sign)
-          if [[ "${{ github.event_name }}" == "push" || "${{ inputs.notarize }}" == "true" ]]; then
-            EXTRA=(--notarize)
+          EXTRA=()
+          if [[ "${{ steps.signing.outputs.available }}" == "true" ]]; then
+            if [[ "${{ github.event_name }}" == "push" || "${{ inputs.notarize }}" == "true" ]]; then
+              EXTRA=(--notarize)
+            else
+              EXTRA=(--sign)
+            fi
           fi
           python packaging/build.py \
             --version "${{ steps.ver.outputs.version }}" \
@@ -103,7 +120,7 @@ jobs:
             "${EXTRA[@]}"
 
       - name: Verify Gatekeeper acceptance
-        if: ${{ github.event_name == 'push' || inputs.notarize }}
+        if: ${{ steps.signing.outputs.available == 'true' }}
         run: |
           DMG="dist/releases/AURA-${{ steps.ver.outputs.version }}-macos-arm64.dmg"
           spctl -a -t open --context context:primary-signature -v "$DMG"

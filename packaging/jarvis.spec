@@ -7,15 +7,16 @@ from PyInstaller.utils.hooks import collect_data_files
 ROOT = Path(SPECPATH).resolve().parent
 APP_NAME = "AURA"
 
-datas = [
-    (str(ROOT / "core" / "prompt.txt"), "core"),
-    (str(ROOT / "config"), "config"),
-    (str(ROOT / "jarvis_ui"), "jarvis_ui"),
-    (str(ROOT / "launcher"), "launcher"),
-    (str(ROOT / "resources" / "skills"), "resources/skills"),
-    (str(ROOT / "packages" / "aura-openclaw" / "aura_openclaw"), "aura_openclaw"),
-    (str(ROOT / "packaging" / "updater_stub.py"), "packaging"),
+_raw_datas = [
+    (ROOT / "core" / "prompt.txt", "core"),
+    (ROOT / "config", "config"),
+    (ROOT / "jarvis_ui", "jarvis_ui"),
+    (ROOT / "launcher", "launcher"),
+    (ROOT / "resources" / "skills", "resources/skills"),
+    (ROOT / "packages" / "aura-openclaw" / "aura_openclaw", "aura_openclaw"),
+    (ROOT / "packaging" / "updater_stub.py", "packaging"),
 ]
+datas = [(str(src), dst) for src, dst in _raw_datas if Path(src).exists()]
 
 # LiteLLM reads JSON/tokenizer assets relative to its package path at import time.
 # Skip the proxy UI tree — it is huge and unused by the desktop app.
