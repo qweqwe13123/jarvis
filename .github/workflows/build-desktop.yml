@@ -17,7 +17,8 @@ jobs:
         include:
           - os: macos-14
             key: darwin-arm64
-          - os: macos-13
+          # macos-13 retired Dec 2025; use last hosted Intel runner.
+          - os: macos-15-intel
             key: darwin-x64
           - os: windows-latest
             key: win-x64
