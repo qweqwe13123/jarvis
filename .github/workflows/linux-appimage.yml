@@ -1,0 +1,84 @@
+name: Linux AppImage
+
+# Build/upload AURA-*.AppImage for an existing tag (or current version).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.6). Empty = VERSION from repo."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libxkbcommon0 libdbus-1-3 libxcb-cursor0 \
+            libfuse2 desktop-file-utils
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+          pip install -r packaging/requirements-packaging.txt
+
+      - name: Resolve version / tag
+        id: ver
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+            V="${TAG#v}"
+          else
+            V=$(python3 packaging/print_version.py)
+            TAG="v${V}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build AppImage
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          python packaging/build.py \
+            --version "$V" \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/${TAG}" \
+            --notes "## A.U.R.A ${V}
+
+          - Linux AppImage
+          - macOS universal + Windows builds"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-linux-appimage
+          path: |
+            dist/releases/AURA-*-linux-x64.AppImage
+            dist/releases/AURA-*-linux-x64.zip
+            dist/releases/manifest.json
+
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          V="${{ steps.ver.outputs.version }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "AURA ${V}" --notes "AURA ${V}"
+          fi
+          gh release upload "$TAG" \
+            "dist/releases/AURA-${V}-linux-x64.AppImage" \
+            "dist/releases/AURA-${V}-linux-x64.zip" \
+            --clobber

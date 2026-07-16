@@ -507,10 +507,22 @@ def package_release(
         shutil.copy2(exe, primary_path)
     else:
         artifact_root = build_pyinstaller(clean=True)
-        primary_name = "AURA-%s-linux-x64.zip" % version
+        # Keep zip for debugging / fallback; public primary is AppImage.
+        update_name = "AURA-%s-linux-x64.zip" % version
+        update_path = DIST / update_name
+        _zip_tree(artifact_root, update_path)
+
+        import importlib.util
+
+        appimage_mod_path = ROOT / "packaging" / "make_appimage.py"
+        spec = importlib.util.spec_from_file_location("aura_make_appimage", appimage_mod_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load {appimage_mod_path}")
+        appimage_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(appimage_mod)
+        primary_name = "AURA-%s-linux-x64.AppImage" % version
         primary_path = DIST / primary_name
-        _zip_tree(artifact_root, primary_path)
-        update_name, update_path = primary_name, primary_path
+        appimage_mod.make_appimage(artifact_root, primary_path, version=version)
 
     manifest_path = DIST / "manifest.json"
     manifest: dict = {}

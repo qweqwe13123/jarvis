@@ -118,8 +118,11 @@ def classify(name: str):
         return [("win-x64", "primary")]
     if name.endswith("-win-x64.zip"):
         return [("win-x64", "update")]
-    if name.endswith("-linux-x64.zip"):
+    if name.endswith("-linux-x64.AppImage"):
         return [("linux-x64", "primary")]
+    if name.endswith("-linux-x64.zip"):
+        # Prefer AppImage as primary when both exist.
+        return [("linux-x64", "update")]
     return []
 
 def sha_of_url(url: str, size: int) -> str:
@@ -201,12 +204,11 @@ if dmg.is_file():
         platforms[key] = dict(primary)
 
 prev = json.loads(saas.read_text()) if saas.exists() else {}
-# Keep Windows from the previous site manifest if this tag only refreshed macOS.
-# Linux is intentionally omitted from the public download page for now.
-if "win-x64" not in platforms and "win-x64" in (prev.get("platforms") or {}):
-    platforms["win-x64"] = prev["platforms"]["win-x64"]
-    print("preserved win-x64 from previous site manifest")
-platforms.pop("linux-x64", None)
+# Keep non-mac platforms from the previous site manifest when a mac-only deploy runs.
+for k in ("win-x64", "linux-x64"):
+    if k not in platforms and k in (prev.get("platforms") or {}):
+        platforms[k] = prev["platforms"][k]
+        print(f"preserved {k} from previous site manifest")
 
 manifest = {
     "version": version,
