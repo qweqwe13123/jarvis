@@ -41,14 +41,23 @@ def _is_clap_filter(path: Path) -> bool:
     return "_is_clap_candidate" in text and "clap-filter" in text
 
 
+def _safe_copy(src: Path, dst: Path) -> None:
+    try:
+        if src.resolve() == dst.resolve():
+            return
+    except Exception:
+        pass
+    shutil.copy2(src, dst)
+
+
 def _copy_support_files() -> Path | None:
     src_install = next((p for p in _INSTALLER_CANDIDATES if p.is_file()), None)
     src_listener = next((p for p in _LISTENER_CANDIDATES if p.is_file() and _is_clap_filter(p)), None)
     if src_install is None or src_listener is None:
         return None
     _SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src_install, _SUPPORT_INSTALLER)
-    shutil.copy2(src_listener, _SUPPORT_LISTENER)
+    _safe_copy(src_install, _SUPPORT_INSTALLER)
+    _safe_copy(src_listener, _SUPPORT_LISTENER)
     return _SUPPORT_INSTALLER
 
 
@@ -58,11 +67,18 @@ def _plist_is_clap_filter() -> bool:
         text = plist.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return False
+    # Broken legacy: AURA binary invoked with a .py path (not --wake-listener).
+    if "AURA.app/Contents/MacOS/AURA" in text and "wake_listener.py" in text:
+        if "--wake-listener" not in text:
+            return False
+    # Good: shipped app wake mode.
+    if "--wake-listener" in text and "AURA.app/Contents/MacOS/AURA" in text:
+        return True
+    # Good: python + clap-filter script (local dev / Application Support).
     return (
         "wake_listener.py" in text
-        and ("2.40" in text or "1.80" in text or "0.90" in text)
-        and ".venv/bin/python" in text
-        and "AURA.app/Contents/MacOS/AURA" not in text.split("ProgramArguments", 1)[-1][:500]
+        and ("2.40" in text or "2.4" in text or "1.80" in text or "0.90" in text)
+        and ("python" in text.lower() or ".venv" in text)
     )
 
 

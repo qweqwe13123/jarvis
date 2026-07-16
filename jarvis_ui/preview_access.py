@@ -85,18 +85,20 @@ def note_user_turn() -> bool:
         return True
 
 
-def note_assistant_success(text: str = "") -> bool:
+def note_assistant_success(text: str = "", *, require_pending: bool = True) -> bool:
     """
-    Call when Jarvis delivers a real reply after a user turn.
+    Call when AURA delivers a real reply after a user turn.
 
     Returns True if the free preview was just consumed (caller should show gate).
+    For live voice, pass require_pending=False so a queued Qt signal race cannot
+    skip consumption and leave unlimited voice open.
     """
     global _pending_user_turn
     cleaned = (text or "").strip()
     if len(cleaned) < 2:
         return False
     low = cleaned.lower()
-    if low.startswith(("err:", "sys:", "error", "agent error")):
+    if low.startswith(("err:", "sys:", "error", "agent error", "focus:")):
         return False
 
     if is_pro():
@@ -104,7 +106,7 @@ def note_assistant_success(text: str = "") -> bool:
         return False
 
     with _LOCK:
-        if not _pending_user_turn:
+        if require_pending and not _pending_user_turn:
             return False
         _pending_user_turn = False
         data = _load()
@@ -116,6 +118,11 @@ def note_assistant_success(text: str = "") -> bool:
         data["consumed_at"] = time.time()
         _save(data)
         return True
+
+
+def allow_live_mic() -> bool:
+    """Whether the live mic may keep sending audio (Pro or unused free preview)."""
+    return can_start_turn()
 
 
 def reset_preview_for_tests() -> None:

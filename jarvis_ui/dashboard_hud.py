@@ -99,7 +99,7 @@ class DashboardInputBar(QWidget):
         inner.setSpacing(8)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Message J.A.R.V.I.S....")
+        self._input.setPlaceholderText("Message A.U.R.A...")
         self._input.setFont(QFont(T.CHAT_FONT, 15))
         self._input.setFrame(False)
         self._input.setMinimumHeight(36)

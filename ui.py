@@ -357,13 +357,13 @@ class HudCanvas(QWidget):
         p.drawEllipse(QRectF(cx - fw * 0.13, cy - fw * 0.13, fw * 0.26, fw * 0.26))
 
         font = QFont(chat_t.CHAT_FONT, max(6, int(fw * 0.105)), QFont.Weight.DemiBold)
-        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 108)
+        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 152)
         p.setFont(font)
         p.setPen(QPen(accent))
         p.drawText(
-            QRectF(cx - fw * 0.34, cy - fw * 0.11, fw * 0.68, fw * 0.22),
+            QRectF(cx - fw * 0.42, cy - fw * 0.11, fw * 0.84, fw * 0.22),
             Qt.AlignmentFlag.AlignCenter,
-            "J.A.R.V.I.S.",
+            "A.U.R.A",
         )
 
     def set_voice_level(self, level: float) -> None:
@@ -582,10 +582,12 @@ class HudCanvas(QWidget):
                 QFont.Weight.DemiBold if self._dashboard_mode else QFont.Weight.Bold,
             )
             if self._dashboard_mode:
-                label_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 138)
+                label_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 168)
+            else:
+                label_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 148)
             p.setFont(label_font)
-            p.drawText(QRectF(cx - fw * 0.22, cy - 18, fw * 0.44, 36),
-                       Qt.AlignmentFlag.AlignCenter, "J.A.R.V.I.S.")
+            p.drawText(QRectF(cx - fw * 0.36, cy - 18, fw * 0.72, 36),
+                       Qt.AlignmentFlag.AlignCenter, "A.U.R.A")
 
         # particles
         for pt in self._particles:
@@ -867,7 +869,7 @@ class FileDropZone(QWidget):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select a file for JARVIS", str(Path.home()),
+            self, "Select a file for AURA", str(Path.home()),
             "All Files (*.*);;"
             "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
             "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
@@ -1350,10 +1352,11 @@ class MainWindow(QMainWindow):
     _code_done_sig = pyqtSignal(str)
     _code_err_sig = pyqtSignal(str)
     _user_voice_sig = pyqtSignal(float)
+    _preview_gate_sig = pyqtSignal()
 
     def __init__(self, face_path: str):
         super().__init__()
-        self.setWindowTitle("JARVIS")
+        self.setWindowTitle("AURA")
         self.setMinimumSize(_MIN_W, _MIN_H)
 
         screen = QApplication.primaryScreen().availableGeometry()
@@ -1466,6 +1469,7 @@ class MainWindow(QMainWindow):
         self._stream_end_sig.connect(self._on_stream_end)
         self._activity_sig.connect(self._on_activity)
         self._user_voice_sig.connect(self._on_user_voice_level)
+        self._preview_gate_sig.connect(self._on_preview_gate_request)
         self._load_active_conversation()
 
         self._overlay: SetupOverlay | None = None
@@ -1701,7 +1705,7 @@ class MainWindow(QMainWindow):
         self.hide()
         if hasattr(self, "_tray") and self._tray._tray is not None:
             self._tray.show_message(
-                "Jarvis",
+                "AURA",
                 f"Still running in the background. "
                 f"Press {hotkey_display(ws.get_settings().get('overlay_hotkey') or default_hotkey())} "
                 f"for the floating bar.",
@@ -1788,11 +1792,11 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("JARVIS", C.PRI_DIM))
+        lay.addWidget(_badge("AURA", C.PRI_DIM))
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
-        title = QLabel("J.A.R.V.I.S")
+        title = QLabel("A.U.R.A")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
@@ -2301,14 +2305,39 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _maybe_consume_preview(self, text: str) -> None:
+    def _on_preview_gate_request(self) -> None:
+        self._force_mute_for_gate()
+        self._show_subscription_gate(reason="preview")
+
+    def _force_mute_for_gate(self) -> None:
+        """Mute live mic without subscription checks (after free preview is used)."""
+        if self._muted:
+            return
+        self._muted = True
+        try:
+            self.hud.muted = True
+            if hasattr(self, "_dashboard_hud"):
+                self._dashboard_hud.muted = True
+            self._style_mute_btn()
+            self._apply_state("MUTED")
+            if hasattr(self, "_float"):
+                self._float.set_muted(True)
+        except Exception:
+            pass
+        try:
+            self._log.append_log("SYS: Microphone muted — free preview used.")
+        except Exception:
+            pass
+
+    def _maybe_consume_preview(self, text: str, *, require_pending: bool = True) -> None:
         try:
             from jarvis_ui.preview_access import note_assistant_success
 
-            if note_assistant_success(text):
-                # Let the user see the one free reply, then require Pro.
+            if note_assistant_success(text, require_pending=require_pending):
+                # Stop further live voice immediately; show Pro gate shortly after.
+                self._force_mute_for_gate()
                 QTimer.singleShot(
-                    1100, lambda: self._show_subscription_gate(reason="preview")
+                    900, lambda: self._show_subscription_gate(reason="preview")
                 )
         except Exception as e:
             print(f"[AURA] Preview consume failed: {e}")
@@ -2316,7 +2345,7 @@ class MainWindow(QMainWindow):
     def _on_log_line(self, text: str):
         self._log.append_log(text)
         low = text.lower()
-        if low.startswith("jarvis:"):
+        if low.startswith(("jarvis:", "aura:")):
             msg = text.split(":", 1)[1].strip()
             self._on_ai_chat_response(msg)
 
@@ -2325,6 +2354,7 @@ class MainWindow(QMainWindow):
             from jarvis_ui.preview_access import note_user_turn
 
             if not note_user_turn():
+                self._force_mute_for_gate()
                 self._show_subscription_gate(reason="preview")
                 return False
         except Exception:
@@ -2373,7 +2403,8 @@ class MainWindow(QMainWindow):
         if text.strip():
             ws.add_message("assistant", text)
             self._refresh_sidebar()
-            self._maybe_consume_preview(text)
+            # Startup greeting has no pending user turn — must not consume preview.
+            self._maybe_consume_preview(text, require_pending=True)
         if hasattr(self, "_float") and self._float_visible():
             self._float.stream_end(text)
 
@@ -2588,7 +2619,7 @@ class MainWindow(QMainWindow):
         self._ai_model_lbl = self._ai_cell("Current Model", "gemini-live")
         self._ai_state_lbl = self._ai_cell("AI Status", "Listening")
         self._ai_provider_lbl = self._ai_cell("Provider", "gemini-live")
-        self._wake_lbl = self._ai_cell("Wake Word", "Jarvis")
+        self._wake_lbl = self._ai_cell("Wake Word", "AURA")
         self._ai_mem_lbl = self._ai_cell("Memory", "Persistent")
         self._ai_index_lbl = self._ai_cell("Tools", "25 ready")
         self._ai_ctx_lbl = self._ai_mem_lbl
@@ -2720,11 +2751,11 @@ class MainWindow(QMainWindow):
         model = str(data.get("model", "--"))
         provider = str(data.get("provider", "--"))
         status = str(data.get("status", "Listening"))
-        wake = str(data.get("wake", "Jarvis"))
+        wake = str(data.get("wake", "AURA"))
         self._set_ai_cell(self._ai_model_lbl, model)
         self._set_ai_cell(self._ai_provider_lbl, provider)
         self._set_ai_cell(self._ai_state_lbl, status.replace("listening", "Listening"))
-        self._set_ai_cell(self._wake_lbl, wake if wake != "--" else "Jarvis")
+        self._set_ai_cell(self._wake_lbl, wake if wake != "--" else "AURA")
 
     def _on_file_selected(self, path: str):
         self._current_file = path
@@ -2732,7 +2763,7 @@ class MainWindow(QMainWindow):
         cat  = _file_category(p)
         icon, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size = _fmt_size(p.stat().st_size)
-        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Tell JARVIS what to do with it")
+        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Tell AURA what to do with it")
         self._log.append_log(f"FILE: {p.name} ({size}) loaded")
         if self.on_text_command:
             msg = (
@@ -2954,6 +2985,12 @@ class JarvisUI:
 
     def stream_end(self, text: str = ""):
         self._win._stream_end_sig.emit(text)
+
+    def force_mute_for_gate(self):
+        self._win._force_mute_for_gate()
+
+    def request_preview_gate(self):
+        self._win._preview_gate_sig.emit()
 
     def add_activity(self, label: str, detail: str = ""):
         self._win._activity_sig.emit({"label": label, "detail": detail})

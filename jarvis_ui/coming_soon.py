@@ -1,4 +1,4 @@
-"""Coming Soon roadmap — premium SaaS-style future of Jarvis."""
+"""Coming Soon roadmap — premium SaaS-style future of AURA."""
 from __future__ import annotations
 
 import platform
@@ -52,7 +52,7 @@ FEATURES: list[dict] = [
         "icon": "💼",
         "title": "AI Career Assistant",
         "body": (
-            "Your personal career advisor. Jarvis will analyze your experience, skills, goals, "
+            "Your personal career advisor. AURA will analyze your experience, skills, goals, "
             "and location to find better jobs, improve your resume, prep interviews, "
             "apply automatically, and track applications."
         ),
@@ -70,7 +70,7 @@ FEATURES: list[dict] = [
         "icon": "📈",
         "title": "Market Intelligence",
         "body": (
-            "Stay ahead of the market. Jarvis monitors trending industries, growing businesses, "
+            "Stay ahead of the market. AURA monitors trending industries, growing businesses, "
             "emerging technologies, new business ideas, market demand, and high-growth opportunities."
         ),
     },
@@ -102,7 +102,7 @@ FEATURES: list[dict] = [
         "icon": "🌐",
         "title": "Smart Web Research",
         "body": (
-            "Instead of searching the internet yourself, Jarvis will search, analyze, compare, "
+            "Instead of searching the internet yourself, AURA will search, analyze, compare, "
             "summarize, verify sources, and provide the final answer in seconds."
         ),
     },
@@ -223,7 +223,7 @@ class _FadeLabel(QLabel):
 
 
 class ComingSoonView(QWidget):
-    """Opened from sidebar More — roadmap of upcoming Jarvis capabilities."""
+    """Opened from sidebar More — roadmap of upcoming AURA capabilities."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -268,7 +268,7 @@ class ComingSoonView(QWidget):
         il.addWidget(hero)
         il.addSpacing(18)
 
-        hero_sub = QLabel("The Future of Jarvis")
+        hero_sub = QLabel("The Future of AURA")
         hero_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hero_sub.setFont(_sans(15, QFont.Weight.Medium))
         hero_sub.setStyleSheet(f"color: {_MUTED}; background: transparent;")
@@ -389,14 +389,14 @@ class ComingSoonView(QWidget):
         fl.setContentsMargins(40, 40, 40, 40)
         fl.setSpacing(14)
 
-        self._footer_title = _FadeLabel("Jarvis is just getting started.")
+        self._footer_title = _FadeLabel("AURA is just getting started.")
         self._footer_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._footer_title.setFont(_sans(26, QFont.Weight.Bold))
         self._footer_title.setWordWrap(True)
         fl.addWidget(self._footer_title)
 
         footer_body = QLabel(
-            "Every month, new AI capabilities will be added to make Jarvis more powerful, "
+            "Every month, new AI capabilities will be added to make AURA more powerful, "
             "more intelligent, and more useful.\n\nThe best is yet to come. ✨"
         )
         footer_body.setAlignment(Qt.AlignmentFlag.AlignCenter)

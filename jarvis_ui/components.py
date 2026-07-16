@@ -164,7 +164,7 @@ class JarvisConsole(QWidget):
         self._entries = []
         for m in messages:
             role = m.get("role", "assistant")
-            title = "You" if role == "user" else "JARVIS"
+            title = "You" if role == "user" else "AURA"
             self._entries.insert(0, {"title": title, "content": m.get("content", ""), "role": role})
         self._rebuild_output()
 
@@ -184,7 +184,7 @@ class JarvisConsole(QWidget):
             """)
             cl = QVBoxLayout(card)
             cl.setContentsMargins(12, 10, 12, 10)
-            hdr = QLabel(entry.get("title", "JARVIS"))
+            hdr = QLabel(entry.get("title", "AURA"))
             hdr.setFont(QFont(T.FONT_UI, 8, QFont.Weight.Bold))
             hdr.setStyleSheet(f"color: {T.CYAN}; background: transparent; border: none;")
             cl.addWidget(hdr)
@@ -242,7 +242,7 @@ class ChatPanel(QScrollArea):
         """)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(14, 10, 14, 10)
-        tag = QLabel("YOU" if is_user else "JARVIS")
+        tag = QLabel("YOU" if is_user else "AURA")
         tag.setFont(QFont(T.FONT_UI, 7, QFont.Weight.Bold))
         tag.setStyleSheet(f"color: {T.WHITE if is_user else T.CYAN}; background: transparent; border: none;")
         cl.addWidget(tag)
@@ -2204,7 +2204,7 @@ class _ActivityItem(QFrame):
 
 
 class _JarvisChatOrb(QWidget):
-    """Self-contained animated J.A.R.V.I.S. badge for the chat header."""
+    """Self-contained animated A.U.R.A badge for the chat header."""
 
     def __init__(self, size: int = 76, parent=None):
         super().__init__(parent)
@@ -2274,13 +2274,13 @@ class _JarvisChatOrb(QWidget):
         p.drawEllipse(QRectF(cx - fw * 0.13, cy - fw * 0.13, fw * 0.26, fw * 0.26))
 
         font = QFont(T.CHAT_FONT, max(6, int(fw * 0.10)), QFont.Weight.DemiBold)
-        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 105)
+        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 150)
         p.setFont(font)
         p.setPen(QPen(accent))
         p.drawText(
-            QRectF(cx - fw * 0.36, cy - fw * 0.10, fw * 0.72, fw * 0.20),
+            QRectF(cx - fw * 0.42, cy - fw * 0.10, fw * 0.84, fw * 0.20),
             Qt.AlignmentFlag.AlignCenter,
-            "J.A.R.V.I.S.",
+            "A.U.R.A",
         )
 
 
@@ -2517,7 +2517,7 @@ class ConversationView(QWidget):
         head = QHBoxLayout()
         head.setSpacing(10)
         head.addWidget(_ChatAvatar("assistant"), alignment=Qt.AlignmentFlag.AlignTop)
-        name = QLabel("J.A.R.V.I.S.")
+        name = QLabel("A.U.R.A")
         name.setFont(QFont(T.CHAT_FONT, 13, QFont.Weight.Bold))
         name.setStyleSheet(f"color: {T.CHAT_ASSIST_ACCENT}; background: transparent;")
         head.addWidget(name, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -2764,7 +2764,7 @@ class CenterInputBar(QWidget):
         row.addWidget(self._attach)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Message J.A.R.V.I.S....")
+        self._input.setPlaceholderText("Message A.U.R.A...")
         self._input.setFont(QFont(T.CHAT_FONT, 15))
         self._input.setFrame(False)
         self._input.setMinimumHeight(36)

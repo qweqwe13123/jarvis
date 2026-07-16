@@ -106,7 +106,7 @@ def _load_system_prompt() -> str:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            "You are JARVIS, Tony Stark's AI assistant. "
+            "You are AURA, an advanced AI assistant. "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
@@ -260,7 +260,7 @@ TOOL_DECLARATIONS = [
         "description": (
             "Controls Telegram Desktop professionally. Use for Telegram messages and Telegram audio calls. "
             "For 'call this contact in Telegram' use action='call'. For 'write/send in Telegram' use action='message'. "
-            "If the user asks Jarvis to say a specific phrase after call starts, pass speak_text."
+            "If the user asks AURA to say a specific phrase after call starts, pass speak_text."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -268,7 +268,7 @@ TOOL_DECLARATIONS = [
                 "action": {"type": "STRING", "description": "message | call"},
                 "receiver": {"type": "STRING", "description": "Telegram contact name or username"},
                 "message": {"type": "STRING", "description": "Message text for action=message"},
-                "speak_text": {"type": "STRING", "description": "Optional phrase for Jarvis to speak after the call starts"}
+                "speak_text": {"type": "STRING", "description": "Optional phrase for AURA to speak after the call starts"}
             },
             "required": ["action", "receiver"]
         }
@@ -296,7 +296,7 @@ TOOL_DECLARATIONS = [
             "Runs communication actions on behalf of the user: search system Contacts, call someone, "
             "send exactly dictated text, and choose the communication app. "
             "Use this whenever the user says call/ring/phone someone, find a contact, write to someone, "
-            "send a message through Phone/Messages/WhatsApp/Telegram/Discord/Email, or asks JARVIS to message "
+            "send a message through Phone/Messages/WhatsApp/Telegram/Discord/Email, or asks AURA to message "
             "from the user's account. For simple calls set action='call'. For dictated text set action='message'."
         ),
         "parameters": {
@@ -589,7 +589,7 @@ TOOL_DECLARATIONS = [
         "description": (
             "Shuts down the assistant completely. "
             "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Jarvis. "
+            "close the assistant, say goodbye, or stop AURA. "
             "The user can say this in ANY language."
         ),
         "parameters": {
@@ -789,7 +789,7 @@ class JarvisLive:
         try:
             armed = self._maybe_arm_focus_guard(text)
             if armed:
-                self.ui.write_log(f"Jarvis: {armed}")
+                self.ui.write_log(f"AURA: {armed}")
         except Exception:
             pass
 
@@ -1028,7 +1028,7 @@ class JarvisLive:
             direct = self._try_direct_local_actions(text)
             if direct:
                 self.ui.set_workflow_step("Finished")
-                self.ui.write_log(f"Jarvis: {direct}")
+                self.ui.write_log(f"AURA: {direct}")
                 self.ui.set_state("LISTENING")
                 append_conversation("jarvis", direct)
                 return
@@ -1042,7 +1042,7 @@ class JarvisLive:
                 preferred_model=preferred_model,
             )
             self.ui.set_workflow_step("Finished")
-            self.ui.write_log(f"Jarvis: {routed.text}")
+            self.ui.write_log(f"AURA: {routed.text}")
             self.ui.set_state("LISTENING")
             self.ui.set_ai_status(
                 model=routed.model,
@@ -1126,7 +1126,7 @@ class JarvisLive:
         lang_name = self._NOTIFY_LANG_NAMES.get(language, "the user's language")
         directive = (
             f"[NOTIFICATION] Speak this out loud right now in {lang_name}, "
-            f"in your normal Jarvis voice, short and natural — do not stay silent, "
+            f"in your normal AURA voice, short and natural — do not stay silent, "
             f'do not answer in text only: "{text}"'
         )
         muted = False
@@ -1155,7 +1155,7 @@ class JarvisLive:
         fut.result(timeout=8)
         try:
             self.ui.write_log(
-                f"FOCUS: Jarvis voice nudge{' (mic muted)' if muted else ''}: {text[:120]}"
+                f"FOCUS: AURA voice nudge{' (mic muted)' if muted else ''}: {text[:120]}"
             )
         except Exception:
             pass
@@ -1231,7 +1231,7 @@ class JarvisLive:
             return
         self._startup_greeting_done = True
         greeting = LANGUAGES.get(load_language(), LANGUAGES["ru"])["greeting"]
-        self.ui.write_log(f"Jarvis: {greeting}")
+        self.ui.write_log(f"AURA: {greeting}")
         await self.session.send_client_content(
             turns={"parts": [{"text": f"Say exactly this in Russian: {greeting}"}]},
             turn_complete=True,
@@ -1491,13 +1491,22 @@ class JarvisLive:
         def callback(indata, frames, time_info, status):
             if status:
                 self._voice_log(f"mic status: {status}", min_interval=5.0)
-            if not self.ui.muted:
-                try:
-                    rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
-                    self.ui.set_user_voice_level(rms)
-                except RuntimeError:
-                    pass
-            if not self._output_busy() and not self.ui.muted:
+            # Free preview: stop sending mic audio after the one allowed turn.
+            voice_ok = True
+            try:
+                from jarvis_ui.preview_access import allow_live_mic
+
+                voice_ok = bool(allow_live_mic())
+            except Exception:
+                voice_ok = True
+            if self.ui.muted or not voice_ok:
+                return
+            try:
+                rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+                self.ui.set_user_voice_level(rms)
+            except RuntimeError:
+                pass
+            if not self._output_busy():
                 data = indata.tobytes()
                 def _enqueue_audio():
                     try:
@@ -1546,6 +1555,21 @@ class JarvisLive:
         full_in = " ".join(in_buf).strip()
         if not full_in:
             return False
+        try:
+            from jarvis_ui.preview_access import note_user_turn
+
+            if not note_user_turn():
+                # Block further free voice; UI shows Pro gate + mutes (via Qt signal).
+                try:
+                    self.ui.request_preview_gate()
+                except Exception:
+                    try:
+                        self.ui.write_log("SYS: Free preview used — subscribe for more voice.")
+                    except Exception:
+                        pass
+                return False
+        except Exception:
+            pass
         detect_and_save_language(full_in)
         self.ui.add_user_message(full_in)
         append_conversation("user", full_in)
@@ -1708,7 +1732,7 @@ class JarvisLive:
                     backoff = 3  # reset after a successful connection
                     print("[JARVIS] ✅ Connected.")
                     self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: JARVIS online.")
+                    self.ui.write_log("SYS: AURA online.")
                     await self._say_startup_greeting_once()
 
                     tg.create_task(self._send_realtime())
@@ -1789,6 +1813,14 @@ def main():
         package = Path(sys.argv[2])
         parent_pid = int(sys.argv[3]) if len(sys.argv) > 3 else 0
         raise SystemExit(apply_update(package, parent_pid=parent_pid))
+
+    # Background double-clap agent (LaunchAgent). No UI — for all installed users.
+    if len(sys.argv) >= 2 and sys.argv[1] in ("--wake-listener", "--aura-wake"):
+        sys.argv = [sys.argv[0], *sys.argv[2:]]
+        from launcher.wake_listener import main as wake_main
+
+        wake_main()
+        return
 
     # Keep double-clap wake alive for this machine (and for future public installs).
     # Defer so it never races with first-run UI paint / SIGTRAPs.

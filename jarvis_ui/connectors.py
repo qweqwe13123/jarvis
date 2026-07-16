@@ -392,14 +392,14 @@ class ConnectorsView(QWidget):
 
         inner_lay.addWidget(self._section_header(
             "Featured integrations",
-            "Start with the apps most Jarvis users connect first.",
+            "Start with the apps most AURA users connect first.",
         ))
         inner_lay.addSpacing(18)
         inner_lay.addLayout(self._cards_grid(FEATURED))
         inner_lay.addSpacing(40)
         inner_lay.addWidget(self._section_header(
             f"All integrations ({len(ALL_INTEGRATIONS)})",
-            "Every integration Jarvis ships with today.",
+            "Every integration AURA ships with today.",
         ))
         inner_lay.addSpacing(18)
         inner_lay.addLayout(self._cards_grid(ALL_INTEGRATIONS))

@@ -10,24 +10,22 @@ import sys
 from pathlib import Path
 
 
-# This file may live in the repo OR be copied into Application Support.
 _HERE = Path(__file__).resolve().parent
 _SUPPORT_WAKE = Path.home() / "Library" / "Application Support" / "AURA" / "wake"
 LABEL = "com.jarvis.wake"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_DIR = Path.home() / "Library" / "Logs"
 LISTENER = _SUPPORT_WAKE / "wake_listener.py"
+AURA_BIN = Path("/Applications/AURA.app/Contents/MacOS/AURA")
 
 
 def _app_bundle_roots() -> list[Path]:
     roots: list[Path] = []
-    # Running from AURA.app
     exe = Path(sys.executable).resolve()
     if "AURA.app" in str(exe):
-        contents = exe.parent.parent  # .../AURA.app/Contents
+        contents = exe.parent.parent
         roots.append(contents / "Frameworks")
         roots.append(contents / "Resources")
-    # Installed app even if installer runs from elsewhere
     app = Path("/Applications/AURA.app/Contents")
     if app.is_dir():
         roots.append(app / "Frameworks")
@@ -46,7 +44,6 @@ def _listener_src() -> Path:
         _HERE / "wake_listener.py",
         _SUPPORT_WAKE / "wake_listener.py",
     ]
-    # Repo checkout: launcher/ next to project root
     if (_HERE.parent / "main.py").is_file():
         candidates.insert(0, _HERE / "wake_listener.py")
     for root in _app_bundle_roots():
@@ -58,69 +55,104 @@ def _listener_src() -> Path:
     raise FileNotFoundError("wake_listener.py not found")
 
 
-def _python() -> Path:
-    """Interpreter for the wake agent — never the AURA GUI binary."""
-    env = os.environ.get("AURA_WAKE_PYTHON")
-    if env and Path(env).is_file():
-        return Path(env)
-
-    support_venv = _SUPPORT_WAKE / ".venv" / "bin" / "python"
-    if support_venv.is_file():
-        return support_venv
-
-    # Dev checkout next to this file
-    repo_venv = _HERE.parent / ".venv" / "bin" / "python"
-    if repo_venv.is_file():
-        return repo_venv
-
-    exe = Path(sys.executable)
-    if exe.name != "AURA" and "AURA.app" not in str(exe):
-        return exe
-
-    which = shutil.which("python3")
-    if which:
-        return Path(which)
-    return exe
-
-
-def _workdir() -> str:
-    if (_HERE.parent / "main.py").is_file():
-        return str(_HERE.parent)
-    for root in _app_bundle_roots():
-        if (root / "launcher").is_dir():
-            return str(root)
-    return str(_SUPPORT_WAKE)
+def _safe_copy(src: Path, dst: Path) -> None:
+    try:
+        if src.resolve() == dst.resolve():
+            return
+    except Exception:
+        pass
+    shutil.copy2(src, dst)
 
 
 def _sync_listener() -> None:
     _SUPPORT_WAKE.mkdir(parents=True, exist_ok=True)
-    src = _listener_src()
-    shutil.copy2(src, LISTENER)
+    _safe_copy(_listener_src(), LISTENER)
     try:
-        shutil.copy2(Path(__file__).resolve(), _SUPPORT_WAKE / "install_launch_agent.py")
+        _safe_copy(Path(__file__).resolve(), _SUPPORT_WAKE / "install_launch_agent.py")
     except Exception:
         pass
 
 
+def _find_dev_repo() -> Path | None:
+    """Locate a local jarvis122 checkout with .venv (installer may live in Support/)."""
+    env = (os.environ.get("AURA_REPO") or os.environ.get("JARVIS_REPO") or "").strip()
+    candidates: list[Path] = []
+    if env:
+        candidates.append(Path(env).expanduser())
+    # When copied to Application Support, _HERE.parent is not the git root.
+    for p in (_HERE.parent, *_HERE.parents):
+        candidates.append(p)
+    candidates.extend(
+        [
+            Path.home() / "jarvis122",
+            Path("/Users/khalilisaiev/jarvis122"),
+        ]
+    )
+    seen: set[Path] = set()
+    for root in candidates:
+        try:
+            root = root.resolve()
+        except Exception:
+            continue
+        if root in seen:
+            continue
+        seen.add(root)
+        if (root / "main.py").is_file() and (root / ".venv" / "bin" / "python").is_file():
+            return root
+    return None
+
+
+def _program_args() -> tuple[list[str], str]:
+    """
+    Local dev checkout: python + wake_listener.py (fast iterate).
+    Published installs: AURA.app --wake-listener (bundled sounddevice).
+    Force app mode with AURA_WAKE_USE_APP=1 (release QA on a machine that also
+    has the git repo).
+    """
+    args_tail = [
+        "--threshold",
+        "0.08",
+        "--min-gap",
+        "0.12",
+        "--max-gap",
+        "2.40",
+        "--cooldown",
+        "8.0",
+    ]
+    repo = _find_dev_repo()
+    force_app = os.environ.get("AURA_WAKE_USE_APP", "").strip() == "1"
+
+    # End-user installs (and release QA): run clap wake inside the signed app.
+    if AURA_BIN.is_file() and (force_app or repo is None):
+        return (
+            [str(AURA_BIN), "--wake-listener", *args_tail],
+            str(AURA_BIN.parent.parent / "Frameworks"),
+        )
+
+    if repo is not None:
+        return [str(repo / ".venv" / "bin" / "python"), str(LISTENER), *args_tail], str(repo)
+
+    env_py = os.environ.get("AURA_WAKE_PYTHON")
+    if env_py and Path(env_py).is_file():
+        python = Path(env_py)
+    else:
+        python = Path(sys.executable)
+        if python.name == "AURA" or "AURA.app" in str(python):
+            which = shutil.which("python3")
+            python = Path(which) if which else python
+
+    workdir = str(repo) if repo is not None else str(_SUPPORT_WAKE)
+    return [str(python), str(LISTENER), *args_tail], workdir
+
+
 def _plist() -> dict:
-    python = _python()
+    program, workdir = _program_args()
     return {
         "Label": LABEL,
-        "ProgramArguments": [
-            str(python),
-            str(LISTENER),
-            "--threshold",
-            "0.08",
-            "--min-gap",
-            "0.12",
-            "--max-gap",
-            "1.80",
-            "--cooldown",
-            "8.0",
-        ],
+        "ProgramArguments": program,
         "RunAtLoad": True,
         "KeepAlive": {"Crashed": True, "SuccessfulExit": False},
-        "WorkingDirectory": _workdir(),
+        "WorkingDirectory": workdir,
         "StandardOutPath": str(LOG_DIR / "jarvis_wake.out.log"),
         "StandardErrorPath": str(LOG_DIR / "jarvis_wake.err.log"),
         "EnvironmentVariables": {

@@ -320,13 +320,17 @@ def listen_for_double_clap(
 
             if now < refractory_until:
                 continue
+            # Already have a double-clap waiting to confirm — ignore echo/ring.
+            if pending_confirm_until and len(clap_times) >= 2:
+                continue
             if not _is_clap_candidate(feats, threshold):
                 continue
             if now - last_clap < min_gap:
                 continue
 
             last_clap = now
-            refractory_until = now + 0.10
+            # Longer refractory after loud claps so room echo isn't clap #3.
+            refractory_until = now + 0.22
             prev_n = len(clap_times)
             clap_times = [t for t in clap_times if now - t <= max_gap]
             if prev_n and not clap_times:
@@ -342,15 +346,14 @@ def listen_for_double_clap(
             )
 
             if len(clap_times) > 2:
-                # Beat train / typing burst — not a double clap.
-                _log("Rejected: more than two impulsives in the clap window.")
-                clap_times.clear()
-                pending_confirm_until = 0.0
+                # Keep the first pair; extra hits are almost always echo, not music.
+                clap_times = clap_times[:2]
+                pending_confirm_until = now + 0.12
                 continue
 
             if len(clap_times) == 2:
-                # Short settle; a third hit in this window cancels.
-                pending_confirm_until = now + 0.22
+                # Confirm quickly; ignore further impulses until then.
+                pending_confirm_until = now + 0.14
 
 
 def main() -> None:

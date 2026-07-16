@@ -179,7 +179,7 @@ class _MsgBubble(QFrame):
         )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 9, 12, 9)
-        who = QLabel("You" if is_user else "Jarvis")
+        who = QLabel("You" if is_user else "AURA")
         who.setFont(QFont(T.SB_FONT, 10, QFont.Weight.DemiBold))
         who.setStyleSheet(
             f"color: {_SEND if not is_user else '#a5f3fc'}; background: transparent; border: none;"
@@ -218,7 +218,7 @@ class FloatingOverlay(QWidget):
         self._voice_level = 0.0
 
         self.setObjectName("FloatingOverlay")
-        self.setWindowTitle("Jarvis")
+        self.setWindowTitle("AURA")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -252,7 +252,7 @@ class FloatingOverlay(QWidget):
         self._home.clicked.connect(self.home_clicked.emit)
         top.addWidget(self._home, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        brand = QLabel("Jarvis")
+        brand = QLabel("AURA")
         brand.setFont(QFont(T.SB_FONT, 13, QFont.Weight.DemiBold))
         brand.setStyleSheet(f"color: {_TEXT}; background: transparent; border: none;")
         top.addWidget(brand, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -338,7 +338,7 @@ class FloatingOverlay(QWidget):
         il.setSpacing(8)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Ask Jarvis anything…")
+        self._input.setPlaceholderText("Ask AURA anything…")
         self._input.setFont(QFont(T.SB_FONT, 14))
         self._input.setFrame(False)
         self._input.setStyleSheet(

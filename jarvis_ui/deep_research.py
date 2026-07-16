@@ -1,7 +1,7 @@
 """Manus-style Researcher — conversational chat with a live "computer" panel.
 
 Left  : chat feed (rich answers: text, tables, lists) + composer.
-Right : "JARVIS's Computer" — live plan / searches / sources for the active turn.
+Right : "AURA's Computer" — live plan / searches / sources for the active turn.
 
 Each turn is routed automatically:
   * fresh/factual questions  -> full deep-research agent (web search + read + cite)
@@ -528,7 +528,7 @@ class DeepResearchView(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        name = QLabel("JARVIS Research")
+        name = QLabel("AURA Research")
         name.setFont(QFont(T.FONT_UI, 8, QFont.Weight.Bold))
         name.setStyleSheet(f"color: {T.CYAN}; background: transparent; letter-spacing: 0.5px;")
         head.addWidget(name)
@@ -609,7 +609,7 @@ class DeepResearchView(QWidget):
     def _save_report(self):
         if not self._last_answer:
             return
-        default = Path.home() / "JarvisProjects" / "research"
+        default = Path.home() / "AURAProjects" / "research"
         default.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         first_user = next((m["content"] for m in self._history if m["role"] == "user"), "report")
@@ -617,5 +617,5 @@ class DeepResearchView(QWidget):
         suggested = str(default / f"{slug or 'report'}_{stamp}.md")
         path, _ = QFileDialog.getSaveFileName(self, "Save answer", suggested, "Markdown (*.md)")
         if path:
-            header = f"_JARVIS Researcher · {datetime.now():%Y-%m-%d %H:%M}_\n\n"
+            header = f"_AURA Researcher · {datetime.now():%Y-%m-%d %H:%M}_\n\n"
             Path(path).write_text(header + self._last_answer, encoding="utf-8")

@@ -188,7 +188,7 @@ class ComputerUseView(QWidget):
         page_title.setStyleSheet(f"color: {_TITLE}; background: transparent;")
         il.addWidget(page_title)
         page_sub = QLabel(
-            "Summon the floating Jarvis bar from anywhere — over any app, on any screen."
+            "Summon the floating AURA bar from anywhere — over any app, on any screen."
         )
         page_sub.setWordWrap(True)
         page_sub.setFont(_sans(13))
@@ -199,14 +199,14 @@ class ComputerUseView(QWidget):
         # —— Floating bar ——
         il.addWidget(self._section_header(
             "Floating bar",
-            "Summon and position the Jarvis bar from anywhere.",
+            "Summon and position the AURA bar from anywhere.",
         ))
         il.addSpacing(12)
         float_card = _SettingsCard()
         current = platform.system()
         float_card.add_row(_SettingRow(
             "macOS",
-            "Press ⌘ Space anytime — even when Jarvis is minimized or another app is focused. "
+            "Press ⌘ Space anytime — even when AURA is minimized or another app is focused. "
             "Press again (or Esc) to hide. If Spotlight uses ⌘ Space, change it or pick a custom hotkey below.",
             _KeyGroup(["⌘", "Space"]),
             show_divider=True,
@@ -214,7 +214,7 @@ class ComputerUseView(QWidget):
         float_card.add_row(_SettingRow(
             "Windows",
             "Press Alt + Space to show or hide the floating bar over any window. "
-            "Works from the system tray while Jarvis runs in the background.",
+            "Works from the system tray while AURA runs in the background.",
             _KeyGroup(["Alt", "Space"]),
             show_divider=True,
         ))
@@ -293,15 +293,15 @@ class ComputerUseView(QWidget):
         perm = _SettingsCard()
         perm.add_row(_SettingRow(
             "macOS",
-            "System Settings → Privacy & Security → Accessibility — enable Jarvis "
-            "(or Terminal / Python). Also allow Input Monitoring if asked, then restart Jarvis.",
+            "System Settings → Privacy & Security → Accessibility — enable AURA "
+            "(or Terminal / Python). Also allow Input Monitoring if asked, then restart AURA.",
             _KeyGroup(["Settings"], highlight_first=True),
             show_divider=True,
         ))
         perm.add_row(_SettingRow(
             "Windows",
             "Usually no extra setup. If the shortcut fails, check antivirus isn’t blocking "
-            "Jarvis and try Alt+Space or a custom combo.",
+            "AURA and try Alt+Space or a custom combo.",
             _KeyGroup(["Alt", "Space"]),
             show_divider=True,
         ))
@@ -318,15 +318,15 @@ class ComputerUseView(QWidget):
         # —— Tray ——
         il.addWidget(self._section_header(
             "Menu bar & tray",
-            "Closing the main window does not quit Jarvis.",
+            "Closing the main window does not quit AURA.",
         ))
         il.addSpacing(12)
         tray = _SettingsCard()
         tray.add_row(_SettingRow(
             "Background menu",
             "macOS: menu bar icon · Windows / Linux: system tray. "
-            "Open Jarvis · Settings · Check for updates · Quit.",
-            _KeyGroup(["Open Jarvis"], highlight_first=True),
+            "Open AURA · Settings · Check for updates · Quit.",
+            _KeyGroup(["Open AURA"], highlight_first=True),
             show_divider=False,
         ))
         il.addWidget(tray)
