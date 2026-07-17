@@ -19,9 +19,12 @@ on:
         description: "Notarize with Apple (requires secrets)"
         type: boolean
         default: true
-  push:
-    tags:
-      - "v*"
+  # Do NOT auto-publish on tag push — local packaging/deploy_release.sh is the
+  # source of truth for notarized macOS. CI tag builds were clobbering good
+  # DMGs with unsigned/wrong bundles (Gatekeeper "AURA Not Opened").
+  # push:
+  #   tags:
+  #     - "v*"
 
 permissions:
   contents: write

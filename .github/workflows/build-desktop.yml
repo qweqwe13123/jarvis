@@ -2,9 +2,11 @@ name: Build desktop releases
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+  # Tag pushes must not auto-upload — they overwrite locally notarized assets.
+  # Use workflow_dispatch, or packaging/deploy_release.sh for production.
+  # push:
+  #   tags:
+  #     - "v*"
 
 permissions:
   contents: write
