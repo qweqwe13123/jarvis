@@ -45,7 +45,15 @@ def _load_state() -> dict:
 
 def _run(cmd: list[str], timeout: int = 8) -> tuple[bool, str]:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if _OS == "Windows":
+            from core.win_subprocess import run as _win_run
+
+            # Hide powershell/cmd flashes when toggling Focus Assist helpers.
+            if cmd and str(cmd[0]).lower().startswith("powershell"):
+                cmd = [cmd[0], "-WindowStyle", "Hidden", *cmd[1:]]
+            result = _win_run(cmd, capture_output=True, text=True, timeout=timeout)
+        else:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         out = (result.stdout or result.stderr or "").strip()
         return result.returncode == 0, out
     except Exception as e:

@@ -71,7 +71,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved version=$V tag=$TAG"
 
-      - name: Ensure Windows .ico
+      - name: Ensure Windows .ico + Inno Setup
         if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -79,6 +79,11 @@ jobs:
             python packaging/make_windows_ico.py
           fi
           ls -la assets/AURA.ico
+          # Cursor-style installer compiler
+          choco install innosetup -y --no-progress
+          "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" /? >/dev/null || \
+            "C:/Program Files/Inno Setup 6/ISCC.exe" /? >/dev/null
+          echo "ISCC=C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe" >> "$GITHUB_ENV"
 
       - name: Build release artifacts
         env:

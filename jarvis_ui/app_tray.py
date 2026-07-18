@@ -10,16 +10,32 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 
 def _jarvis_tray_icon() -> QIcon:
-    root = Path(__file__).resolve().parents[1]
-    for candidate in (
-        root / "assets" / "aura_logo.png",
-        root / "assets" / "aura_logo_onboarding.png",
-        root / "assets" / "aura_logo_square_bg.png",
-    ):
-        if candidate.exists():
-            icon = QIcon(str(candidate))
-            if not icon.isNull():
-                return icon
+    try:
+        from jarvis_ui.paths import brand_asset_path
+
+        candidate = brand_asset_path(
+            "aura_logo.png",
+            "aura_logo_onboarding.png",
+            "aura_logo_square_bg.png",
+            "AURA.ico",
+        )
+    except Exception:
+        candidate = None
+        root = Path(__file__).resolve().parents[1]
+        for name in (
+            "aura_logo.png",
+            "aura_logo_onboarding.png",
+            "aura_logo_square_bg.png",
+            "AURA.ico",
+        ):
+            p = root / "assets" / name
+            if p.is_file():
+                candidate = p
+                break
+    if candidate is not None:
+        icon = QIcon(str(candidate))
+        if not icon.isNull():
+            return icon
 
     pm = QPixmap(64, 64)
     pm.fill(QColor(0, 0, 0, 0))
@@ -34,6 +50,16 @@ def _jarvis_tray_icon() -> QIcon:
     p.drawText(pm.rect(), int(Qt.AlignmentFlag.AlignCenter), "A")
     p.end()
     return QIcon(pm)
+
+
+def apply_app_icon(app: QApplication | None = None) -> None:
+    """Set process / window icon (Windows taskbar + title bar)."""
+    target = app or QApplication.instance()
+    if target is None:
+        return
+    icon = _jarvis_tray_icon()
+    if not icon.isNull():
+        target.setWindowIcon(icon)
 
 
 class AppTrayController(QObject):

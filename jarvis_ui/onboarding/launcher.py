@@ -19,6 +19,12 @@ def run_onboarding_if_needed() -> bool:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     try:
+        from jarvis_ui.app_tray import apply_app_icon
+
+        apply_app_icon(app)
+    except Exception:
+        pass
+    try:
         from jarvis_ui.user_account import (
             install_deep_link_handler,
             install_update_controller_fix,

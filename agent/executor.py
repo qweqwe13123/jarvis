@@ -76,10 +76,17 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
 
         print(f"[Executor] 🐍 Running generated code: {tmp_path}")
 
-        result = subprocess.run(
+        run_fn = subprocess.run
+        extra = {}
+        if sys.platform == "win32":
+            from core.win_subprocess import run as run_fn, hidden_kwargs
+
+            extra.update(hidden_kwargs())
+        result = run_fn(
             [sys.executable, tmp_path],
             capture_output=True, text=True,
-            timeout=120, cwd=str(Path.home())
+            timeout=120, cwd=str(Path.home()),
+            **extra,
         )
 
         try:

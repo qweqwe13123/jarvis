@@ -493,18 +493,28 @@ def _launch_windows_zip_updater(package: Path, target: Path, parent_pid: int) ->
         "Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue\n",
         encoding="utf-8",
     )
+    # CREATE_NO_WINDOW is required — DETACHED_PROCESS alone still flashes a console.
+    from core.win_subprocess import merge_flags
+
+    flags = merge_flags(
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "DETACHED_PROCESS", 0)
+    )
     subprocess.Popen(
         [
             "powershell",
             "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
             str(script),
         ],
         close_fds=True,
-        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        | getattr(subprocess, "DETACHED_PROCESS", 0),
+        creationflags=flags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     _ulog(f"spawned Windows PowerShell updater script={script}")
 

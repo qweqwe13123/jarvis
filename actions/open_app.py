@@ -79,10 +79,11 @@ def _normalize(raw: str) -> str:
     return raw  
 
 def _launch_windows(app_name: str) -> bool:
+    from core.win_subprocess import popen as _win_popen
 
     if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
         try:
-            subprocess.Popen(
+            _win_popen(
                 app_name,
                 shell=True,
                 stdout=subprocess.DEVNULL,
@@ -95,7 +96,13 @@ def _launch_windows(app_name: str) -> bool:
 
     if ":" in app_name:
         try:
-            subprocess.Popen(f"start {app_name}", shell=True)
+            # start is a cmd builtin — hide the console host.
+            _win_popen(
+                f'start "" "{app_name}"',
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             time.sleep(1.0)
             return True
         except Exception:

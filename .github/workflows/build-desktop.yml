@@ -62,13 +62,15 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure Windows .ico
+      - name: Ensure Windows .ico + Inno Setup
         if: runner.os == 'Windows'
         shell: bash
         run: |
           if [[ ! -f assets/AURA.ico ]]; then
             python packaging/make_windows_ico.py
           fi
+          choco install innosetup -y --no-progress
+          echo "ISCC=C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe" >> "$GITHUB_ENV"
 
       - name: Build release artifacts
         env:

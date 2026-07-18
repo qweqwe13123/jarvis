@@ -314,8 +314,10 @@ def _frontmost_windows() -> tuple[str, str]:
         "Write-Output (($p.ProcessName) + \"`n\" + $sb.ToString())"
     )
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps],
+        from core.win_subprocess import run as _win_run
+
+        result = _win_run(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
             capture_output=True,
             text=True,
             timeout=5,

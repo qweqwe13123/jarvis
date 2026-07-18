@@ -197,11 +197,20 @@ def _run_file(path: Path, args: list, timeout: int) -> str:
         return f"No interpreter for {path.suffix}."
 
     try:
-        result = subprocess.run(
+        run_fn = subprocess.run
+        extra: dict = {}
+        if sys.platform == "win32":
+            from core.win_subprocess import run as run_fn, hidden_kwargs
+
+            extra.update(hidden_kwargs())
+            if path.suffix.lower() == ".ps1":
+                interp = ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-File"]
+        result = run_fn(
             interp + [str(path)] + (args or []),
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
-            timeout=timeout, cwd=str(path.parent)
+            timeout=timeout, cwd=str(path.parent),
+            **extra,
         )
         output = result.stdout.strip()
         error  = result.stderr.strip()

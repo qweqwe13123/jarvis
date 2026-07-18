@@ -85,14 +85,10 @@ Use GitHub Actions matrix:
 
 Merge `manifest.json` artifacts from each job, upload to Releases + CDN.
 
-## Installers (optional next step)
+## Installers
 
-Current v1 ships signed-ready **zip payloads** consumed by the in-app updater.
+- **macOS**: notarized `.dmg` (first install) + `.zip` (in-app update)
+- **Windows**: Inno Setup `.exe` installer (Start Menu / Desktop shortcuts) + `.zip` (in-app update)
+- **Linux**: `.AppImage` (first install + in-app update) + `.zip` fallback
 
-For first-time installs from the website you can add:
-
-- **macOS**: `.dmg` wrapper (hdiutil)
-- **Windows**: Inno Setup / NSIS `.exe`
-- **Linux**: AppImage
-
-The download page already points to the zip URLs from `manifest.json`.
+Website primary URLs come from `manifest.json` `platforms.*.url`; update packages use `update_url` + blockmap.

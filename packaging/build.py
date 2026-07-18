@@ -519,10 +519,26 @@ def package_release(
         update_name = "AURA-%s-win-x64.zip" % version
         update_path = DIST / update_name
         _zip_tree(onedir, update_path)
-        exe = build_windows_onefile()
+
+        # Cursor-style first-run installer (Start Menu + optional Desktop shortcut).
+        ico = ROOT / "assets" / "AURA.ico"
+        if not ico.is_file():
+            _run([sys.executable, str(ROOT / "packaging" / "make_windows_ico.py")])
+        import importlib.util
+
+        installer_mod_path = ROOT / "packaging" / "make_windows_installer.py"
+        spec = importlib.util.spec_from_file_location(
+            "aura_make_windows_installer", installer_mod_path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load {installer_mod_path}")
+        installer_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer_mod)
         primary_name = "AURA-%s-win-x64.exe" % version
         primary_path = DIST / primary_name
-        shutil.copy2(exe, primary_path)
+        installer_mod.make_installer(
+            onedir, primary_path, version=version, icon=ico if ico.is_file() else None
+        )
     else:
         artifact_root = build_pyinstaller(clean=True)
         # Keep zip for debugging / fallback; public primary is AppImage.
