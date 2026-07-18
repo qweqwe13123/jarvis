@@ -75,15 +75,32 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          set +e
           if [[ ! -f assets/AURA.ico ]]; then
             python packaging/make_windows_ico.py
           fi
           ls -la assets/AURA.ico
-          # Cursor-style installer compiler
-          choco install innosetup -y --no-progress
-          "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" /? >/dev/null || \
-            "C:/Program Files/Inno Setup 6/ISCC.exe" /? >/dev/null
-          echo "ISCC=C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe" >> "$GITHUB_ENV"
+          choco install innosetup -y --no-progress || true
+          ISCC_PATH=""
+          for candidate in \
+            "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "/c/Program Files/Inno Setup 6/ISCC.exe" \
+            "/c/ProgramData/chocolatey/bin/ISCC.exe"
+          do
+            if [[ -f "$candidate" ]]; then
+              ISCC_PATH="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$ISCC_PATH" ]]; then
+            echo "ISCC.exe not found after Inno Setup install"
+            exit 1
+          fi
+          # Convert Git Bash path → Windows path for the Python builder.
+          WIN_ISCC=$(cygpath -w "$ISCC_PATH")
+          echo "Found ISCC at $WIN_ISCC"
+          echo "ISCC=${WIN_ISCC}" >> "$GITHUB_ENV"
+          set -e
 
       - name: Build release artifacts
         env:
