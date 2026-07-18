@@ -9,9 +9,14 @@ from pathlib import Path
 from typing import Callable
 
 from core.platform_detect import is_frozen
-from core.updater.downloader import download_asset
-from core.updater.installer import install_dir, launch_updater
-from core.updater.manifest import ReleaseInfo, fetch_manifest, parse_release
+from core.updater.downloader import download_asset_smart
+from core.updater.installer import launch_updater
+from core.updater.manifest import (
+    ReleaseInfo,
+    fetch_manifest,
+    force_update_required,
+    parse_release,
+)
 
 
 @dataclass
@@ -23,6 +28,8 @@ class UpdateState:
     error: str = ""
     release: ReleaseInfo | None = None
     package_path: Path | None = None
+    force_required: bool = False
+    min_supported_version: str = ""
 
 
 class UpdateService:
@@ -43,6 +50,8 @@ class UpdateService:
                 error=self._state.error,
                 release=self._state.release,
                 package_path=self._state.package_path,
+                force_required=self._state.force_required,
+                min_supported_version=self._state.min_supported_version,
             )
 
     def on_change(self, callback: Callable[[UpdateState], None]) -> None:
@@ -63,11 +72,16 @@ class UpdateService:
         self._emit()
 
     def _skip_path(self) -> Path:
-        base = install_dir()
-        if base.suffix == ".app":
-            root = base.parent
+        from core.platform_detect import normalize_os
+
+        os_name = normalize_os()
+        if os_name == "darwin":
+            root = Path.home() / "Library" / "Application Support" / "AURA"
+        elif os_name == "windows":
+            local = os.environ.get("LOCALAPPDATA")
+            root = Path(local) / "AURA" if local else Path.home() / "AppData" / "Local" / "AURA"
         else:
-            root = Path.home() / ".jarvis"
+            root = Path.home() / ".config" / "AURA"
         root.mkdir(parents=True, exist_ok=True)
         return root / "update_skip.json"
 
@@ -79,6 +93,9 @@ class UpdateService:
             return ""
 
     def skip_version(self, version: str) -> None:
+        # Never allow skipping a forced (unsupported) release.
+        if self.state.force_required:
+            return
         self._skipped_version = version
         self._skip_path().write_text(json.dumps({"version": version}), encoding="utf-8")
         self._set(release=None)
@@ -91,12 +108,41 @@ class UpdateService:
             self._set(checking=True, error="")
             try:
                 manifest = fetch_manifest()
-                release = parse_release(manifest)
-                if release and release.version == self._skipped_version:
+                forced, min_label = force_update_required(manifest)
+                release = parse_release(manifest, require_newer=not forced)
+                if (
+                    release
+                    and not forced
+                    and release.version == self._skipped_version
+                ):
                     release = None
-                self._set(release=release)
+                if release is not None and forced:
+                    # Ensure force flag is always set on the release object.
+                    release = ReleaseInfo(
+                        version=release.version,
+                        released_at=release.released_at,
+                        notes=release.notes,
+                        asset=release.asset,
+                        platform=release.platform,
+                        min_supported_version=release.min_supported_version
+                        or min_label,
+                        release_index=release.release_index,
+                        min_release_index=release.min_release_index,
+                        force_required=True,
+                    )
+                self._set(
+                    release=release,
+                    force_required=forced,
+                    min_supported_version=min_label
+                    or (release.min_supported_version if release else ""),
+                )
             except Exception as exc:
-                self._set(error=str(exc), release=None)
+                self._set(
+                    error=str(exc),
+                    release=None,
+                    force_required=False,
+                    min_supported_version="",
+                )
             finally:
                 self._set(checking=False)
 
@@ -114,12 +160,19 @@ class UpdateService:
             self._set(downloading=True, downloaded_bytes=0, total_bytes=None, error="")
             try:
                 if not is_frozen():
-                    raise RuntimeError("Auto-update is available in packaged desktop builds only.")
+                    raise RuntimeError(
+                        "Auto-update is available in packaged desktop builds only."
+                    )
 
                 def progress(done: int, total: int | None) -> None:
                     self._set(downloaded_bytes=done, total_bytes=total)
 
-                package = download_asset(release.asset, on_progress=progress)
+                package = download_asset_smart(
+                    release.asset,
+                    version=release.version,
+                    on_progress=progress,
+                    prefer_differential=True,
+                )
                 self._set(package_path=package)
                 time.sleep(0.3)
                 launch_updater(package, parent_pid)

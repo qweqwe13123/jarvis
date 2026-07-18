@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 # Bump this for every public release. Keep in sync with packaging/build.py.
-VERSION = "1.0.6"
+VERSION = "1.0.20"
+
+# Monotonic release counter — bump +1 with every public VERSION bump.
+# Used with MAX_RELEASES_BEHIND to force-update clients that fall too far behind.
+RELEASE_INDEX = 20
+
+# Allow current + this many prior releases (3 total). Older → update required.
+MAX_RELEASES_BEHIND = 2
 
 APP_NAME = "A.U.R.A"
 APP_ID = "app.hiaura.aura.desktop"

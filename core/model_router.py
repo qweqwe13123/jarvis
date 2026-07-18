@@ -85,19 +85,30 @@ def _log(message: str) -> None:
         f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
 
 
+def _gemini_role_for_task(task: str) -> str:
+    if task == "coding":
+        return "balanced"
+    if task in ("analysis", "documents"):
+        return "balanced"
+    return "fast"
+
+
 def _routes(task_type: str) -> list[tuple[str, str]]:
+    from core.gemini_models import primary
+
     task = (task_type or "chat").lower()
+    gemini_model = primary(_gemini_role_for_task(task))
     if task == "coding":
         return [
             ("openrouter", "deepseek/deepseek-chat-v3-0324:free"),
             ("groq", "llama-3.3-70b-versatile"),
-            ("gemini", "gemini-2.5-flash"),
+            ("gemini", gemini_model),
             ("ollama", "qwen2.5-coder:latest"),
             ("lmstudio", "local-model"),
         ]
     if task in ("analysis", "documents"):
         return [
-            ("gemini", "gemini-2.5-flash"),
+            ("gemini", gemini_model),
             ("openrouter", "meta-llama/llama-3.1-8b-instruct:free"),
             ("groq", "llama-3.3-70b-versatile"),
             ("ollama", "llama3.1:latest"),
@@ -108,12 +119,12 @@ def _routes(task_type: str) -> list[tuple[str, str]]:
             ("ollama", "qwen3:8b"),
             ("groq", "llama-3.3-70b-versatile"),
             ("openrouter", "google/gemma-2-9b-it:free"),
-            ("gemini", "gemini-2.5-flash"),
+            ("gemini", gemini_model),
             ("ollama", "llama3.1:latest"),
             ("lmstudio", "local-model"),
         ]
     return [
-        ("gemini", "gemini-2.5-flash"),
+        ("gemini", gemini_model),
         ("groq", "llama-3.3-70b-versatile"),
         ("openrouter", "meta-llama/llama-3.1-8b-instruct:free"),
         ("ollama", "llama3.1:latest"),
@@ -192,18 +203,44 @@ def _chat_http(
     return text, int((time.time() - start) * 1000)
 
 
-def _generate_gemini(model: str, prompt: str, timeout_sec: int, system: str | None = None) -> tuple[str, int]:
-    from google import genai
+def _generate_gemini(
+    model: str,
+    prompt: str,
+    timeout_sec: int,
+    system: str | None = None,
+    *,
+    role: str = "balanced",
+) -> tuple[str, int]:
     from google.genai import types
+
+    from core.gemini_models import (
+        GeminiModelError,
+        call_with_fallback,
+        models_for,
+    )
 
     api_key = _key("gemini_api_key")
     if not api_key:
         raise AuthError("gemini: key missing")
+
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    config = types.GenerateContentConfig(system_instruction=system) if system else None
+    # Prefer the requested model, then the full role chain.
+    chain = [model] + [m for m in models_for(role) if m != model]
     start = time.time()
     try:
-        client = genai.Client(api_key=api_key)
-        config = types.GenerateContentConfig(system_instruction=system) if system else None
-        response = client.models.generate_content(model=model, contents=prompt, config=config)
+        def _once(name: str):
+            if config is None:
+                return client.models.generate_content(model=name, contents=prompt)
+            return client.models.generate_content(
+                model=name, contents=prompt, config=config
+            )
+
+        response = call_with_fallback(role, _once, models=chain, retries_per_model=2)
+    except GeminiModelError as e:
+        raise ProviderUnavailableError(f"gemini: {e}") from e
     except Exception as e:
         raise ProviderUnavailableError(f"gemini: {e}") from e
     text = (response.text or "").strip()
@@ -275,7 +312,13 @@ def generate_text(
             continue
         try:
             if provider == "gemini":
-                text, latency = _generate_gemini(model, prompt, timeout_sec, system)
+                text, latency = _generate_gemini(
+                    model,
+                    prompt,
+                    timeout_sec,
+                    system,
+                    role=_gemini_role_for_task(routed_task),
+                )
             elif provider == "openai":
                 text, latency = _chat_http(
                     "https://api.openai.com/v1/chat/completions",

@@ -39,12 +39,12 @@ fi
 export GH_TOKEN="$GITHUB_TOKEN"
 
 NOTES_DEFAULT="$(cat <<EOF
-## A.U.R.A ${VERSION}
+## What's new in ${VERSION}
 
-- Signed + notarized macOS Apple Silicon (.dmg)
-- Double-clap wake (LaunchAgent → AURA --wake-listener)
-- macOS Intel, Windows, and Linux desktop builds
-- A.U.R.A branding + permissions / Pro preview gate polish
+- A refined desktop experience across macOS, Windows, and Linux
+- Smoother wake and everyday interactions
+- Performance and reliability improvements
+- Important bug fixes under the hood
 EOF
 )"
 
@@ -53,14 +53,27 @@ if ! gh release view "$TAG" --repo "$OWNER/$REPO" >/dev/null 2>&1; then
   gh release create "$TAG" --repo "$OWNER/$REPO" --title "AURA $VERSION" --notes "$NOTES_DEFAULT"
 fi
 
+# Cursor-style blockmap for differential in-app updates (zip only).
+BLOCKMAP=""
+if [ -f "$ZIP" ]; then
+  echo "=== Generate update blockmap for $ZIP ==="
+  BLOCKMAP="${ZIP}.blockmap"
+  "$PY" "$ROOT/packaging/make_blockmap.py" "$ZIP" -o "$BLOCKMAP"
+fi
+
 if [ -f "$DMG" ]; then
   echo "=== Upload local macOS assets ==="
   UPLOAD_ARGS=("$DMG")
   [[ -f "$ZIP" ]] && UPLOAD_ARGS+=("$ZIP")
+  [[ -f "$BLOCKMAP" ]] && UPLOAD_ARGS+=("$BLOCKMAP")
   [[ -f "$LOCAL_MANIFEST" ]] && UPLOAD_ARGS+=("$LOCAL_MANIFEST")
   gh release upload "$TAG" "${UPLOAD_ARGS[@]}" --repo "$OWNER/$REPO" --clobber
 else
   echo "No local DMG at $DMG — syncing whatever is already on the GitHub release."
+  if [[ -f "$ZIP" && -f "$BLOCKMAP" ]]; then
+    echo "=== Upload zip + blockmap ==="
+    gh release upload "$TAG" "$ZIP" "$BLOCKMAP" --repo "$OWNER/$REPO" --clobber
+  fi
 fi
 
 echo "=== Rebuild site manifest from GitHub release assets ==="
@@ -143,6 +156,44 @@ def sha_of_url(url: str, size: int) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+def sha_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for c in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(c)
+    return h.hexdigest()
+
+def attach_blockmap(entry: dict, package_name: str, *, prefix: str = "update_blockmap") -> None:
+    """Attach Cursor-style blockmap fields when <package>.blockmap exists on the release or locally."""
+    bm_name = f"{package_name}.blockmap"
+    bm_url = f"{base}/{bm_name}"
+    local_bm = root / "dist" / "releases" / bm_name
+    # Also accept path next to ZIP from this deploy.
+    alt_bm = Path("$BLOCKMAP") if "$BLOCKMAP" else Path()
+    url_key = f"{prefix}_url"
+    sha_key = f"{prefix}_sha256"
+    size_key = f"{prefix}_size"
+    if local_bm.is_file():
+        entry[url_key] = bm_url
+        entry[sha_key] = sha_file(local_bm)
+        entry[size_key] = local_bm.stat().st_size
+        return
+    if str(alt_bm) and alt_bm.is_file() and alt_bm.name == bm_name:
+        entry[url_key] = bm_url
+        entry[sha_key] = sha_file(alt_bm)
+        entry[size_key] = alt_bm.stat().st_size
+        return
+    if bm_name in assets:
+        a = assets[bm_name]
+        digest = (a.get("digest") or "").removeprefix("sha256:")
+        size = int(a.get("size") or 0)
+        if not digest:
+            print(f"hashing {bm_name} ({size} bytes)...")
+            digest = sha_of_url(a["url"], size)
+        entry[url_key] = bm_url
+        entry[sha_key] = digest
+        entry[size_key] = size
+
 platforms: dict = {}
 for name, asset in assets.items():
     mapped = classify(name)
@@ -158,6 +209,9 @@ for name, asset in assets.items():
         entry = platforms.setdefault(key, {})
         if role == "primary":
             entry.update({"url": url, "sha256": digest, "size": size, "filename": name})
+            # Linux AppImage is itself the live update payload.
+            if name.lower().endswith(".appimage"):
+                attach_blockmap(entry, name, prefix="blockmap")
         else:
             entry.update(
                 {
@@ -167,18 +221,13 @@ for name, asset in assets.items():
                     "update_size": size,
                 }
             )
+            if name.lower().endswith(".zip"):
+                attach_blockmap(entry, name, prefix="update_blockmap")
 
 # Prefer local notarized DMG hashes when present (authoritative).
 dmg = Path("$DMG")
 zpath = Path("$ZIP")
 if dmg.is_file():
-    def sha(p: Path) -> str:
-        h = hashlib.sha256()
-        with p.open("rb") as f:
-            for c in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(c)
-        return h.hexdigest()
-
     arch = "$ARCH"
     keys = (
         ["darwin-arm64", "darwin-x64", "darwin-universal"]
@@ -187,21 +236,32 @@ if dmg.is_file():
     )
     primary = {
         "url": f"{base}/AURA-{version}-macos-{arch}.dmg",
-        "sha256": sha(dmg),
+        "sha256": sha_file(dmg),
         "size": dmg.stat().st_size,
         "filename": f"AURA-{version}-macos-{arch}.dmg",
     }
     if zpath.is_file():
+        zname = f"AURA-{version}-macos-{arch}.zip"
         primary.update(
             {
-                "update_filename": f"AURA-{version}-macos-{arch}.zip",
-                "update_url": f"{base}/AURA-{version}-macos-{arch}.zip",
-                "update_sha256": sha(zpath),
+                "update_filename": zname,
+                "update_url": f"{base}/{zname}",
+                "update_sha256": sha_file(zpath),
                 "update_size": zpath.stat().st_size,
             }
         )
+        attach_blockmap(primary, zname, prefix="update_blockmap")
     for key in keys:
         platforms[key] = dict(primary)
+
+# Ensure zip / AppImage platforms get blockmaps when present on the release.
+for key, entry in list(platforms.items()):
+    zname = str(entry.get("update_filename") or "")
+    if zname.lower().endswith(".zip") and "update_blockmap_url" not in entry:
+        attach_blockmap(entry, zname, prefix="update_blockmap")
+    pname = str(entry.get("filename") or "")
+    if pname.lower().endswith(".appimage") and "blockmap_url" not in entry:
+        attach_blockmap(entry, pname, prefix="blockmap")
 
 prev = json.loads(saas.read_text()) if saas.exists() else {}
 # Keep non-mac platforms from the previous site manifest when a mac-only deploy runs.
@@ -210,10 +270,30 @@ for k in ("win-x64", "linux-x64"):
         platforms[k] = prev["platforms"][k]
         print(f"preserved {k} from previous site manifest")
 
+# Monotonic release index + force-update window (current + 2 prior = 3 releases).
+release_index = int(prev.get("release_index") or 0) + 1
+max_behind = 2
+try:
+    import re as _re
+    ver_py = (root / "core" / "version.py").read_text(encoding="utf-8")
+    m_idx = _re.search(r"^RELEASE_INDEX\s*=\s*(\d+)", ver_py, _re.M)
+    m_behind = _re.search(r"^MAX_RELEASES_BEHIND\s*=\s*(\d+)", ver_py, _re.M)
+    if m_idx:
+        release_index = int(m_idx.group(1))
+    if m_behind:
+        max_behind = int(m_behind.group(1))
+except Exception:
+    pass
+min_release_index = max(1, release_index - max_behind)
+# Optional kill-switch override from previous manifest (hotfix).
+min_supported = str(prev.get("min_supported_version") or "").strip()
 manifest = {
     "version": version,
     "released_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     "notes": notes,
+    "release_index": release_index,
+    "min_release_index": min_release_index,
+    "min_supported_version": min_supported,
     "releases_base_url": base,
     "source": prev.get("source")
     or {

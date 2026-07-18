@@ -11,7 +11,8 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 
 
 PLANNER_PROMPT = """You are the planning module of MARK XXV, a personal AI assistant.
@@ -172,20 +173,19 @@ def _get_api_key() -> str:
 
 
 def create_plan(goal: str, context: str = "") -> dict:
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
-        system_instruction=PLANNER_PROMPT
-    )
+    from core.gemini_models import generate_legacy
 
     user_input = f"Goal: {goal}"
     if context:
         user_input += f"\n\nContext: {context}"
 
     try:
-        response = model.generate_content(user_input)
+        response = generate_legacy(
+            "fast",
+            user_input,
+            api_key=_get_api_key(),
+            system_instruction=PLANNER_PROMPT,
+        )
         text     = response.text.strip()
         text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
 
@@ -232,13 +232,7 @@ def _fallback_plan(goal: str) -> dict:
 
 
 def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> dict:
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=PLANNER_PROMPT
-    )
+    from core.gemini_models import generate_legacy
 
     completed_summary = "\n".join(
         f"  - Step {s['step']} ({s['tool']}): DONE" for s in completed_steps
@@ -255,7 +249,12 @@ Error: {error}
 Create a REVISED plan for the remaining work only. Do not repeat completed steps."""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy(
+            "balanced",
+            prompt,
+            api_key=_get_api_key(),
+            system_instruction=PLANNER_PROMPT,
+        )
         text     = response.text.strip()
         text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
         plan     = json.loads(text)

@@ -12,7 +12,8 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 
 
 class ErrorDecision(Enum):
@@ -78,7 +79,7 @@ def analyze_error(
             "user_message": str
         }
     """
-    import google.generativeai as genai
+    from core.gemini_models import generate_legacy
 
     if attempt >= max_attempts:
         print(f"[ErrorHandler] ⚠️ Max attempts reached for step {step.get('step')} — forcing replan")
@@ -89,12 +90,6 @@ def analyze_error(
             "max_retries":   0,
             "user_message":  "Trying a different approach, sir."
         }
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
-        system_instruction=ERROR_ANALYST_PROMPT
-    )
 
     prompt = f"""Failed step:
 Tool: {step.get('tool')}
@@ -108,7 +103,12 @@ Error:
 Attempt number: {attempt}"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy(
+            "fast",
+            prompt,
+            api_key=_get_api_key(),
+            system_instruction=ERROR_ANALYST_PROMPT,
+        )
         text     = response.text.strip()
         text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
 
@@ -148,10 +148,7 @@ def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
 
     Returns a modified step dict.
     """
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+    from core.gemini_models import generate_legacy
 
     prompt = f"""A task step failed. Generate a replacement step.
 
@@ -167,7 +164,7 @@ Write a Python script that accomplishes the same goal differently.
 Return ONLY the Python code, no explanation."""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         code = response.text.strip()
         code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
 

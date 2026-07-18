@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import sys
 
-from jarvis_ui.onboarding.persistence import is_onboarding_done
+from jarvis_ui.onboarding.persistence import should_run_onboarding
 from jarvis_ui.onboarding.window import OnboardingWindow
 
 
 def run_onboarding_if_needed() -> bool:
-    """Show premium Antigravity onboarding once. Returns True if it was shown."""
-    if is_onboarding_done():
+    """Show premium onboarding when this install needs setup. Returns True if shown."""
+    if not should_run_onboarding():
         return False
 
     from PyQt6.QtCore import QEventLoop, QTimer, Qt
@@ -52,12 +52,11 @@ def run_onboarding_if_needed() -> bool:
     win.activateWindow()
     loop.exec()
 
-    # Tear down calmly before the main window takes over.
+    # Tear down calmly — avoid deleteLater (macOS/Qt can SIGTRAP mid-transition).
     try:
         win.hide()
         win.close()
-        win.deleteLater()
-        for _ in range(5):
+        for _ in range(8):
             app.processEvents()
         QTimer.singleShot(0, lambda: None)
         app.processEvents()

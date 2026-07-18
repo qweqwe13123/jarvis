@@ -15,7 +15,8 @@ def _get_base_dir() -> Path:
 
 
 BASE_DIR        = _get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 
 
 def _get_api_key() -> str:
@@ -62,13 +63,14 @@ def _parse_date(raw: str) -> str:
             return val.strftime("%Y-%m-%d")
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model    = genai.GenerativeModel("gemini-2.5-flash-lite")
-        response = model.generate_content(
+        from core.gemini_models import generate_legacy
+
+        response = generate_legacy(
+            "fast",
             f"Today is {today.strftime('%Y-%m-%d')}. "
             f"Convert this date expression to YYYY-MM-DD: '{raw}'. "
-            f"Return ONLY the date string, nothing else."
+            f"Return ONLY the date string, nothing else.",
+            api_key=_get_api_key(),
         )
         result = response.text.strip()
         if re.match(r"\d{4}-\d{2}-\d{2}", result):
@@ -152,17 +154,7 @@ def _parse_flights_with_gemini(
     destination: str,
     date:        str,
 ) -> list[dict]:
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=(
-            "You are a flight data extraction expert. "
-            "Extract flight information from raw webpage text. "
-            "Return ONLY valid JSON — no markdown, no explanation."
-        ),
-    )
+    from core.gemini_models import generate_legacy
 
     prompt = (
         f"Extract flight options from {origin} to {destination} on {date} "
@@ -174,7 +166,16 @@ def _parse_flights_with_gemini(
     )
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy(
+            "balanced",
+            prompt,
+            api_key=_get_api_key(),
+            system_instruction=(
+                "You are a flight data extraction expert. "
+                "Extract flight information from raw webpage text. "
+                "Return ONLY valid JSON — no markdown, no explanation."
+            ),
+        )
         text     = re.sub(r"```(?:json)?", "", response.text).strip().rstrip("`").strip()
         flights  = json.loads(text)
         return flights if isinstance(flights, list) else []

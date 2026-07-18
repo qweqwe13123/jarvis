@@ -1,0 +1,20 @@
+{
+    "gemini_api_key": "",
+    "os_system": "mac",
+    "camera_index": 0,
+    "openai_api_key": "",
+    "hf_token": "",
+    "flux_model_id": "black-forest-labs/FLUX.1-schnell",
+    "openrouter_api_key": "",
+    "groq_api_key": "",
+    "deepseek_api_key": "",
+    "together_api_key": "",
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "ollama_base_url": "http://localhost:11434/api/generate",
+    "default_tier": "free",
+    "router_policy": "hybrid_free",
+    "free_limits": {
+        "daily": 300,
+        "hourly": 35
+    }
+}

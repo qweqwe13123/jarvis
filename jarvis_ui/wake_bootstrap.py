@@ -2,12 +2,13 @@
 
 The frozen AURA binary may reinstall an older wake plist on launch. This
 module (loaded from disk via prefer-disk) re-applies the good agent shortly
-after the UI starts.
+after the UI starts — unless the user disabled wake in Settings.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import threading
 import time
@@ -18,6 +19,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "AURA" / "wake"
 _SUPPORT_INSTALLER = _SUPPORT_DIR / "install_launch_agent.py"
 _SUPPORT_LISTENER = _SUPPORT_DIR / "wake_listener.py"
+_PREFS_PATH = _SUPPORT_DIR / "prefs.json"
+_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.wake.plist"
 
 _INSTALLER_CANDIDATES = (
     _REPO_ROOT / "launcher" / "install_launch_agent.py",
@@ -61,10 +64,26 @@ def _copy_support_files() -> Path | None:
     return _SUPPORT_INSTALLER
 
 
+def _load_installer_module():
+    installer = _copy_support_files()
+    if installer is None:
+        # Fall back to importable launcher package (dev runs).
+        from launcher import install_launch_agent as mod
+
+        return mod
+    spec = importlib.util.spec_from_file_location(
+        "aura_wake_install_launch_agent", installer
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load wake installer")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _plist_is_clap_filter() -> bool:
-    plist = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.wake.plist"
     try:
-        text = plist.read_text(encoding="utf-8", errors="ignore")
+        text = _PLIST_PATH.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return False
     # Broken legacy: AURA binary invoked with a .py path (not --wake-listener).
@@ -82,6 +101,45 @@ def _plist_is_clap_filter() -> bool:
     )
 
 
+def _read_prefs() -> dict:
+    try:
+        if _PREFS_PATH.is_file():
+            return json.loads(_PREFS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _write_prefs(data: dict) -> None:
+    _SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    _PREFS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def is_wake_enabled_pref() -> bool:
+    """User preference. Default True when unset (product ships with wake on)."""
+    prefs = _read_prefs()
+    if "enabled" not in prefs:
+        return True
+    return bool(prefs.get("enabled"))
+
+
+def is_wake_installed() -> bool:
+    return _PLIST_PATH.is_file()
+
+
+def set_wake_enabled(enabled: bool) -> None:
+    """Install or uninstall the LaunchAgent and persist the preference."""
+    enabled = bool(enabled)
+    prefs = _read_prefs()
+    prefs["enabled"] = enabled
+    _write_prefs(prefs)
+    mod = _load_installer_module()
+    if enabled:
+        mod.install()
+    else:
+        mod.uninstall()
+
+
 def ensure_clap_wake_async(delay_s: float = 1.5) -> None:
     """Re-install clap-filter wake after the frozen installer may have run."""
 
@@ -89,18 +147,17 @@ def ensure_clap_wake_async(delay_s: float = 1.5) -> None:
         log = Path.home() / "Library" / "Logs" / "mark_xxxix_wake.log"
         try:
             time.sleep(max(0.0, delay_s))
+            if not is_wake_enabled_pref():
+                try:
+                    log.parent.mkdir(parents=True, exist_ok=True)
+                    with log.open("a", encoding="utf-8") as f:
+                        f.write("[wake_bootstrap] skipped — disabled in Settings.\n")
+                except Exception:
+                    pass
+                return
             # Retry: frozen main.py may overwrite the plist a few seconds in.
             for attempt in range(4):
-                installer = _copy_support_files()
-                if installer is None:
-                    raise RuntimeError("clap-filter installer/listener not found on disk")
-                spec = importlib.util.spec_from_file_location(
-                    "aura_wake_install_launch_agent", installer
-                )
-                if spec is None or spec.loader is None:
-                    raise RuntimeError("could not load wake installer")
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
+                mod = _load_installer_module()
                 mod.install()
                 if _plist_is_clap_filter():
                     log.parent.mkdir(parents=True, exist_ok=True)

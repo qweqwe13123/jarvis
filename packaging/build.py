@@ -55,8 +55,20 @@ def _platform_key() -> str:
 
 
 def _zip_tree(source: Path, dest_zip: Path) -> None:
+    """Zip a file/dir. On macOS .app bundles use ditto so codesign survives."""
     if dest_zip.exists():
         dest_zip.unlink()
+    dest_zip.parent.mkdir(parents=True, exist_ok=True)
+
+    if (
+        platform.system() == "Darwin"
+        and source.is_dir()
+        and (source.suffix == ".app" or (source / "Contents" / "MacOS").is_dir())
+    ):
+        # ditto preserves symlinks + resource forks; Python zipfile breaks Frameworks.
+        _run(["ditto", "-c", "-k", "--keepParent", str(source), str(dest_zip)])
+        return
+
     with zipfile.ZipFile(dest_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         if source.is_file():
             zf.write(source, source.name)
@@ -564,6 +576,31 @@ def package_release(
         entry["update_url"] = "%s/%s" % (base, update_name)
         entry["update_sha256"] = _sha256(update_path)
         entry["update_size"] = update_path.stat().st_size
+
+    # Cursor-style blockmaps for differential in-app updates (same as macOS).
+    def _attach_blockmap(pkg: Path, *, prefix: str) -> Path | None:
+        if not pkg.is_file():
+            return None
+        try:
+            from core.updater.blockmap import generate_blockmap
+
+            bm_path = Path(str(pkg) + ".blockmap")
+            bm = generate_blockmap(pkg)
+            bm.save(bm_path)
+            entry["%s_url" % prefix] = "%s/%s" % (base, bm_path.name)
+            entry["%s_sha256" % prefix] = _sha256(bm_path)
+            entry["%s_size" % prefix] = bm_path.stat().st_size
+            print("Blockmap: %s (%s blocks)" % (bm_path.name, bm.block_count))
+            return bm_path
+        except Exception as exc:
+            print("WARN: blockmap failed for %s: %s" % (pkg.name, exc))
+            return None
+
+    if update_name != primary_name and update_path.is_file() and update_name.lower().endswith(".zip"):
+        _attach_blockmap(update_path, prefix="update_blockmap")
+    # Linux AppImage is the live update package — give it its own blockmap too.
+    if primary_name.lower().endswith(".appimage"):
+        _attach_blockmap(primary_path, prefix="blockmap")
 
     # Universal macOS: same DMG for Apple Silicon + Intel download keys.
     targets = mac_keys if system == "Darwin" and mac_keys else [key]

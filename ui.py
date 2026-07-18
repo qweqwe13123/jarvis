@@ -52,12 +52,20 @@ from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
+        from core.app_paths import resource_dir
+
+        return resource_dir()
     return Path(__file__).resolve().parent
 
-BASE_DIR   = _base_dir()
-CONFIG_DIR = BASE_DIR / "config"
-API_FILE   = CONFIG_DIR / "api_keys.json"
+BASE_DIR = _base_dir()
+try:
+    from core.app_paths import api_keys_path as _api_keys_path
+
+    API_FILE = _api_keys_path()
+    CONFIG_DIR = API_FILE.parent
+except Exception:
+    CONFIG_DIR = BASE_DIR / "config"
+    API_FILE = CONFIG_DIR / "api_keys.json"
 
 _DEFAULT_W, _DEFAULT_H = 1480, 920
 _MIN_W,     _MIN_H     = 1180, 720
@@ -1062,7 +1070,7 @@ class SetupOverlay(QWidget):
 
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_input.setPlaceholderText("Paste key · starts with AIza…")
+        self._key_input.setPlaceholderText("Paste key from Google AI Studio")
         self._key_input.setFont(QFont("SF Mono", 12))
         self._key_input.setFixedHeight(44)
         self._key_input.setStyleSheet(f"""
@@ -1155,7 +1163,7 @@ class SetupOverlay(QWidget):
         layout.addWidget(init_btn)
         layout.addSpacing(8)
 
-        foot = QLabel("Keys stay in config/api_keys.json on this device.")
+        foot = QLabel("Keys stay in Application Support on this device.")
         foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         foot.setFont(QFont("SF Pro Text", 9))
         foot.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
@@ -1206,87 +1214,113 @@ class SetupOverlay(QWidget):
         self.done.emit(key, self._sel_os)
 
 
+_FIXED_FORGE_PROVIDER = "gemini"
+try:
+    from core.gemini_models import primary as _gemini_primary
+
+    _FIXED_FORGE_MODEL = _gemini_primary("balanced")
+except Exception:
+    _FIXED_FORGE_MODEL = "gemini-flash-latest"
+
+
 class ApiSettingsDialog(QDialog):
-    """Manage provider API keys and Forge Builder defaults."""
+    """Gemini API key only — Forge uses the balanced Gemini role with auto-fallback."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
+        self.setWindowTitle("Gemini API key")
         self.setModal(True)
-        self.setMinimumWidth(560)
+        self.setFixedWidth(440)
         self.setStyleSheet(
-            f"QDialog {{ background: {C.PANEL}; color: {C.TEXT}; }}"
-            f"QLabel {{ color: {C.TEXT_MED}; }}"
+            f"QDialog {{ background: {T.BG_ELEVATED}; color: {T.TEXT}; }}"
         )
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(0)
 
-        title = QLabel("API Keys & Forge Builder")
-        title.setFont(QFont("Menlo", 10, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {C.PRI};")
+        title = QLabel("Gemini API key")
+        title.setFont(QFont(T.SB_FONT, 16, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {T.WHITE}; background: transparent; border: none;")
         lay.addWidget(title)
+        lay.addSpacing(6)
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
+        hint = QLabel("Your key powers chat, voice, and Forge.")
+        hint.setFont(QFont(T.SB_FONT, 12))
+        hint.setStyleSheet(f"color: {T.TEXT_DIM}; background: transparent; border: none;")
+        lay.addWidget(hint)
+        lay.addSpacing(18)
 
-        self._fields: dict[str, QLineEdit] = {}
-        key_fields = [
-            ("gemini_api_key", "Gemini API key"),
-            ("openrouter_api_key", "OpenRouter API key"),
-            ("groq_api_key", "Groq API key"),
-            ("deepseek_api_key", "DeepSeek API key"),
-            ("together_api_key", "Together API key"),
-            ("openai_api_key", "OpenAI API key"),
-            ("hf_token", "HuggingFace token (for FLUX)"),
-            ("flux_model_id", "FLUX model repo id"),
-            ("ollama_base_url", "Ollama Base URL"),
-            ("lmstudio_base_url", "LM Studio Base URL"),
-        ]
-        for key, label in key_fields:
-            e = QLineEdit()
-            e.setPlaceholderText(label)
-            e.setEchoMode(QLineEdit.EchoMode.Password if key.endswith("_api_key") else QLineEdit.EchoMode.Normal)
-            e.setStyleSheet(
-                f"QLineEdit {{ background: #000d14; color: {C.WHITE}; border: 1px solid {C.BORDER}; border-radius: 6px; padding: 5px 8px; }}"
-                f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}"
-            )
-            self._fields[key] = e
-            form.addRow(label + ":", e)
+        key_lbl = QLabel("API key")
+        key_lbl.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        key_lbl.setStyleSheet(f"color: {T.TEXT_MED}; background: transparent; border: none;")
+        lay.addWidget(key_lbl)
+        lay.addSpacing(6)
 
-        self._builder_provider = QComboBox()
-        self._builder_provider.addItems(["gemini", "openrouter", "groq", "deepseek", "together", "ollama", "lmstudio", "auto"])
-        self._builder_provider.setStyleSheet(
-            f"QComboBox {{ background: #000d14; color: {C.WHITE}; border: 1px solid {C.BORDER}; border-radius: 6px; padding: 5px 8px; }}"
-            f"QComboBox QAbstractItemView {{ background: #001018; color: {C.WHITE}; border: 1px solid {C.BORDER_B}; selection-background-color: {C.PRI_GHO}; }}"
+        self._gemini = QLineEdit()
+        self._gemini.setPlaceholderText("AIza… or AQ.…")
+        self._gemini.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gemini.setFixedHeight(40)
+        self._gemini.setStyleSheet(
+            f"QLineEdit {{"
+            f"  background: {T.BG_CARD}; color: {T.WHITE};"
+            f"  border: 1px solid {T.BORDER}; border-radius: 10px; padding: 0 12px;"
+            f"  font-family: '{T.SB_FONT}'; font-size: 13px;"
+            f"}}"
+            f"QLineEdit:focus {{ border: 1px solid {T.CYAN}; }}"
         )
-        self._builder_model = QLineEdit()
-        self._builder_model.setPlaceholderText("Example: gemini-2.5-flash")
-        self._builder_model.setStyleSheet(
-            f"QLineEdit {{ background: #000d14; color: {C.WHITE}; border: 1px solid {C.BORDER}; border-radius: 6px; padding: 5px 8px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}"
+        lay.addWidget(self._gemini)
+        lay.addSpacing(16)
+
+        model_lbl = QLabel("Forge model")
+        model_lbl.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        model_lbl.setStyleSheet(f"color: {T.TEXT_MED}; background: transparent; border: none;")
+        lay.addWidget(model_lbl)
+        lay.addSpacing(6)
+
+        model_box = QFrame()
+        model_box.setFixedHeight(40)
+        model_box.setStyleSheet(
+            f"QFrame {{"
+            f"  background: {T.BG_CARD}; border: 1px solid {T.BORDER};"
+            f"  border-radius: 10px;"
+            f"}}"
         )
-        form.addRow("Forge provider:", self._builder_provider)
-        form.addRow("Forge model:", self._builder_model)
-        lay.addLayout(form)
+        mb = QHBoxLayout(model_box)
+        mb.setContentsMargins(12, 0, 12, 0)
+        model_val = QLabel(_FIXED_FORGE_MODEL)
+        model_val.setFont(QFont(T.SB_FONT, 13))
+        model_val.setStyleSheet(f"color: {T.CYAN}; background: transparent; border: none;")
+        mb.addWidget(model_val)
+        mb.addStretch(1)
+        fixed = QLabel("Fixed")
+        fixed.setFont(QFont(T.SB_FONT, 11))
+        fixed.setStyleSheet(f"color: {T.TEXT_DIM}; background: transparent; border: none;")
+        mb.addWidget(fixed)
+        lay.addWidget(model_box)
+        lay.addSpacing(22)
 
         btns = QHBoxLayout()
-        btns.addStretch()
+        btns.setSpacing(8)
+        btns.addStretch(1)
         cancel = QPushButton("Cancel")
         save = QPushButton("Save")
         for b in (cancel, save):
-            b.setFixedHeight(32)
+            b.setFixedHeight(36)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet(
-                f"QPushButton {{ background: #000d14; color: {C.TEXT_MED}; border: 1px solid {C.BORDER}; border-radius: 7px; padding: 0 14px; }}"
-                f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}"
-            )
+            b.setFont(QFont(T.SB_FONT, 12))
+        cancel.setStyleSheet(
+            f"QPushButton {{"
+            f"  background: transparent; color: {T.TEXT_MED};"
+            f"  border: 1px solid {T.BORDER}; border-radius: 10px; padding: 0 16px;"
+            f"}}"
+            f"QPushButton:hover {{ color: {T.WHITE}; border-color: {T.BORDER_HI}; }}"
+        )
         save.setStyleSheet(
-            f"QPushButton {{ background: rgba(0,209,255,0.10); color: {C.PRI}; border: 1px solid {C.PRI_DIM}; border-radius: 7px; padding: 0 14px; }}"
-            f"QPushButton:hover {{ background: rgba(0,209,255,0.18); }}"
+            f"QPushButton {{"
+            f"  background: {T.CYAN}; color: #041018;"
+            f"  border: none; border-radius: 10px; padding: 0 18px; font-weight: 600;"
+            f"}}"
+            f"QPushButton:hover {{ background: #33daff; }}"
         )
         cancel.clicked.connect(self.reject)
         save.clicked.connect(self.accept)
@@ -1303,18 +1337,7 @@ class ApiSettingsDialog(QDialog):
                 cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
             except Exception:
                 cfg = {}
-        for key, edit in self._fields.items():
-            edit.setText(str(cfg.get(key, "")))
-
-        try:
-            st = ws.get_settings()
-        except Exception:
-            st = {}
-        provider = str(st.get("builder_provider", "gemini"))
-        model = str(st.get("builder_model", "gemini-2.5-flash"))
-        ix = self._builder_provider.findText(provider)
-        self._builder_provider.setCurrentIndex(ix if ix >= 0 else 0)
-        self._builder_model.setText(model)
+        self._gemini.setText(str(cfg.get("gemini_api_key", "")))
 
     def save(self):
         cfg = {}
@@ -1323,14 +1346,14 @@ class ApiSettingsDialog(QDialog):
                 cfg = json.loads(API_FILE.read_text(encoding="utf-8"))
             except Exception:
                 cfg = {}
-        for key, edit in self._fields.items():
-            cfg[key] = edit.text().strip()
+        # Keep any advanced keys already in the file; only edit Gemini in UI.
+        cfg["gemini_api_key"] = self._gemini.text().strip()
         cfg.setdefault("os_system", {"Darwin": "mac", "Windows": "windows"}.get(_OS, "linux"))
         cfg.setdefault("camera_index", 0)
         API_FILE.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
         ws.save_settings({
-            "builder_provider": self._builder_provider.currentText().strip(),
-            "builder_model": self._builder_model.text().strip() or "gemini-2.5-flash",
+            "builder_provider": _FIXED_FORGE_PROVIDER,
+            "builder_model": _FIXED_FORGE_MODEL,
         })
 
 
@@ -1431,6 +1454,15 @@ class MainWindow(QMainWindow):
         self._workspace_stack.addWidget(self._almost_ready)
         self._early_access = EarlyAccessView()
         self._workspace_stack.addWidget(self._early_access)
+
+        # Settings lives in the right pane only — main nav (profile) stays fixed.
+        from jarvis_ui.settings_window import SettingsWindow
+
+        self._settings_page = SettingsWindow(self, updater=None)
+        self._settings_page.closed.connect(self._close_settings)
+        self._settings_stack_index = self._workspace_stack.addWidget(self._settings_page)
+        self._settings_return_index = 0
+
         self._main_splitter.addWidget(self._workspace_stack)
 
         saved_w = int(ws.get_settings().get("sidebar_width", _LEFT_W) or _LEFT_W)
@@ -1507,13 +1539,27 @@ class MainWindow(QMainWindow):
 
         self._hotkeys = GlobalHotkeyService(self)
         self._hotkeys.set_host(self)
-        self._hotkeys.triggered.connect(self._float.toggle)
-        self._hotkeys.status_changed.connect(self._computer_use.set_hotkey_status)
-        combo = ws.get_settings().get("overlay_hotkey") or default_hotkey()
-        self._hotkeys.start(combo)
 
-        self._computer_use.hotkey_changed.connect(self._hotkeys.rebind)
+        def _on_overlay_hotkey() -> None:
+            print(f"[AURA] Overlay hotkey fired → toggle ({hotkey_display(self._hotkeys.combo)})")
+            try:
+                self._log.append_log(
+                    f"SYS: Overlay hotkey {hotkey_display(self._hotkeys.combo)}"
+                )
+            except Exception:
+                pass
+            self._float.toggle()
+
+        self._hotkeys.triggered.connect(_on_overlay_hotkey)
+        self._hotkeys.status_changed.connect(self._computer_use.set_hotkey_status)
+        self._hotkeys.start(default_hotkey())
+
         self._computer_use.open_overlay.connect(self._float.show_animated)
+
+        # Dev self-test: AURA_TEST_OVERLAY_HOTKEY=1 → synthesize ⌘+A and report result.
+        import os as _os
+        if _os.environ.get("AURA_TEST_OVERLAY_HOTKEY", "").strip() in ("1", "true", "yes"):
+            QTimer.singleShot(800, self._selftest_overlay_hotkey)
 
         self._tray = AppTrayController(self)
         self._tray.open_requested.connect(self._on_tray_open)
@@ -1631,9 +1677,72 @@ class MainWindow(QMainWindow):
         worker.browser_opened.connect(_browser)
         worker.start()
 
+    def _selftest_overlay_hotkey(self) -> None:
+        """Synthesize the OS default overlay hotkey and write pass/fail."""
+        import tempfile
+        from pathlib import Path
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QKeyEvent
+
+        report = Path(tempfile.gettempdir()) / "aura_hotkey_selftest.txt"
+        try:
+            before = bool(
+                hasattr(self, "_float")
+                and self._float.isVisible()
+                and not getattr(self._float, "_closing", False)
+            )
+            self.raise_()
+            self.activateWindow()
+            combo = getattr(self, "_hotkeys", None).combo if hasattr(self, "_hotkeys") else default_hotkey()
+            print(f"[AURA] SELFTEST: sending key event for {hotkey_display(combo)} …")
+            mods = Qt.KeyboardModifier.NoModifier
+            low = combo.lower()
+            if "meta" in low or "cmd" in low or "command" in low:
+                mods |= Qt.KeyboardModifier.MetaModifier
+            if "ctrl" in low or "control" in low:
+                mods |= Qt.KeyboardModifier.ControlModifier
+            if "alt" in low or "option" in low:
+                mods |= Qt.KeyboardModifier.AltModifier
+            if "shift" in low:
+                mods |= Qt.KeyboardModifier.ShiftModifier
+            key = Qt.Key.Key_Space if "space" in low else Qt.Key.Key_A
+            ev = QKeyEvent(QEvent.Type.KeyPress, key, mods, "a" if key == Qt.Key.Key_A else " ")
+            app = QApplication.instance()
+            if app is not None:
+                app.postEvent(self, ev)
+            QTimer.singleShot(400, lambda: self._selftest_overlay_hotkey_finish(before, report))
+        except Exception as e:
+            report.write_text(f"FAIL setup: {e}\n", encoding="utf-8")
+            print(f"[AURA] SELFTEST FAIL setup: {e}")
+
+    def _selftest_overlay_hotkey_finish(self, before_visible: bool, report) -> None:
+        try:
+            after = bool(
+                hasattr(self, "_float")
+                and self._float.isVisible()
+                and not getattr(self._float, "_closing", False)
+            )
+            ok = after != before_visible or after is True
+            # Stronger: overlay should be visible after hotkey from hidden state
+            if not before_visible:
+                ok = after is True
+            line = (
+                f"{'PASS' if ok else 'FAIL'} before={before_visible} after={after} "
+                f"combo={getattr(self, '_hotkeys', None).combo if hasattr(self, '_hotkeys') else '?'}\n"
+            )
+            report.write_text(line, encoding="utf-8")
+            print(f"[AURA] SELFTEST {line.strip()}")
+            try:
+                self._log.append_log(f"SYS: Hotkey selftest {line.strip()}")
+            except Exception:
+                pass
+        except Exception as e:
+            report.write_text(f"FAIL finish: {e}\n", encoding="utf-8")
+            print(f"[AURA] SELFTEST FAIL finish: {e}")
+
     def _show_keyboard_shortcuts_overlay_hint(self) -> None:
         # Extend shortcuts help text next time it's opened — also log once.
-        hk = hotkey_display(ws.get_settings().get("overlay_hotkey") or default_hotkey())
+        hk = hotkey_display(default_hotkey())
         if hasattr(self, "_log"):
             self._log.append_log(f"SYS: Floating overlay ready — press {hk} anytime.")
 
@@ -1676,12 +1785,29 @@ class MainWindow(QMainWindow):
 
     def _on_tray_check_updates(self) -> None:
         updater = getattr(self, "_updater_ref", None)
-        if updater is not None and hasattr(updater, "_service"):
-            updater._service.check_for_updates(background=False)
+        if updater is not None:
+            if hasattr(updater, "check_now"):
+                updater.check_now()
+            elif hasattr(updater, "_service"):
+                updater._service.check_for_updates(background=True)
             if hasattr(self, "_log"):
                 self._log.append_log("SYS: Checking for updates…")
+            # If an update is already known, open the Cursor-style update flow.
+            try:
+                state = updater._service.state
+                if state.release and hasattr(updater, "open_update_ui"):
+                    updater.open_update_ui()
+            except Exception:
+                pass
             return
         QMessageBox.information(self, "Updates", "Checking for updates…")
+
+    def _on_update_requested(self) -> None:
+        updater = getattr(self, "_updater_ref", None)
+        if updater is not None and hasattr(updater, "open_update_ui"):
+            updater.open_update_ui()
+            return
+        QMessageBox.information(self, "Updates", "No update controller is available.")
 
     def _quit_app(self) -> None:
         self._force_quit = True
@@ -1707,7 +1833,7 @@ class MainWindow(QMainWindow):
             self._tray.show_message(
                 "AURA",
                 f"Still running in the background. "
-                f"Press {hotkey_display(ws.get_settings().get('overlay_hotkey') or default_hotkey())} "
+                f"Press {hotkey_display(default_hotkey())} "
                 f"for the floating bar.",
             )
 
@@ -1894,6 +2020,7 @@ class MainWindow(QMainWindow):
         self._nav.chat_delete.connect(self._on_chat_delete)
         self._nav.chat_pin.connect(self._on_chat_pin)
         self._nav.settings_requested.connect(self._open_settings)
+        self._nav.update_requested.connect(self._on_update_requested)
         self._nav.profile_menu_action.connect(self._on_profile_menu_action)
         sc = QShortcut(QKeySequence("Ctrl+N"), self)
         sc.activated.connect(self._on_new_chat)
@@ -1920,7 +2047,7 @@ class MainWindow(QMainWindow):
             self,
             "Keyboard Shortcuts",
             "⌘N / Ctrl+N — New session\n"
-            f"{hotkey_display(ws.get_settings().get('overlay_hotkey') or default_hotkey())} — Floating overlay\n"
+            f"{hotkey_display(default_hotkey())} — Floating overlay\n"
             "F4 — Toggle mute\n"
             "F11 — Fullscreen\n"
             "Enter — Send message\n"
@@ -1953,8 +2080,17 @@ class MainWindow(QMainWindow):
                 UA.open_account()
                 self._log.append_log("SYS: Opening web account — sign in to subscribe.")
         elif action == "referral":
-            UA.open_referral()
-            self._log.append_log("SYS: Referral program opened in browser.")
+            try:
+                from jarvis_ui.referral_dialog import show_referral_dialog
+
+                result = show_referral_dialog(self)
+                if result == 2:
+                    self._begin_sign_in(reason="sign_in")
+                else:
+                    self._log.append_log("SYS: Referral dialog closed.")
+            except Exception as e:
+                UA.open_referral()
+                self._log.append_log(f"SYS: Referral opened in browser ({e}).")
         elif action == "shortcuts":
             self._show_keyboard_shortcuts()
         elif action == "help":
@@ -2069,9 +2205,9 @@ class MainWindow(QMainWindow):
         self._builder.begin_build()
         self._builder_history.append({"role": "user", "content": prompt})
         history = list(self._builder_history)
-        provider = self._builder.selected_provider()
-        model = self._builder.selected_model()
-        ws.save_settings({"builder_provider": provider, "builder_model": model or "gemini-2.5-flash"})
+        provider = _FIXED_FORGE_PROVIDER
+        model = _FIXED_FORGE_MODEL
+        ws.save_settings({"builder_provider": provider, "builder_model": model})
         threading.Thread(
             target=self._run_builder, args=(agent.system_prompt, history, provider, model), daemon=True
         ).start()
@@ -2231,10 +2367,43 @@ class MainWindow(QMainWindow):
             self._log.append_log("SYS: Customize settings saved.")
 
     def _open_settings(self):
-        dlg = ApiSettingsDialog(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            dlg.save()
-            self._log.append_log("SYS: Settings updated.")
+        """Open Settings in the right pane; left nav / profile stay put."""
+        page = getattr(self, "_settings_page", None)
+        stack = getattr(self, "_workspace_stack", None)
+        if page is None or stack is None:
+            return
+        settings_ix = getattr(self, "_settings_stack_index", None)
+        if settings_ix is None:
+            return
+        if stack.currentIndex() != settings_ix:
+            self._settings_return_index = stack.currentIndex()
+        page.set_updater(getattr(self, "_updater_ref", None))
+        page.open_page("general")
+        stack.setCurrentIndex(settings_ix)
+        self._log.append_log("SYS: Settings opened.")
+
+    def _close_settings(self):
+        stack = getattr(self, "_workspace_stack", None)
+        settings_ix = getattr(self, "_settings_stack_index", None)
+        if stack is not None and settings_ix is not None and stack.currentIndex() == settings_ix:
+            back = int(getattr(self, "_settings_return_index", 0) or 0)
+            if back == settings_ix:
+                back = 0
+            stack.setCurrentIndex(max(0, min(back, stack.count() - 1)))
+        try:
+            self._nav.refresh_user_account()
+        except Exception:
+            pass
+        self._log.append_log("SYS: Settings closed.")
+
+    def _settings_is_open(self) -> bool:
+        stack = getattr(self, "_workspace_stack", None)
+        settings_ix = getattr(self, "_settings_stack_index", None)
+        return bool(
+            stack is not None
+            and settings_ix is not None
+            and stack.currentIndex() == settings_ix
+        )
 
     def _subscription_allows_use(self) -> bool:
         """True if Pro or free preview still available."""
@@ -2882,31 +3051,50 @@ class MainWindow(QMainWindow):
         if cw.width() < 200 or cw.height() < 200:
             QTimer.singleShot(200, self._ensure_setup_overlay)
     def _on_setup_done(self, key: str, os_name: str):
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        existing = {}
-        if API_FILE.exists():
-            try:
-                existing = json.loads(API_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                existing = {}
-        existing.update({
-            "gemini_api_key": key,
-            "os_system": os_name,
-            "camera_index": existing.get("camera_index", 0),
-            "openai_api_key": existing.get("openai_api_key", ""),
-            "hf_token": existing.get("hf_token", ""),
-            "flux_model_id": existing.get("flux_model_id", "black-forest-labs/FLUX.1-schnell"),
-            "openrouter_api_key": existing.get("openrouter_api_key", ""),
-            "groq_api_key": existing.get("groq_api_key", ""),
-            "deepseek_api_key": existing.get("deepseek_api_key", ""),
-            "together_api_key": existing.get("together_api_key", ""),
-            "lmstudio_base_url": existing.get("lmstudio_base_url", "http://localhost:1234/v1"),
-            "ollama_base_url": existing.get("ollama_base_url", "http://localhost:11434/api/generate"),
-            "default_tier": existing.get("default_tier", "free"),
-            "router_policy": existing.get("router_policy", "hybrid_free"),
-            "free_limits": existing.get("free_limits", {"daily": 300, "hourly": 35}),
-        })
-        API_FILE.write_text(json.dumps(existing, indent=4), encoding="utf-8")
+        try:
+            from core.app_paths import api_keys_path
+
+            path = api_keys_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {}
+            existing.update({
+                "gemini_api_key": key,
+                "os_system": os_name,
+                "camera_index": existing.get("camera_index", 0),
+                "openai_api_key": existing.get("openai_api_key", ""),
+                "hf_token": existing.get("hf_token", ""),
+                "flux_model_id": existing.get(
+                    "flux_model_id", "black-forest-labs/FLUX.1-schnell"
+                ),
+                "openrouter_api_key": existing.get("openrouter_api_key", ""),
+                "groq_api_key": existing.get("groq_api_key", ""),
+                "deepseek_api_key": existing.get("deepseek_api_key", ""),
+                "together_api_key": existing.get("together_api_key", ""),
+                "lmstudio_base_url": existing.get(
+                    "lmstudio_base_url", "http://localhost:1234/v1"
+                ),
+                "ollama_base_url": existing.get(
+                    "ollama_base_url", "http://localhost:11434/api/generate"
+                ),
+                "default_tier": existing.get("default_tier", "free"),
+                "router_policy": existing.get("router_policy", "hybrid_free"),
+                "free_limits": existing.get(
+                    "free_limits", {"daily": 300, "hourly": 35}
+                ),
+            })
+            path.write_text(json.dumps(existing, indent=4), encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Could not save API key",
+                f"AURA could not save your Gemini key.\n\n{e}",
+            )
+            return
         self._ready = True
         if self._overlay:
             self._overlay.hide()
@@ -2930,6 +3118,12 @@ class JarvisUI:
         self._app.setQuitOnLastWindowClosed(False)
         self._win = MainWindow(face_path)
         self._win.show()
+        try:
+            from jarvis_ui.user_account import install_update_controller_fix
+
+            install_update_controller_fix()
+        except Exception:
+            pass
         self._updater = UpdateController(self._win, os.getpid())
         self._win._updater_ref = self._updater
         self.root = _RootShim(self._app)

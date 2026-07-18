@@ -32,7 +32,8 @@ def _base_dir() -> Path:
 
 
 _BASE         = _base_dir()
-_CONFIG_PATH  = _BASE / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+_CONFIG_PATH = _api_keys_path()
 _MEMORY_PATH  = _BASE / "memory" / "long_term.json"
 
 def _load_config() -> dict:
@@ -305,7 +306,6 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         return None
 
     try:
-        from google import genai
         from google.genai import types as gtypes
 
         _require_pyautogui()
@@ -315,7 +315,8 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         img.save(buf, format="PNG")
         image_bytes = buf.getvalue()
 
-        client = genai.Client(api_key=api_key)
+        from core.gemini_models import generate_content as gemini_generate_content
+
         prompt = (
             f"This is a screenshot of a {w}×{h} pixel screen. "
             f"Locate the UI element described as: '{description}'. "
@@ -323,12 +324,13 @@ def _screen_find(description: str) -> tuple[int, int] | None:
             f"If the element is not visible, reply: NOT_FOUND"
         )
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            contents=[
+        response = gemini_generate_content(
+            "vision",
+            [
                 gtypes.Part.from_bytes(data=image_bytes, mime_type="image/png"),
                 prompt,
             ],
+            api_key=api_key,
         )
 
         text = (response.text or "").strip()

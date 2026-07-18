@@ -72,6 +72,16 @@ jobs:
             --version "$V" \
             --base-url "https://github.com/${{ github.repository }}/releases/download/v${V}"
 
+      - name: Ensure update blockmaps
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist/releases/AURA-*.zip dist/releases/AURA-*.AppImage; do
+            [[ -f "$f" ]] || continue
+            [[ -f "${f}.blockmap" ]] && continue
+            python packaging/make_blockmap.py "$f" -o "${f}.blockmap"
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

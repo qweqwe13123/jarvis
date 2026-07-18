@@ -674,6 +674,9 @@ class _LineIcon(QWidget):
             p.drawArc(R(6.5, 5.5, 5.5, 5.5), 20 * 16, 200 * 16)
             p.drawArc(R(12, 5.5, 5.5, 5.5), -40 * 16, 200 * 16)
             p.drawLine(P(12, 7.5), P(12, 10))
+        elif n == "close":
+            p.drawLine(P(7, 7), P(17, 17))
+            p.drawLine(P(17, 7), P(7, 17))
         elif n == "user":
             p.drawEllipse(R(8, 4, 8, 8))
             p.drawArc(R(5, 13, 14, 9), 0, -180 * 16)
@@ -755,6 +758,55 @@ class _LineIcon(QWidget):
             p.setPen(pen2)
             p.drawLine(P(8.6, 12.2), P(11.0, 14.6))
             p.drawLine(P(11.0, 14.6), P(15.8, 9.4))
+        elif n == "search":
+            p.drawEllipse(R(4, 4, 12, 12))
+            p.drawLine(P(13.5, 13.5), P(20, 20))
+        elif n == "back":
+            poly((14, 5), (7, 12), (14, 19))
+            p.drawLine(P(7.5, 12), P(19, 12))
+        elif n == "book":
+            p.drawRoundedRect(R(5, 3.5, 14, 17), 1.5 * s, 1.5 * s)
+            p.drawLine(P(12, 3.5), P(12, 20.5))
+            p.drawLine(P(7.5, 8), P(10.5, 8))
+            p.drawLine(P(7.5, 11), P(10.5, 11))
+            p.drawLine(P(13.5, 8), P(16.5, 8))
+            p.drawLine(P(13.5, 11), P(16.5, 11))
+        elif n == "cube":
+            poly((12, 3), (20, 7.5), (20, 16.5), (12, 21), (4, 16.5), (4, 7.5), (12, 3))
+            p.drawLine(P(12, 3), P(12, 12))
+            p.drawLine(P(4, 7.5), P(12, 12))
+            p.drawLine(P(20, 7.5), P(12, 12))
+        elif n == "credit":
+            p.drawRoundedRect(R(3, 6, 18, 12), 2 * s, 2 * s)
+            p.drawLine(P(3, 10.5), P(21, 10.5))
+            p.drawLine(P(6, 14.5), P(11, 14.5))
+        elif n == "appearance":
+            p.drawEllipse(R(3.5, 3.5, 17, 17))
+            path = QPainterPath()
+            path.moveTo(P(12, 3.5))
+            path.arcTo(R(3.5, 3.5, 17, 17), 90, 180)
+            path.closeSubpath()
+            p.setBrush(QColor(self._color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawPath(path)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(pen)
+        elif n == "external":
+            p.drawRoundedRect(R(4, 8, 12, 12), 1.5 * s, 1.5 * s)
+            p.drawLine(P(12, 4), P(20, 4))
+            p.drawLine(P(20, 4), P(20, 12))
+            p.drawLine(P(11, 13), P(20, 4))
+        elif n == "download":
+            p.drawLine(P(12, 4), P(12, 15))
+            poly((7, 11), (12, 16.5), (17, 11))
+            p.drawLine(P(5, 19), P(19, 19))
+        elif n == "clap":
+            # Sound / wake waves
+            p.drawEllipse(R(9.5, 9.5, 5, 5))
+            p.drawArc(R(6, 6, 12, 12), 40 * 16, 100 * 16)
+            p.drawArc(R(6, 6, 12, 12), 220 * 16, 100 * 16)
+            p.drawArc(R(3.5, 3.5, 17, 17), 40 * 16, 100 * 16)
+            p.drawArc(R(3.5, 3.5, 17, 17), 220 * 16, 100 * 16)
 
 
 class _SidebarShieldBadge(QWidget):
@@ -1280,22 +1332,165 @@ class ProfileMenuPopover(QWidget):
         self.activateWindow()
 
 
-class _SidebarProfileFooter(QFrame):
-    """Bottom-left account chip — Cursor-style Sign in when guest; photo+email when authed."""
+class _SidebarSettingsBtn(QFrame):
+    """Cursor-style outline gear next to the profile chip."""
 
-    menu_requested = pyqtSignal()
+    clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._hover = False
-        self.setObjectName("SidebarProfileFooter")
+        self.setFixedSize(28, 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Settings")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._icon = _LineIcon("settings", T.SB_TEXT_MUTED, size=18)
+        lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignCenter)
+        self._apply()
+
+    def _apply(self) -> None:
+        bg = "rgba(255,255,255,0.06)" if self._hover else "transparent"
+        self.setStyleSheet(
+            f"QFrame {{ background: {bg}; border: none; border-radius: 6px; }}"
+        )
+        self._icon.set_color(T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT_MUTED)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+
+class _SidebarReferralCard(QFrame):
+    """Cursor-style promo chip above the account row — gift + copy + dismiss (session only)."""
+
+    clicked = pyqtSignal()
+    dismissed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SidebarReferralCard")
+        self._hover = False
+        self.setFixedHeight(36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Open referral program")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 6, 0)
+        lay.setSpacing(8)
+
+        self._gift = _LineIcon("gift", T.SB_TEXT_ACTIVE, size=16)
+        lay.addWidget(self._gift, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._label = QLabel("Refer friends, earn up…")
+        self._label.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        self._label.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;"
+        )
+        lay.addWidget(self._label, stretch=1)
+
+        self._close = QFrame(self)
+        self._close.setObjectName("SidebarReferralClose")
+        self._close.setFixedSize(22, 22)
+        self._close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close.setToolTip("Dismiss")
+        close_lay = QHBoxLayout(self._close)
+        close_lay.setContentsMargins(0, 0, 0, 0)
+        self._close_icon = _LineIcon("close", T.SB_TEXT_MUTED, size=12)
+        close_lay.addWidget(self._close_icon, 0, Qt.AlignmentFlag.AlignCenter)
+        self._close.mousePressEvent = self._on_close_press  # type: ignore[method-assign]
+        lay.addWidget(self._close, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._apply()
+
+    def _apply(self) -> None:
+        bg = "rgba(0, 209, 255, 0.12)" if self._hover else "rgba(0, 209, 255, 0.07)"
+        border = "rgba(0, 209, 255, 0.32)" if self._hover else "rgba(0, 209, 255, 0.18)"
+        self.setStyleSheet(
+            f"""
+            QFrame#SidebarReferralCard {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
+            QFrame#SidebarReferralClose {{
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+            }}
+            """
+        )
+        self._gift.set_color(T.CYAN if self._hover else T.SB_TEXT)
+        self._label.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT}; "
+            "background: transparent; border: none;"
+        )
+        self._close_icon.set_color(T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT_MUTED)
+
+    def _on_close_press(self, e) -> None:  # noqa: ANN001
+        if e.button() == Qt.MouseButton.LeftButton:
+            e.accept()
+            # Session-only: hide until next app launch (do not persist).
+            self.hide()
+            self.dismissed.emit()
+            return
+        QFrame.mousePressEvent(self._close, e)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            # Dismiss control handles its own clicks.
+            if self._close.geometry().contains(e.position().toPoint()):
+                return
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+
+class _SidebarProfileFooter(QFrame):
+    """Bottom-left account chip — Cursor-style avatar / plan / Update / settings."""
+
+    menu_requested = pyqtSignal()
+    settings_requested = pyqtSignal()
+    update_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hover = False
+        self._update_available = False
+        self.setObjectName("SidebarProfileFooter")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 6, 4, 6)
+        lay.setSpacing(8)
+
+        self._identity = QFrame(self)
+        self._identity.setObjectName("SidebarProfileIdentity")
+        self._identity.setCursor(Qt.CursorShape.PointingHandCursor)
+        id_lay = QHBoxLayout(self._identity)
+        id_lay.setContentsMargins(0, 0, 0, 0)
+        id_lay.setSpacing(10)
 
         self._avatar = AvatarCircle(28)
-        lay.addWidget(self._avatar, 0, Qt.AlignmentFlag.AlignVCenter)
+        id_lay.addWidget(self._avatar, 0, Qt.AlignmentFlag.AlignVCenter)
 
         info = QVBoxLayout()
         info.setSpacing(1)
@@ -1306,8 +1501,53 @@ class _SidebarProfileFooter(QFrame):
         self._plan.setFont(QFont(T.SB_FONT, 10))
         info.addWidget(self._name)
         info.addWidget(self._plan)
-        lay.addLayout(info, stretch=1)
+        id_lay.addLayout(info, stretch=1)
+        lay.addWidget(self._identity, stretch=1)
+
+        # Cursor-like soft periwinkle Update pill (hidden until a release is ready).
+        self._update_btn = QPushButton("Update")
+        self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_btn.setFixedHeight(24)
+        self._update_btn.setVisible(False)
+        self._update_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: #b7c9e8;"
+            "  color: #1a1f2a;"
+            "  border: none;"
+            "  border-radius: 12px;"
+            "  padding: 0 12px;"
+            f"  font-family: '{T.SB_FONT}';"
+            "  font-size: 11px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #c5d4f0; }"
+            "QPushButton:pressed { background: #a8bbdf; }"
+            "QPushButton:disabled { background: #6b7a94; color: #1a1f2a; }"
+        )
+        self._update_btn.clicked.connect(self.update_requested.emit)
+        lay.addWidget(self._update_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._settings_btn = _SidebarSettingsBtn(self)
+        self._settings_btn.clicked.connect(self.settings_requested.emit)
+        lay.addWidget(self._settings_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._identity.mousePressEvent = self._identity_click  # type: ignore[method-assign]
         self.refresh_account()
+
+    def _identity_click(self, e) -> None:  # noqa: ANN001
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.menu_requested.emit()
+        QFrame.mousePressEvent(self._identity, e)
+
+    def set_update_available(self, available: bool, *, downloading: bool = False) -> None:
+        self._update_available = bool(available)
+        self._update_btn.setVisible(self._update_available or downloading)
+        if downloading:
+            self._update_btn.setText("Updating…")
+            self._update_btn.setEnabled(False)
+        else:
+            self._update_btn.setText("Update")
+            self._update_btn.setEnabled(True)
 
     def refresh_account(self) -> None:
         authed = UA.is_authenticated()
@@ -1334,13 +1574,13 @@ class _SidebarProfileFooter(QFrame):
         bg = T.SB_HOVER if self._hover else "transparent"
         self.setStyleSheet(
             f"QFrame#SidebarProfileFooter {{ background: {bg}; border: none; border-radius: 8px; }}"
+            "QFrame#SidebarProfileIdentity { background: transparent; border: none; }"
         )
         self._name.setStyleSheet(
             f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;"
         )
         self._plan.setStyleSheet(
-            f"color: {T.SB_TEXT_MUTED if authed else T.SB_TEXT_MUTED}; "
-            f"background: transparent; border: none;"
+            f"color: {T.SB_TEXT_MUTED}; background: transparent; border: none;"
         )
 
     def enterEvent(self, e):
@@ -1352,11 +1592,6 @@ class _SidebarProfileFooter(QFrame):
         self._hover = False
         self._apply()
         super().leaveEvent(e)
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.menu_requested.emit()
-        super().mousePressEvent(e)
 
 
 class _BracketButton(QFrame):
@@ -1595,6 +1830,7 @@ class NavSidebar(QWidget):
     chat_delete = pyqtSignal(str)
     chat_pin = pyqtSignal(str)
     settings_requested = pyqtSignal()
+    update_requested = pyqtSignal()
     profile_menu_action = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -1667,12 +1903,20 @@ class NavSidebar(QWidget):
         foot_lay = QVBoxLayout(foot_wrap)
         foot_lay.setContentsMargins(0, 0, 10, 0)
         foot_lay.setSpacing(6)
-        # Permissions sits directly above the profile chip.
+        # Permissions sits above promo + profile chip.
         self._perm_btn = _SidebarPermissionsRow()
         self._perm_btn.clicked.connect(self._open_permissions)
         foot_lay.addWidget(self._perm_btn)
+        # Cursor-style referral promo directly above the account row.
+        self._referral_card = _SidebarReferralCard()
+        self._referral_card.clicked.connect(
+            lambda: self.profile_menu_action.emit("referral")
+        )
+        foot_lay.addWidget(self._referral_card)
         self._footer = _SidebarProfileFooter()
         self._footer.menu_requested.connect(self._open_profile_menu)
+        self._footer.settings_requested.connect(self.settings_requested.emit)
+        self._footer.update_requested.connect(self.update_requested.emit)
         foot_lay.addWidget(self._footer)
         root.addWidget(foot_wrap)
 
@@ -1887,6 +2131,9 @@ class NavSidebar(QWidget):
         self._footer.refresh_account()
         if self._profile_menu is not None and self._profile_menu.isVisible():
             self._profile_menu.refresh()
+
+    def set_update_available(self, available: bool, *, downloading: bool = False) -> None:
+        self._footer.set_update_available(available, downloading=downloading)
 
 
 class PreviewPanel(QWidget):

@@ -6,12 +6,11 @@ import platform
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from jarvis_ui.global_hotkey import default_hotkey, hotkey_display
-from memory import workspace_manager as ws
+from jarvis_ui.global_hotkey import default_hotkey
 
 
 # Screenshot-matched light settings palette
@@ -147,7 +146,6 @@ class _SettingsCard(QFrame):
 class ComputerUseView(QWidget):
     """Light settings page explaining how to open the floating bar on every OS."""
 
-    hotkey_changed = pyqtSignal(str)
     open_overlay = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -206,27 +204,27 @@ class ComputerUseView(QWidget):
         current = platform.system()
         float_card.add_row(_SettingRow(
             "macOS",
-            "Press ⌘ Space anytime — even when AURA is minimized or another app is focused. "
-            "Press again (or Esc) to hide. If Spotlight uses ⌘ Space, change it or pick a custom hotkey below.",
-            _KeyGroup(["⌘", "Space"]),
+            "Press ⌘A anytime — even when AURA is minimized or another app is focused. "
+            "Press again (or Esc) to hide. Enable Accessibility for AURA if the shortcut "
+            "only works while the app is focused.",
+            _KeyGroup(["⌘", "A"]),
             show_divider=True,
         ))
         float_card.add_row(_SettingRow(
             "Windows",
-            "Press Alt + Space to show or hide the floating bar over any window. "
-            "Works from the system tray while AURA runs in the background.",
-            _KeyGroup(["Alt", "Space"]),
+            "Press Ctrl+A anytime — even when AURA is minimized or another app is focused. "
+            "Press again (or Esc) to hide. If another app steals the shortcut, open from "
+            "the system tray.",
+            _KeyGroup(["Ctrl", "A"]),
             show_divider=True,
         ))
         float_card.add_row(_SettingRow(
             "Linux",
-            "Press Alt + Space (X11). On Wayland some desktops block global shortcuts — "
-            "use the custom hotkey below or open from the system tray.",
-            _KeyGroup(["Alt", "Space"]),
+            "Press Ctrl+A anytime (best on X11). On Wayland some desktops block global "
+            "shortcuts — keep AURA focused or open from the tray. Press again (or Esc) to hide.",
+            _KeyGroup(["Ctrl", "A"]),
             show_divider=True,
         ))
-        # Highlight current OS row visually via a small badge on the right of description — 
-        # add a "This device" pill next to the matching OS.
         yours = {
             "Darwin": "macOS",
             "Windows": "Windows",
@@ -234,54 +232,12 @@ class ComputerUseView(QWidget):
         }.get(current, "Linux")
         float_card.add_row(_SettingRow(
             "Show or hide the bar",
-            f"You’re on {yours}. The shortcut above for your system is active by default. "
+            f"You’re on {yours}. The shortcut above for your system is active. "
             "Bring the floating bar forward, or tuck it out of the way.",
             _KeyGroup(self._current_key_parts()),
             show_divider=False,
         ))
         il.addWidget(float_card)
-        il.addSpacing(32)
-
-        # —— Custom hotkey ——
-        il.addWidget(self._section_header(
-            "Custom shortcut",
-            "Override the default hotkey. Saved on this device and applied immediately.",
-        ))
-        il.addSpacing(12)
-        custom = _SettingsCard()
-        editor = QWidget()
-        el = QHBoxLayout(editor)
-        el.setContentsMargins(0, 0, 0, 0)
-        el.setSpacing(8)
-        self._hotkey_edit = QLineEdit()
-        self._hotkey_edit.setPlaceholderText(default_hotkey())
-        self._hotkey_edit.setFixedHeight(34)
-        self._hotkey_edit.setMinimumWidth(160)
-        self._hotkey_edit.setFont(_sans(12))
-        self._hotkey_edit.setStyleSheet(
-            f"QLineEdit {{ background: {_PILL_BG}; color: {_TITLE}; border: 1px solid {_DIVIDER}; "
-            f"border-radius: 10px; padding: 0 12px; }}"
-            f"QLineEdit:focus {{ border: 1px solid #C4C0B6; background: {_CARD}; }}"
-        )
-        el.addWidget(self._hotkey_edit)
-        save = QPushButton("Save")
-        save.setCursor(Qt.CursorShape.PointingHandCursor)
-        save.setFixedSize(72, 34)
-        save.setFont(_sans(12, QFont.Weight.DemiBold))
-        save.setStyleSheet(
-            f"QPushButton {{ background: {_TITLE}; color: {_CARD}; border: none; "
-            f"border-radius: 10px; }}"
-            "QPushButton:hover { background: #333; }"
-        )
-        save.clicked.connect(self._save_hotkey)
-        el.addWidget(save)
-        custom.add_row(_SettingRow(
-            "Change hotkey",
-            "Examples: Meta+Space · Alt+Space · Ctrl+Space · Ctrl+Shift+J",
-            editor,
-            show_divider=False,
-        ))
-        il.addWidget(custom)
         il.addSpacing(32)
 
         # —— Permissions ——
@@ -300,15 +256,15 @@ class ComputerUseView(QWidget):
         ))
         perm.add_row(_SettingRow(
             "Windows",
-            "Usually no extra setup. If the shortcut fails, check antivirus isn’t blocking "
-            "AURA and try Alt+Space or a custom combo.",
-            _KeyGroup(["Alt", "Space"]),
+            "Usually no extra setup. If Ctrl+A only works while AURA is focused, allow AURA "
+            "in antivirus / privacy settings.",
+            _KeyGroup(["Ctrl", "A"]),
             show_divider=True,
         ))
         perm.add_row(_SettingRow(
             "Linux",
-            "Best on X11. Under Wayland, grant input permissions in your desktop settings "
-            "or rely on the tray menu / custom in-app shortcut.",
+            "Best on X11 for global Ctrl+A. Under Wayland, grant input permissions in your "
+            "desktop settings or use the tray / keep AURA focused.",
             _KeyGroup(["X11"], highlight_first=True),
             show_divider=False,
         ))
@@ -354,9 +310,6 @@ class ComputerUseView(QWidget):
         scroll.setWidget(page)
         root.addWidget(scroll)
 
-        saved = ws.get_settings().get("overlay_hotkey") or default_hotkey()
-        self._hotkey_edit.setText(saved)
-
     def set_hotkey_status(self, text: str) -> None:
         self._status.setText(text)
 
@@ -379,8 +332,7 @@ class ComputerUseView(QWidget):
         return wrap
 
     def _current_key_parts(self) -> list[str]:
-        combo = ws.get_settings().get("overlay_hotkey") or default_hotkey()
-        # Split into pill labels for the active OS display.
+        combo = default_hotkey()
         parts = [p for p in combo.replace(" ", "").split("+") if p]
         out = []
         for p in parts:
@@ -397,10 +349,4 @@ class ComputerUseView(QWidget):
                 out.append("Space")
             else:
                 out.append(p.upper() if len(p) == 1 else p)
-        return out or ["Alt", "Space"]
-
-    def _save_hotkey(self):
-        combo = self._hotkey_edit.text().strip() or default_hotkey()
-        ws.save_settings({"overlay_hotkey": combo})
-        self.hotkey_changed.emit(combo)
-        self._status.setText(f"Hotkey updated to {hotkey_display(combo)}")
+        return out or (["⌘", "A"] if platform.system() == "Darwin" else ["Ctrl", "A"])

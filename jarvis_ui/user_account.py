@@ -235,38 +235,22 @@ def install_update_controller_fix() -> None:
         return
 
     class _UpdateGuiBridge(QObject):
-        open_update = pyqtSignal(object, object)  # controller, state
+        apply_state = pyqtSignal(object, object)  # controller, state
 
         def __init__(self) -> None:
             super().__init__()
-            self.open_update.connect(self._open)
+            self.apply_state.connect(self._apply)
 
-        def _open(self, controller, state) -> None:  # noqa: ANN001
-            if state is None or not getattr(state, "release", None):
-                return
-            if getattr(state, "downloading", False):
-                return
-            if getattr(controller, "_dialog", None) is not None:
+        def _apply(self, controller, state) -> None:  # noqa: ANN001
+            # Cursor-style: show the Update pill; dialog opens only on click.
+            main = getattr(UpdateController, "_aura_apply_state_impl", None)
+            if callable(main):
+                main(controller, state)
                 return
             try:
-                from jarvis_ui.update_dialog import UpdateDialog
+                UpdateController._on_state_main(controller, state)  # type: ignore[misc]
             except Exception:
-                return
-            pid = getattr(controller, "_parent_pid", None)
-            if pid is None:
-                pid = getattr(controller, "_pid", 0)
-            window = getattr(controller, "_window", None)
-            service = getattr(controller, "_service", None)
-            if service is None:
-                return
-            dialog = UpdateDialog(service, int(pid or 0), parent=window)
-            controller._dialog = dialog
-            clear = getattr(controller, "_clear_dialog", None)
-            if callable(clear):
-                dialog.finished.connect(clear)
-            else:
-                dialog.finished.connect(lambda *_: setattr(controller, "_dialog", None))
-            dialog.open()
+                pass
 
     if _update_gui_bridge is None:
         _update_gui_bridge = _UpdateGuiBridge()
@@ -274,15 +258,19 @@ def install_update_controller_fix() -> None:
 
     bridge = _update_gui_bridge
 
+    def _apply_state_impl(controller, state) -> None:  # noqa: ANN001
+        try:
+            UpdateController._on_state_main(controller, state)  # type: ignore[misc]
+        except Exception:
+            pass
+
+    UpdateController._aura_apply_state_impl = staticmethod(_apply_state_impl)  # type: ignore[attr-defined]
+
     def _on_state(self, state) -> None:  # noqa: ANN001
         # Queued to GUI thread even when called from a worker.
-        bridge.open_update.emit(self, state)
-
-    def _on_state_main(self, state) -> None:  # noqa: ANN001
-        bridge.open_update.emit(self, state)
+        bridge.apply_state.emit(self, state)
 
     UpdateController._on_state = _on_state  # type: ignore[method-assign]
-    UpdateController._on_state_main = _on_state_main  # type: ignore[attr-defined]
     UpdateController._aura_gui_thread_fixed = True  # type: ignore[attr-defined]
 
     # Marshal UpdateService listener callbacks onto the GUI thread.
@@ -436,21 +424,19 @@ def get_plan() -> str:
 
 
 def has_active_subscription() -> bool:
-    """True when the cloud account has a paid plan (Pro / Team / Enterprise)."""
-    return get_plan() in ("pro", "team", "enterprise")
+    """True when the cloud account has a paid plan (Pro / Team / Lifetime / Enterprise)."""
+    return get_plan() in ("pro", "team", "enterprise", "lifetime")
 
 
 def get_subtitle(*, authenticated: bool | None = None) -> str:
+    """Cursor-style secondary line under the display name (plan first)."""
     authed = is_authenticated() if authenticated is None else authenticated
     if not authed:
         return ""
-    email = get_email()
-    if email:
-        return email
-    if not has_active_subscription():
-        return "Free plan"
-    plan = get_plan().replace("_", " ").title()
-    return f"{plan} plan"
+    if has_active_subscription():
+        plan = get_plan().replace("_", " ").title()
+        return f"{plan} Plan"
+    return "Free Plan"
 
 
 def is_authenticated() -> bool:
@@ -796,6 +782,33 @@ def open_account() -> None:
 def open_support() -> None:
     """Help & Support — docs / contact on the website."""
     webbrowser.open(f"{_web_base()}/support")
+
+
+def web_base() -> str:
+    """Public site origin (https://www.hiauraai.com)."""
+    return _web_base()
+
+
+def fetch_referral_stats() -> dict[str, Any]:
+    """Load personal referral code/link from the site API (desktop Bearer)."""
+    if not is_authenticated():
+        raise RuntimeError("Sign in to get your referral link.")
+    tok = get_access_token()
+    if not tok:
+        raise RuntimeError("Session expired. Sign in again to get your referral link.")
+    data = _http_json("GET", "/api/referral", token=tok)
+    if not isinstance(data, dict):
+        raise RuntimeError("Unexpected referral response.")
+    if data.get("error"):
+        raise RuntimeError(str(data.get("error")))
+    link = str(data.get("link") or "").strip()
+    code = str(data.get("code") or "").strip()
+    if not link and code:
+        link = f"{_web_base()}/r/{code}"
+        data["link"] = link
+    if not link:
+        raise RuntimeError("No referral link returned. Try again in a moment.")
+    return data
 
 
 def open_referral() -> None:

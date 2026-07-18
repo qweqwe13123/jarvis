@@ -372,6 +372,8 @@ def default_state() -> dict:
         "idle_minutes": 5.0,
         "language": "ru",
         "message": "",
+        # True → speak once, then auto-disable. User can re-arm by asking again.
+        "one_shot": True,
         "distracted_since": None,
         "last_nudge_at": None,
         "last_app": "",
@@ -547,11 +549,21 @@ class FocusGuardEngine:
                         self._speak_cb(nudge, state.get("language") or "ru")
                         state["nudge_count"] = int(state.get("nudge_count") or 0) + 1
                         state["last_nudge_at"] = wall
-                        # Require another full idle window before the next nudge.
-                        state["distracted_since"] = wall
-                        state["_distracted_mono"] = now
                         state["_pause_elapsed"] = None
-                        self._log(f"Nudged after {elapsed:.0f}s distraction.")
+                        one_shot = bool(state.get("one_shot", True))
+                        if one_shot:
+                            # Default product behaviour: one reminder, then stop watching.
+                            state["enabled"] = False
+                            state["distracted_since"] = None
+                            state["_distracted_mono"] = None
+                            self._log(
+                                f"Nudged once after {elapsed:.0f}s — Focus Guard auto-off."
+                            )
+                        else:
+                            # Repeat mode: require another full idle window.
+                            state["distracted_since"] = wall
+                            state["_distracted_mono"] = now
+                            self._log(f"Nudged after {elapsed:.0f}s distraction (repeat).")
                     except Exception as e:
                         # Keep timer; retry next poll when voice is ready.
                         self._log(f"Nudge deferred (voice): {e}")
@@ -575,6 +587,7 @@ def start_guard(
     idle_minutes: float = 5.0,
     language: str = "ru",
     message: str = "",
+    one_shot: bool = True,
 ) -> dict:
     state = load_state()
     state.update(
@@ -584,10 +597,12 @@ def start_guard(
             "idle_minutes": max(0.5, float(idle_minutes or 5)),
             "language": (language or "ru").lower()[:2],
             "message": (message or "").strip(),
+            "one_shot": bool(one_shot),
             "distracted_since": None,
             "_distracted_mono": None,
+            "_pause_elapsed": None,
             "started_at": datetime.now().isoformat(timespec="seconds"),
-            "nudge_count": int(state.get("nudge_count") or 0),
+            "nudge_count": 0,
         }
     )
     save_state(state)
@@ -599,6 +614,7 @@ def stop_guard() -> dict:
     state["enabled"] = False
     state["distracted_since"] = None
     state["_distracted_mono"] = None
+    state["_pause_elapsed"] = None
     save_state(state)
     return state
 
@@ -606,11 +622,15 @@ def stop_guard() -> dict:
 def status_text() -> str:
     state = load_state()
     if not state.get("enabled"):
+        last = state.get("last_nudge_at")
+        if last:
+            return f"Focus Guard is off. Last reminder at {last}."
         return "Focus Guard is off."
     goal = state.get("goal") or "your work"
     mins = state.get("idle_minutes") or 5
     kind = state.get("last_kind") or "—"
     app = state.get("last_app") or "—"
+    mode = "once" if state.get("one_shot", True) else "repeat"
     elapsed = ""
     if state.get("distracted_since"):
         try:
@@ -620,6 +640,6 @@ def status_text() -> str:
         except Exception:
             elapsed = " Currently distracted."
     return (
-        f"Focus Guard is on — watching for distractions over {mins} min. "
+        f"Focus Guard is on ({mode}) — watching for distractions over {mins} min. "
         f"Goal: {goal}. Last seen: {app} ({kind}).{elapsed}"
     )

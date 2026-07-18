@@ -22,27 +22,27 @@ APPS_XY = (500, 180)
 
 
 def _arrow(layer: Image.Image, scale: int) -> None:
-    """Simple dark-gray chevron like Claude / standard macOS DMGs."""
+    """Clean charcoal arrow — Claude / professional macOS DMG style."""
     w, h = layer.size
-    # Between the two icon slots
-    x0 = int((APP_XY[0] + 70) * scale)
-    x1 = int((APPS_XY[0] - 70) * scale)
+    # Between the two icon slots (Finder icon centers ≈ APP_XY / APPS_XY)
+    x0 = int((APP_XY[0] + 78) * scale)
+    x1 = int((APPS_XY[0] - 78) * scale)
     y = int(APP_XY[1] * scale)
 
-    shaft_h = max(8, 10 * scale)
-    head_w = max(22, 28 * scale)
-    head_h = max(28, 36 * scale)
-    color = (110, 110, 115, 220)
+    # Slimmer shaft + crisp triangular head (matches system installer look)
+    shaft_h = max(6, 7 * scale)
+    head_w = max(18, 22 * scale)
+    head_h = max(22, 28 * scale)
+    color = (90, 90, 94, 230)
 
     solid = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     sd = ImageDraw.Draw(solid)
-    # Shaft
+    shaft_end = x1 - head_w + max(2, 2 * scale)
     sd.rounded_rectangle(
-        (x0, y - shaft_h // 2, x1 - head_w // 2, y + shaft_h // 2),
-        radius=shaft_h // 2,
+        (x0, y - shaft_h // 2, shaft_end, y + shaft_h // 2),
+        radius=max(2, shaft_h // 2),
         fill=color,
     )
-    # Head
     tip = x1
     sd.polygon(
         [
@@ -57,8 +57,8 @@ def _arrow(layer: Image.Image, scale: int) -> None:
 
 def render(scale: int = 1) -> Image.Image:
     w, h = WIN_W * scale, WIN_H * scale
-    # Classic Finder light gray / off-white
-    base = Image.new("RGBA", (w, h), (246, 246, 246, 255))
+    # Classic Finder off-white (Claude-style professional installer)
+    base = Image.new("RGBA", (w, h), (245, 245, 247, 255))
     _arrow(base, scale)
     return base
 

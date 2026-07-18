@@ -154,7 +154,8 @@ def make_dmg(
     dest_app = staging / STAGED_APP_NAME
     if dest_app.exists():
         shutil.rmtree(dest_app)
-    shutil.copytree(app_path, dest_app, symlinks=True)
+    # ditto preserves codesign + stapler ticket xattrs; shutil.copytree does not.
+    _run(["ditto", str(app_path), str(dest_app)])
 
     apps_link = staging / "Applications"
     if apps_link.exists() or apps_link.is_symlink():

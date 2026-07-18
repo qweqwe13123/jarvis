@@ -266,15 +266,6 @@ class FloatingOverlay(QWidget):
         top.addWidget(self._status, alignment=Qt.AlignmentFlag.AlignVCenter)
         top.addStretch()
 
-        self._quota = QLabel(self._quota_text())
-        self._quota.setFont(QFont(T.SB_FONT, 11))
-        self._quota.setStyleSheet(f"color: {_MUTED}; background: transparent; border: none;")
-        top.addWidget(self._quota, alignment=Qt.AlignmentFlag.AlignVCenter)
-
-        self._wave = _IconBtn("wave", 18)
-        self._wave.clicked.connect(self.voice_clicked.emit)
-        top.addWidget(self._wave, alignment=Qt.AlignmentFlag.AlignVCenter)
-
         self._close_btn = _IconBtn("close", 16)
         self._close_btn.clicked.connect(self.hide_animated)
         top.addWidget(self._close_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -375,7 +366,6 @@ class FloatingOverlay(QWidget):
     def show_animated(self) -> None:
         self._closing = False
         self._stop_anim()
-        self._quota.setText(self._quota_text())
         self._place_on_screen()
         target = self.geometry()
         start = QRect(target)
@@ -491,7 +481,6 @@ class FloatingOverlay(QWidget):
             f"border: 1px solid rgba(0,209,255,0.22); border-radius: 9px; padding: 2px 10px;"
         )
         self._mic.set_active(label == "Listening")
-        self._wave.set_active(label == "Speaking")
         self._meter.setVisible(label in ("Listening", "Speaking"))
 
     def set_voice_level(self, level: float) -> None:
@@ -570,28 +559,6 @@ class FloatingOverlay(QWidget):
         # Stay open — conversation continues here.
         self.submitted.emit(text)
         self._input.setFocus(Qt.FocusReason.OtherFocusReason)
-
-    def _quota_text(self) -> str:
-        try:
-            from pathlib import Path
-            import json
-            path = Path(__file__).resolve().parents[1] / "runtime" / "usage_state.json"
-            daily = 300
-            try:
-                keys = json.loads(
-                    (Path(__file__).resolve().parents[1] / "config" / "api_keys.json").read_text()
-                )
-                daily = int((keys.get("free_limits") or {}).get("daily", 300))
-            except Exception:
-                pass
-            used = 0
-            if path.exists():
-                data = json.loads(path.read_text())
-                used = int(data.get("used_day", 0))
-            left = max(0, daily - used)
-            return f"{left} left"
-        except Exception:
-            return "Ready"
 
     def _place_on_screen(self) -> None:
         settings = ws.get_settings()

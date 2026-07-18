@@ -19,7 +19,8 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 
 
 def _get_api_key() -> str:
@@ -27,7 +28,7 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
-    import google.generativeai as genai
+    from core.gemini_models import generate_legacy
 
     if speak:
         speak("Writing custom code for this task, sir.")
@@ -46,26 +47,23 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         except Exception:
             pass
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=(
-            "You are an expert Python developer. "
-            "Write clean, complete, working Python code. "
-            "Use standard library + common packages. "
-            "Install missing packages with subprocess + pip if needed. "
-            "Return ONLY the Python code. No explanation, no markdown, no backticks.\n\n"
-            f"SYSTEM PATHS:\n"
-            f"  Desktop   = r'{desktop}'\n"
-            f"  Downloads = r'{downloads}'\n"
-            f"  Documents = r'{documents}'\n"
-            f"  Home      = r'{home}'\n"
-        )
-    )
-
     try:
-        response = model.generate_content(
-            f"Write Python code to accomplish this task:\n\n{description}"
+        response = generate_legacy(
+            "balanced",
+            f"Write Python code to accomplish this task:\n\n{description}",
+            api_key=_get_api_key(),
+            system_instruction=(
+                "You are an expert Python developer. "
+                "Write clean, complete, working Python code. "
+                "Use standard library + common packages. "
+                "Install missing packages with subprocess + pip if needed. "
+                "Return ONLY the Python code. No explanation, no markdown, no backticks.\n\n"
+                f"SYSTEM PATHS:\n"
+                f"  Desktop   = r'{desktop}'\n"
+                f"  Downloads = r'{downloads}'\n"
+                f"  Documents = r'{documents}'\n"
+                f"  Home      = r'{home}'\n"
+            ),
         )
         code = response.text.strip()
         code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
@@ -128,14 +126,15 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
 
     return params
 def _detect_language(text: str) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    from core.gemini_models import generate_legacy
+
     try:
-        response = model.generate_content(
+        response = generate_legacy(
+            "fast",
             f"What language is this text written in? "
             f"Reply with ONLY the language name in English (e.g. Turkish, English, French).\n\n"
-            f"Text: {text[:200]}"
+            f"Text: {text[:200]}",
+            api_key=_get_api_key(),
         )
         return response.text.strip()
     except Exception:
@@ -146,9 +145,7 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
     if not goal:
         return content
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        from core.gemini_models import generate_legacy
 
         target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
@@ -163,7 +160,7 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
             f"- Output ONLY the translated text, nothing else\n\n"
             f"Text to translate:\n{content[:4000]}"
         )
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         translated = response.text.strip()
         print(f"[Executor] ✅ Translation done ({target_lang})")
         return translated
@@ -377,9 +374,8 @@ class AgentExecutor:
     def _summarize(self, goal: str, completed_steps: list, speak: Callable | None) -> str:
         fallback = f"All done, sir. Completed {len(completed_steps)} steps for: {goal[:60]}."
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=_get_api_key())
-            model     = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
+            from core.gemini_models import generate_legacy
+
             steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)
             prompt    = (
                 f'User goal: "{goal}"\n'
@@ -387,7 +383,7 @@ class AgentExecutor:
                 "Write a single natural sentence summarizing what was accomplished. "
                 "Address the user as 'sir'. Be direct and positive."
             )
-            response = model.generate_content(prompt)
+            response = generate_legacy("fast", prompt, api_key=_get_api_key())
             summary  = response.text.strip()
             if speak: speak(summary)
             return summary

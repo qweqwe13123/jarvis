@@ -26,8 +26,9 @@ def _get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 def _get_api_key() -> str:
-    path = _get_base_dir() / "config" / "api_keys.json"
-    with open(path, "r", encoding="utf-8") as f:
+    from core.app_paths import api_keys_path
+
+    with open(api_keys_path(), "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
     
 def _get_desktop() -> Path:
@@ -105,9 +106,7 @@ def _execute_generated_code(code: str, player=None) -> str:
 
 def _ask_gemini_for_desktop_action(task: str) -> str:
 
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    from core.gemini_models import generate_legacy
 
     desktop = str(_get_desktop())
 
@@ -145,7 +144,7 @@ Output ONLY the Python code. No explanation, no markdown, no backticks.
 Task: {task}"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         code = response.text.strip()
         if code.startswith("```"):
             lines = code.split("\n")

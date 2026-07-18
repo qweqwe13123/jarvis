@@ -31,7 +31,9 @@ def _base_dir() -> Path:
 
 def _get_os() -> str:
     try:
-        cfg = json.loads((_base_dir() / "config" / "api_keys.json").read_text(encoding="utf-8"))
+        from core.app_paths import api_keys_path
+
+        cfg = json.loads(api_keys_path().read_text(encoding="utf-8"))
         return cfg.get("os_system", "mac").lower()
     except Exception:
         return "mac"

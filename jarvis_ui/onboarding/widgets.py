@@ -29,29 +29,46 @@ from jarvis_ui.onboarding import tokens as T
 
 
 def aura_logo(size: int = 88) -> QLabel:
+    """AURA brand mark — never fall back to a plain letter if the PNG ships."""
     lab = QLabel()
     lab.setFixedSize(size, size)
     lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    root = Path(__file__).resolve().parents[2]
-    for candidate in (
-        root / "assets" / "aura_logo.png",
-        root / "assets" / "aura_logo_onboarding.png",
-    ):
-        if candidate.exists():
-            pm = QPixmap(str(candidate))
-            if not pm.isNull():
-                lab.setPixmap(
-                    pm.scaled(
-                        size,
-                        size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
+    lab.setStyleSheet("background: transparent; border: none;")
+    try:
+        from jarvis_ui.paths import brand_asset_path
+
+        candidate = brand_asset_path(
+            "aura_logo_onboarding.png",
+            "aura_logo.png",
+            "aura_logo_square_bg.png",
+        )
+    except Exception:
+        candidate = None
+        root = Path(__file__).resolve().parents[2]
+        for name in (
+            "aura_logo_onboarding.png",
+            "aura_logo.png",
+            "aura_logo_square_bg.png",
+        ):
+            p = root / "assets" / name
+            if p.is_file():
+                candidate = p
+                break
+    if candidate is not None:
+        pm = QPixmap(str(candidate))
+        if not pm.isNull():
+            lab.setPixmap(
+                pm.scaled(
+                    size,
+                    size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
                 )
-                lab.setStyleSheet("background: transparent; border: none;")
-                return lab
+            )
+            return lab
+    # Last resort only — means assets were not packaged.
     lab.setText("A")
-    lab.setFont(T.display(36, QFont.Weight.Bold))
+    lab.setFont(T.display(max(12, size // 2), QFont.Weight.Bold))
     lab.setStyleSheet(
         f"color: {T.CYAN}; background: rgba(0,183,224,0.12); border-radius: {size // 4}px;"
     )
@@ -169,6 +186,10 @@ class BlackPillButton(QPushButton):
             }}
             QPushButton:hover {{ background: #2a2a2a; }}
             QPushButton:pressed {{ background: #000; }}
+            QPushButton:disabled {{
+                background: #4a4a4a;
+                color: rgba(255, 255, 255, 0.72);
+            }}
             """
         )
 

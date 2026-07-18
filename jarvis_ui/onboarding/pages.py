@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -157,6 +157,33 @@ class PermissionsOnlyPage(FadePage):
         _open_pref(key)
 
 
+class _GeminiVerifyWorker(QThread):
+    """Background Google probe — keeps the onboarding UI responsive."""
+
+    finished_ok = pyqtSignal(str)  # normalized key
+    finished_err = pyqtSignal(str)  # user-facing message
+
+    def __init__(self, key: str, parent=None):
+        super().__init__(parent)
+        self._key = key
+
+    def run(self) -> None:  # noqa: N802
+        try:
+            from jarvis_ui.onboarding.gemini_key import verify_gemini_key
+
+            result = verify_gemini_key(self._key)
+            if result.ok:
+                from jarvis_ui.onboarding.gemini_key import normalize_key
+
+                self.finished_ok.emit(normalize_key(self._key))
+            else:
+                self.finished_err.emit(result.message)
+        except Exception:
+            self.finished_err.emit(
+                "Couldn’t verify this key right now. Try again in a moment."
+            )
+
+
 class ApiKeySetupPage(FadePage):
     """First-boot Gemini key — shown inside onboarding so it never depends on MainWindow."""
 
@@ -164,8 +191,11 @@ class ApiKeySetupPage(FadePage):
 
     GEMINI_KEY_URL = "https://aistudio.google.com/apikey"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, require_live_verify: bool = True):
         super().__init__(parent)
+        self._require_live_verify = bool(require_live_verify)
+        self._worker: _GeminiVerifyWorker | None = None
+        self._busy = False
         self.setStyleSheet(f"background: {T.CREAM};")
 
         detected = {"darwin": "mac", "windows": "windows"}.get(
@@ -199,7 +229,7 @@ class ApiKeySetupPage(FadePage):
         left.addWidget(
             muted(
                 "Paste a free Gemini API key. Voice, agents, and tools run with your key. "
-                "It stays on this Mac in config/api_keys.json."
+                "It stays on this Mac in Application Support (never inside the app)."
             )
         )
         left.addSpacing(22)
@@ -223,16 +253,24 @@ class ApiKeySetupPage(FadePage):
 
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key.setPlaceholderText("Paste key · starts with AIza…")
+        self._key.setPlaceholderText("Paste key from Google AI Studio")
         self._key.setFixedHeight(48)
         self._key.setFont(T.sans(13))
-        self._key.setStyleSheet(
-            f"QLineEdit {{ background: #FFFFFF; color: {T.INK}; border: 1px solid {T.CHIP_BORDER}; "
-            f"border-radius: 12px; padding: 0 14px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {T.CYAN}; }}"
-        )
+        self._key.setStyleSheet(self._field_style(ok=True))
+        self._key.textChanged.connect(self._on_key_edited)
+        self._key.returnPressed.connect(self._submit)
         right.addWidget(self._key)
-        right.addSpacing(12)
+        right.addSpacing(8)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setFont(T.sans(12))
+        self._status.setStyleSheet(
+            f"color: {T.MUTED}; background: transparent; border: none;"
+        )
+        self._status.hide()
+        right.addWidget(self._status)
+        right.addSpacing(8)
 
         link = QLabel(
             f'<a href="{self.GEMINI_KEY_URL}" style="color:{T.CYAN_DEEP}; text-decoration:none;">'
@@ -279,7 +317,58 @@ class ApiKeySetupPage(FadePage):
         right.addStretch(1)
         root.addWidget(right_w, 58)
 
+    def _field_style(self, *, ok: bool, success: bool = False) -> str:
+        if success:
+            border = "#2F9E6B"
+        elif ok:
+            border = T.CHIP_BORDER
+        else:
+            border = "#E24B4A"
+        focus = T.CYAN if ok and not success else border
+        return (
+            f"QLineEdit {{ background: #FFFFFF; color: {T.INK}; border: 1px solid {border}; "
+            f"border-radius: 12px; padding: 0 14px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {focus}; }}"
+        )
+
+    def _set_status(self, text: str, *, kind: str = "muted") -> None:
+        if not text:
+            self._status.hide()
+            self._status.setText("")
+            return
+        colors = {
+            "muted": T.MUTED,
+            "error": "#C0392B",
+            "ok": "#2F9E6B",
+        }
+        self._status.setStyleSheet(
+            f"color: {colors.get(kind, T.MUTED)}; background: transparent; border: none;"
+        )
+        self._status.setText(text)
+        self._status.show()
+
+    def _on_key_edited(self, _text: str = "") -> None:
+        if self._busy:
+            return
+        self._key.setStyleSheet(self._field_style(ok=True))
+        self._set_status("")
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._key.setEnabled(not busy)
+        for btn in self._os_btns.values():
+            btn.setEnabled(not busy)
+        self.cta.setEnabled(not busy)
+        if busy:
+            self.cta.setText("Verifying key…")
+            self.cta.setCursor(Qt.CursorShape.BusyCursor)
+        else:
+            self.cta.setText("Start AURA")
+            self.cta.setCursor(Qt.CursorShape.PointingHandCursor)
+
     def _sel(self, key: str) -> None:
+        if self._busy:
+            return
         self._sel_os = key
         for k, btn in self._os_btns.items():
             if k == key:
@@ -294,25 +383,95 @@ class ApiKeySetupPage(FadePage):
                     f"QPushButton:hover {{ color: {T.INK}; border-color: {T.INK}; }}"
                 )
 
+    def prefill_existing_key(self) -> None:
+        """If a key is already saved (re-download), show it so the user can continue."""
+        try:
+            from core.app_paths import api_keys_path
+            from jarvis_ui.onboarding.gemini_key import normalize_key
+
+            path = api_keys_path()
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            key = normalize_key(str(data.get("gemini_api_key") or ""))
+            if key:
+                self._key.setText(key)
+        except Exception:
+            pass
+
     def _submit(self) -> None:
-        key = self._key.text().strip()
+        if self._busy:
+            return
+        from jarvis_ui.onboarding.gemini_key import (
+            format_error_message,
+            looks_like_gemini_key,
+            normalize_key,
+        )
+
+        key = normalize_key(self._key.text())
         if not key:
-            self._key.setStyleSheet(
-                f"QLineEdit {{ background: #FFFFFF; color: {T.INK}; border: 1px solid #E24B4A; "
-                f"border-radius: 12px; padding: 0 14px; }}"
-            )
+            self._key.setStyleSheet(self._field_style(ok=False))
+            self._set_status("Paste your Gemini API key to continue.", kind="error")
             self._key.setFocus()
             return
-        self.submitted.emit(key, self._sel_os)
+        if not looks_like_gemini_key(key):
+            self._key.setStyleSheet(self._field_style(ok=False))
+            self._set_status(format_error_message(), kind="error")
+            self._key.setFocus()
+            return
+
+        # Preview / design tooling: format-only gate, no Google round-trip.
+        if not self._require_live_verify:
+            self._key.setText(key)
+            self.submitted.emit(key, self._sel_os)
+            return
+
+        self._set_status("Checking with Google…", kind="muted")
+        self._set_busy(True)
+
+        # Drop a previous worker reference if somehow still around.
+        if self._worker is not None:
+            try:
+                self._worker.finished_ok.disconnect()
+                self._worker.finished_err.disconnect()
+            except Exception:
+                pass
+
+        worker = _GeminiVerifyWorker(key, self)
+        self._worker = worker
+
+        def _ok(normalized: str) -> None:
+            if self._worker is not worker:
+                return
+            self._worker = None
+            self._key.setText(normalized)
+            self._key.setStyleSheet(self._field_style(ok=True, success=True))
+            self._set_status("Key verified", kind="ok")
+            self._set_busy(False)
+            self.cta.setEnabled(False)
+            self.cta.setText("Starting…")
+            self.submitted.emit(normalized, self._sel_os)
+
+        def _err(msg: str) -> None:
+            if self._worker is not worker:
+                return
+            self._worker = None
+            self._key.setStyleSheet(self._field_style(ok=False))
+            self._set_status(msg or format_error_message(), kind="error")
+            self._set_busy(False)
+            self._key.setFocus()
+
+        worker.finished_ok.connect(_ok)
+        worker.finished_err.connect(_err)
+        worker.start()
 
 
 def save_api_keys(gemini_key: str, os_name: str) -> Path:
-    """Persist keys for MainWindow / JarvisLive."""
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).resolve().parents[2]
-    path = base / "config" / "api_keys.json"
+    """Persist keys for MainWindow / JarvisLive (never inside .app / DMG)."""
+    from core.app_paths import api_keys_path
+    from jarvis_ui.onboarding.gemini_key import normalize_key
+
+    path = api_keys_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     existing: dict = {}
     if path.exists():
@@ -322,7 +481,7 @@ def save_api_keys(gemini_key: str, os_name: str) -> Path:
             existing = {}
     existing.update(
         {
-            "gemini_api_key": gemini_key,
+            "gemini_api_key": normalize_key(gemini_key),
             "os_system": os_name,
             "camera_index": existing.get("camera_index", 0),
             "openai_api_key": existing.get("openai_api_key", ""),

@@ -12,21 +12,18 @@ def get_base_dir():
     return Path(__file__).resolve().parent.parent
 
 BASE_DIR           = get_base_dir()
-API_CONFIG_PATH    = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 DESKTOP            = Path.home() / "Desktop"
 MAX_BUILD_ATTEMPTS = 3
-GEMINI_MODEL       = "gemini-2.5-flash"
+
+from core.gemini_models import generate_content as gemini_generate_content
+from core.gemini_models import generate_legacy
 
 
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
-
-
-def _get_gemini(model: str = GEMINI_MODEL):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(model)
 
 
 def _clean_code(text: str) -> str:
@@ -146,8 +143,6 @@ def _detect_intent(description: str, file_path: str, code: str) -> str:
 
 def _write(description: str, language: str, output_path: str, player=None) -> tuple[str, Path]:
     lang  = language or "python"
-    model = _get_gemini()
-
     prompt = f"""You are an expert {lang} developer.
 Write clean, working, well-commented {lang} code for the description below.
 
@@ -161,7 +156,7 @@ Description: {description}
 
 Code:"""
 
-    response = model.generate_content(prompt)
+    response = generate_legacy("balanced", prompt, api_key=_get_api_key())
     code     = _clean_code(response.text)
     path     = _resolve_save_path(output_path, lang)
     _save_file(path, code)
@@ -169,7 +164,6 @@ Code:"""
 
 
 def _fix_code(code: str, error_output: str, description: str) -> str:
-    model  = _get_gemini()
     prompt = f"""You are an expert debugger.
 The code below failed with the following error. Fix it.
 Return ONLY the corrected code — no explanation, no markdown, no backticks.
@@ -184,7 +178,7 @@ Broken code:
 
 Fixed code:"""
 
-    response = model.generate_content(prompt)
+    response = generate_legacy("balanced", prompt, api_key=_get_api_key())
     return _clean_code(response.text)
 
 
@@ -303,7 +297,6 @@ def _edit_action(file_path, instruction, player) -> str:
     if player:
         player.write_log("[Code] Editing file...")
 
-    model  = _get_gemini()
     prompt = f"""You are an expert code editor.
 Apply the following change to the code below.
 Return ONLY the complete updated code — no explanation, no markdown, no backticks.
@@ -316,7 +309,7 @@ Original code:
 Updated code:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         edited   = _clean_code(response.text)
     except Exception as e:
         return f"Could not edit code: {e}"
@@ -337,7 +330,6 @@ def _explain_action(file_path, code, player) -> str:
     if player:
         player.write_log("[Code] Analyzing code...")
 
-    model  = _get_gemini()
     prompt = f"""Explain what this code does in simple, clear language.
 Focus on: what it does, how it works, and any important details.
 Be concise — 3 to 6 sentences maximum.
@@ -348,7 +340,7 @@ Code:
 Explanation:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         return response.text.strip()
     except Exception as e:
         return f"Could not explain code: {e}"
@@ -378,7 +370,6 @@ def _optimize_action(file_path, code, language, output_path, player) -> str:
         player.write_log("[Code] Optimizing code...")
 
     lang  = language or "python"
-    model = _get_gemini()
 
     prompt = f"""You are an expert {lang} developer and code reviewer.
 Optimize the following code for:
@@ -395,7 +386,7 @@ Original code:
 Optimized code:"""
 
     try:
-        response  = model.generate_content(prompt)
+        response  = generate_legacy("balanced", prompt, api_key=_get_api_key())
         optimized = _clean_code(response.text)
     except Exception as e:
         return f"Could not optimize code: {e}"
@@ -441,10 +432,7 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
             print(f"[Code] ⚠️ Could not read file: {err}")
 
     try:
-        from google import genai
         from google.genai import types
-
-        client = genai.Client(api_key=_get_api_key())
 
         image_bytes  = screenshot_path.read_bytes()
         image_base64 = _image_to_base64(screenshot_path)
@@ -472,9 +460,10 @@ Be specific and actionable. If you see an error message, quote it exactly."""
             analysis_prompt,
         ]
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
+        response = gemini_generate_content(
+            "vision",
+            contents,
+            api_key=_get_api_key(),
         )
 
         analysis = response.text.strip()

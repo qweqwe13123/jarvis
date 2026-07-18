@@ -13,27 +13,22 @@ def get_base_dir():
 
 
 BASE_DIR         = get_base_dir()
-API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
 MAX_FIX_ATTEMPTS = 5
-MODEL_PLANNER    = "gemini-2.5-flash"
-MODEL_WRITER     = "gemini-2.5-flash"
-MODEL_DESIGN     = "gemini-2.5-flash"
 STATIC_SITE_FILES = ("index.html", "styles.css", "script.js")
 FULLSTACK_MARKERS = (
     "business", "бизнес", "company", "crm", "auth", "admin", "dashboard",
     "database", "backend", "api", "production", "saas", "startup", "магазин"
 )
 
+from core.gemini_models import call_with_fallback, generate_legacy
+
+
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
-
-
-def _get_model(model_name: str):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(model_name)
 
 
 def _strip_fences(text: str) -> str:
@@ -293,12 +288,18 @@ OUTPUT RULES:
 
 def _generate_site_html(description: str, log=None) -> str:
     """Generate a polished, self-contained index.html for the request."""
-    model = _get_model(MODEL_DESIGN)
+    import google.generativeai as genai
+
+    genai.configure(api_key=_get_api_key())
     prompt = SITE_DESIGN_BRIEF.format(description=description)
-    response = model.generate_content(
-        prompt,
-        generation_config={"temperature": 0.85, "max_output_tokens": 16384},
-    )
+
+    def _once(model: str):
+        return genai.GenerativeModel(model).generate_content(
+            prompt,
+            generation_config={"temperature": 0.85, "max_output_tokens": 16384},
+        )
+
+    response = call_with_fallback("balanced", _once)
     html = _strip_fences(response.text or "")
     low = html.lower()
     if "<!doctype" not in low and "<html" not in low:
@@ -421,8 +422,6 @@ class RateLimitError(Exception):
 
 
 def _plan_project(description: str, language: str) -> dict:
-    model = _get_model(MODEL_PLANNER)
-
     prompt = f"""You are a senior software architect. Create a minimal, complete file plan for this project.
 
 Language: {language}
@@ -459,7 +458,7 @@ Critical rules:
 JSON:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         raw = _strip_fences(response.text)
         return json.loads(raw)
     except json.JSONDecodeError as e:
@@ -477,8 +476,6 @@ def _write_file(
     project_dir: Path,
     already_written: dict[str, str],
 ) -> str:
-    model = _get_model(MODEL_WRITER)
-
     file_path = file_info["path"]
     file_desc = file_info.get("description", "")
     file_imports = file_info.get("imports", [])
@@ -538,7 +535,7 @@ General rules:
 Code for {file_path}:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         code = _strip_fences(response.text)
 
         full_path = project_dir / file_path
@@ -674,8 +671,6 @@ def _fix_files(
     entry_point: str,
 ) -> dict[str, str]:
 
-    model = _get_model(MODEL_PLANNER)
-
     error_file, error_line = _parse_traceback(error_output, list(file_codes.keys()))
     error_type = _classify_error(error_output)
 
@@ -736,7 +731,7 @@ Rules:
 Fixed code for {fix_path}:"""
 
         try:
-            response = model.generate_content(prompt)
+            response = generate_legacy("balanced", prompt, api_key=_get_api_key())
             fixed = _strip_fences(response.text)
 
             full_path = project_dir / fix_path

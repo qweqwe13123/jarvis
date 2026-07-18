@@ -5,7 +5,6 @@ import base64
 import atexit
 import io
 import json
-import random
 import re
 import sys
 import threading
@@ -45,7 +44,8 @@ def _base_dir() -> Path:
 
 
 _BASE        = _base_dir()
-_CONFIG_PATH = _BASE / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+_CONFIG_PATH = _api_keys_path()
 
 
 def _load_config() -> dict:
@@ -72,10 +72,105 @@ def _get_api_key() -> str:
 
 
 def _get_os() -> str:
-    return _load_config().get("os_system", "windows").lower()
+    cfg = (_load_config().get("os_system") or "").strip().lower()
+    if cfg in ("mac", "macos", "darwin", "windows", "win", "linux"):
+        if cfg in ("macos", "darwin"):
+            return "mac"
+        if cfg == "win":
+            return "windows"
+        return cfg
+    system = sys.platform
+    if system == "darwin":
+        return "mac"
+    if system.startswith("win"):
+        return "windows"
+    return "linux"
 
-_LIVE_MODEL         = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-_VISION_MODEL       = "gemini-2.5-flash-lite"
+
+def _screen_permission_hint() -> str | None:
+    """Return an actionable Screen Recording message, or None if OK / unknown."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from jarvis_ui.onboarding.permissions_native import (
+            is_granted,
+            screen_needs_relaunch,
+        )
+
+        granted = is_granted("screen")
+        if granted is True:
+            return None
+        if screen_needs_relaunch() or granted is False:
+            return (
+                "Screen Recording permission is missing or not active for this AURA process. "
+                "Open System Settings → Privacy & Security → Screen Recording, enable AURA, "
+                "then fully quit AURA (Cmd+Q) and reopen it."
+            )
+    except Exception:
+        pass
+    try:
+        from Quartz import CGPreflightScreenCaptureAccess
+
+        if not bool(CGPreflightScreenCaptureAccess()):
+            return (
+                "Screen Recording permission is not granted. "
+                "Open System Settings → Privacy & Security → Screen Recording, enable AURA, "
+                "then fully quit and reopen AURA."
+            )
+    except Exception:
+        pass
+    return None
+
+
+def _camera_permission_hint() -> str | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        from jarvis_ui.onboarding.permissions_native import is_granted
+
+        granted = is_granted("camera")
+        if granted is True:
+            return None
+        if granted is False:
+            return (
+                "Camera permission is denied. "
+                "Open System Settings → Privacy & Security → Camera, enable AURA, "
+                "then fully quit and reopen AURA."
+            )
+    except Exception:
+        pass
+    return None
+
+
+def _frame_is_blank(img_bytes: bytes, mime_type: str) -> bool:
+    """Detect black / empty captures (common when Screen Recording is off)."""
+    if not _PIL or not img_bytes:
+        return not img_bytes
+    try:
+        img = PIL.Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        arr = np.asarray(img, dtype=np.float32)
+        return float(arr.mean()) <= _BLACK_MEAN_MAX and float(arr.std()) <= _BLACK_STD_MAX
+    except Exception:
+        return False
+
+
+def _friendly_vision_error(exc: Exception) -> str:
+    msg = str(exc)
+    low = msg.lower()
+    if "404" in low or "no longer available" in low or "not_found" in low:
+        return (
+            "Vision model is unavailable (API 404). "
+            "AURA needs an updated Gemini vision model — please update the app."
+        )
+    if "api key" in low or "permission_denied" in low or ("invalid" in low and "key" in low):
+        return (
+            "Gemini API key is missing or invalid. "
+            "Open Settings and paste a valid Gemini API key."
+        )
+    if "quota" in low or "resource exhausted" in low or "rate limit" in low:
+        return "Gemini vision quota/rate limit hit. Wait a bit and try again."
+    return f"Vision analysis failed: {msg}"
+
 _CHANNELS           = 1
 _RECEIVE_SAMPLE_RATE = 24_000
 _CHUNK_SIZE         = 1_024
@@ -83,9 +178,9 @@ _CHUNK_SIZE         = 1_024
 _IMG_MAX_W = 768
 _IMG_MAX_H = 432
 _JPEG_Q    = 58
-_VISION_RETRIES = 4
-_VISION_BASE_DELAY = 0.8
 _VISION_MIN_INTERVAL = 0.45
+_BLACK_MEAN_MAX = 6.0
+_BLACK_STD_MAX = 4.0
 _vision_lock = threading.Lock()
 _last_vision_ts = 0.0
 
@@ -113,18 +208,157 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
         print(f"[Vision] ⚠️  Image compress failed: {e}")
         return img_bytes, f"image/{source_format.lower()}"
 
-def _capture_screen() -> tuple[bytes, str]:
+def _run_on_ui_thread(fn, timeout: float = 4.0):
+    """Run ``fn`` on the Qt UI thread (screen capture may be off-thread)."""
+    try:
+        from PyQt6.QtCore import QThread, QTimer
+        from PyQt6.QtWidgets import QApplication
+    except Exception:
+        return fn()
 
+    app = QApplication.instance()
+    if app is None:
+        return fn()
+    if QThread.currentThread() == app.thread():
+        return fn()
+
+    box: dict = {"done": False, "value": None, "error": None}
+    event = threading.Event()
+
+    def _wrap() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as e:
+            box["error"] = e
+        finally:
+            box["done"] = True
+            event.set()
+
+    QTimer.singleShot(0, _wrap)
+    if not event.wait(timeout):
+        raise TimeoutError("Timed out waiting for UI thread during screen capture.")
+    if box["error"] is not None:
+        raise box["error"]
+    return box["value"]
+
+
+def _hide_aura_windows() -> list:
+    """Hide AURA chrome so the capture is the real desktop, not our own chat."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except Exception:
+        return []
+
+    app = QApplication.instance()
+    if app is None:
+        return []
+
+    def _hide():
+        hidden = []
+        for w in app.topLevelWidgets():
+            try:
+                if w.isVisible():
+                    hidden.append(w)
+                    w.hide()
+            except Exception:
+                pass
+        try:
+            app.processEvents()
+        except Exception:
+            pass
+        return hidden
+
+    try:
+        return list(_run_on_ui_thread(_hide) or [])
+    except Exception as e:
+        print(f"[Vision] ⚠️  Could not hide AURA windows: {e}")
+        return []
+
+
+def _restore_aura_windows(windows: list) -> None:
+    if not windows:
+        return
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except Exception:
+        return
+    app = QApplication.instance()
+
+    def _show():
+        for w in windows:
+            try:
+                w.show()
+            except Exception:
+                pass
+        if app is not None:
+            try:
+                app.processEvents()
+            except Exception:
+                pass
+
+    try:
+        _run_on_ui_thread(_show)
+    except Exception as e:
+        print(f"[Vision] ⚠️  Could not restore AURA windows: {e}")
+
+
+def _grab_mss_png() -> bytes:
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")
+    sct_cls = getattr(mss, "MSS", None) or mss.mss
+    with sct_cls() as sct:
+        monitors = sct.monitors  # [0] = all combined, [1..n] = real screens
+        if not monitors:
+            raise RuntimeError("No displays found for screen capture.")
+        target = None
+        for mon in monitors[1:] or monitors:
+            if int(mon.get("width") or 0) > 0 and int(mon.get("height") or 0) > 0:
+                target = mon
+                break
+        if target is None:
+            target = monitors[1] if len(monitors) > 1 else monitors[0]
+        if int(target.get("width") or 0) <= 0 or int(target.get("height") or 0) <= 0:
+            raise RuntimeError(
+                _screen_permission_hint()
+                or "Screen capture returned an empty display. "
+                "Enable Screen Recording for AURA and relaunch the app."
+            )
+        shot = sct.grab(target)
+        return mss.tools.to_png(shot.rgb, shot.size)
 
-    with mss.mss() as sct:
-        monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-        target   = monitors[1] if len(monitors) > 1 else monitors[0]
-        shot     = sct.grab(target)
-        png      = mss.tools.to_png(shot.rgb, shot.size)
 
-    return _compress(png, "PNG")
+def _capture_screen() -> tuple[bytes, str]:
+    hint = _screen_permission_hint()
+    if hint:
+        raise RuntimeError(hint)
+
+    hidden: list = []
+    try:
+        # Don't OCR our own chat (old 404 messages look like "vision is broken").
+        hidden = _hide_aura_windows()
+        time.sleep(0.15)
+        try:
+            png = _grab_mss_png()
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(
+                _screen_permission_hint() or f"Screen capture failed: {e}"
+            ) from e
+    finally:
+        _restore_aura_windows(hidden)
+
+    compressed, mime = _compress(png, "PNG")
+    if _frame_is_blank(compressed, mime):
+        raise RuntimeError(
+            _screen_permission_hint()
+            or (
+                "Screen capture is blank (black frame). "
+                "Enable Screen Recording for AURA in System Settings → Privacy & Security, "
+                "then fully quit and reopen AURA."
+            )
+        )
+    return compressed, mime
 
 
 def _cv2_backend() -> int:
@@ -253,23 +487,25 @@ atexit.register(_camera_cache.close)
 
 
 def _capture_camera() -> tuple[bytes, str]:
-    return _camera_cache.capture()
-
-
-def _is_busy_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    busy_signals = (
-        "503",
-        "overloaded",
-        "unavailable",
-        "resource exhausted",
-        "resource_exhausted",
-        "rate limit",
-        "quota",
-        "too many requests",
-        "try again later",
-    )
-    return any(signal in msg for signal in busy_signals)
+    hint = _camera_permission_hint()
+    if hint:
+        raise RuntimeError(hint)
+    try:
+        image_bytes, mime_type = _camera_cache.capture()
+    except Exception as e:
+        raise RuntimeError(
+            _camera_permission_hint()
+            or f"Camera capture failed: {e}"
+        ) from e
+    if _frame_is_blank(image_bytes, mime_type):
+        raise RuntimeError(
+            _camera_permission_hint()
+            or (
+                "Camera returned a blank frame. "
+                "Check Camera permission for AURA and that no other app is locking the webcam."
+            )
+        )
+    return image_bytes, mime_type
 
 
 def _throttle_vision_request() -> None:
@@ -282,45 +518,48 @@ def _throttle_vision_request() -> None:
 
 
 def _analyze_image(image_bytes: bytes, mime_type: str, user_text: str, angle: str) -> str:
+    from core.gemini_models import (
+        GeminiModelError,
+        generate_content,
+        is_transient_error,
+    )
+
     prompt = (
-        "You are JARVIS vision. Analyze the provided "
-        f"{'webcam frame' if angle == 'camera' else 'screen capture'} and answer the user's question. "
-        "Be precise, useful, and honest about uncertainty. If there is visible text, read it when relevant. "
-        "Answer in the user's language. Keep it concise unless the user asks for detail.\n\n"
+        "You are AURA vision. A real image is attached — capture already succeeded. "
+        f"Analyze this {'webcam frame' if angle == 'camera' else 'screen capture'} and answer the user. "
+        "CRITICAL RULES:\n"
+        "- NEVER say you cannot see the screen/desktop/camera. You are looking at the image now.\n"
+        "- NEVER invent API/model/permission failures (no 404, no gemini-1.5, no 'update settings').\n"
+        "- Describe what is actually visible: apps, windows, icons, wallpaper, text, UI.\n"
+        "- If AURA/chat UI is visible, mention it briefly, then describe the rest of the desktop.\n"
+        "- Be precise and useful. Answer in the user's language. Keep it concise unless they ask for detail.\n\n"
         f"User question: {user_text}"
     )
 
-    last_error: Exception | None = None
     with _vision_lock:
         _throttle_vision_request()
-        client = genai.Client(api_key=_get_api_key())
-
-        for attempt in range(1, _VISION_RETRIES + 1):
-            try:
-                response = client.models.generate_content(
-                    model=_VISION_MODEL,
-                    contents=[
-                        gtypes.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                        prompt,
-                    ],
+        try:
+            response = generate_content(
+                "vision",
+                contents=[
+                    gtypes.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                    prompt,
+                ],
+                api_key=_get_api_key(),
+                retries_per_model=3,
+            )
+        except GeminiModelError as e:
+            if e.errors and any(is_transient_error(x) for x in e.errors):
+                return (
+                    "Gemini vision is temporarily overloaded. I retried across models, "
+                    "but the server still refused the request. Please ask again in a few seconds."
                 )
-                text = (response.text or "").strip()
-                return text or "I analyzed the image, but the model returned no visible answer."
-            except Exception as e:
-                last_error = e
-                if not _is_busy_error(e) or attempt == _VISION_RETRIES:
-                    break
+            raise RuntimeError(_friendly_vision_error(e)) from e
+        except Exception as e:
+            raise RuntimeError(_friendly_vision_error(e)) from e
 
-                delay = (_VISION_BASE_DELAY * (2 ** (attempt - 1))) + random.uniform(0.0, 0.35)
-                print(f"[Vision] Busy/overloaded, retry {attempt}/{_VISION_RETRIES} in {delay:.1f}s: {e}")
-                time.sleep(delay)
-
-    if last_error and _is_busy_error(last_error):
-        return (
-            "Gemini vision is temporarily overloaded. I reduced the image size and retried, "
-            "but the server still refused the request. Please ask again in a few seconds."
-        )
-    raise last_error or RuntimeError("Vision analysis failed for an unknown reason.")
+    text = (response.text or "").strip()
+    return text or "I analyzed the image, but the model returned no visible answer."
 
 class _VisionSession:
     def __init__(self):
@@ -509,7 +748,12 @@ def screen_process(
 ) -> str:
 
     params    = parameters or {}
-    user_text = (params.get("text") or params.get("user_text") or "").strip()
+    user_text = (
+        params.get("text")
+        or params.get("user_text")
+        or params.get("question")
+        or ""
+    ).strip()
     angle     = params.get("angle", "screen").lower().strip()
 
     if not user_text:
@@ -527,7 +771,8 @@ def screen_process(
             print(f"[Vision] 🖥️  Screen: {len(image_bytes):,} bytes")
     except Exception as e:
         print(f"[Vision] ❌ Capture error: {e}")
-        return f"Vision capture failed: {e}"
+        # Keep the actionable OS/permission wording front-and-center for the Live model.
+        return str(e)
 
     try:
         result = _analyze_image(image_bytes, mime_type, user_text, angle)
@@ -537,7 +782,7 @@ def screen_process(
         return result
     except Exception as e:
         print(f"[Vision] ❌ Analysis error: {e}")
-        return f"Vision analysis failed: {e}"
+        return _friendly_vision_error(e)
 
 
 def warmup_session(player=None) -> None:

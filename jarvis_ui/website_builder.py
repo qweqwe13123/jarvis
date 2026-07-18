@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
-    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QFileDialog, QComboBox, QLineEdit,
+    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QFileDialog,
 )
 
 from jarvis_ui import theme as T
@@ -108,24 +108,20 @@ class WebsiteBuilderView(QWidget):
         lay.addLayout(col)
 
         lay.addStretch()
-        self._provider = QComboBox()
-        self._provider.addItems(["gemini", "openrouter", "groq", "deepseek", "together", "ollama", "lmstudio", "auto"])
-        self._provider.setFixedHeight(30)
-        self._provider.setStyleSheet(
-            f"QComboBox {{ background: {T.BG_CARD}; color: {T.TEXT}; border: 1px solid {T.BORDER}; border-radius: 8px; padding: 0 8px; }}"
-            f"QComboBox QAbstractItemView {{ background: {T.BG_CARD}; color: {T.TEXT}; border: 1px solid {T.BORDER_HI}; }}"
-        )
-        lay.addWidget(self._provider)
+        try:
+            from core.gemini_models import primary as _gemini_primary
 
-        self._model = QLineEdit()
-        self._model.setPlaceholderText("model")
-        self._model.setFixedWidth(220)
-        self._model.setFixedHeight(30)
-        self._model.setStyleSheet(
-            f"QLineEdit {{ background: {T.BG_CARD}; color: {T.TEXT}; border: 1px solid {T.BORDER}; border-radius: 8px; padding: 0 8px; }}"
-            f"QLineEdit:focus {{ border-color: {T.CYAN_DIM}; }}"
+            _chip_model = _gemini_primary("balanced")
+        except Exception:
+            _chip_model = "gemini-flash-latest"
+        model_chip = QLabel(_chip_model)
+        model_chip.setFont(QFont(T.FONT_UI, 9))
+        model_chip.setStyleSheet(
+            f"color: {T.CYAN}; background: rgba(0,209,255,0.08);"
+            f" border: 1px solid rgba(0,209,255,0.22); border-radius: 8px;"
+            f" padding: 4px 10px;"
         )
-        lay.addWidget(self._model)
+        lay.addWidget(model_chip)
 
         self._status = QLabel("● READY")
         self._status.setFont(QFont(T.FONT_UI, 8, QFont.Weight.Bold))
@@ -134,22 +130,18 @@ class WebsiteBuilderView(QWidget):
         return bar
 
     def _load_builder_defaults(self):
-        try:
-            from memory.workspace_manager import get_settings
-            s = get_settings() or {}
-        except Exception:
-            s = {}
-        provider = str(s.get("builder_provider", "gemini"))
-        model = str(s.get("builder_model", "gemini-2.5-flash"))
-        idx = self._provider.findText(provider)
-        self._provider.setCurrentIndex(idx if idx >= 0 else 0)
-        self._model.setText(model)
+        pass
 
     def selected_provider(self) -> str:
-        return self._provider.currentText().strip().lower() or "gemini"
+        return "gemini"
 
     def selected_model(self) -> str:
-        return self._model.text().strip()
+        try:
+            from core.gemini_models import primary as _gemini_primary
+
+            return _gemini_primary("balanced")
+        except Exception:
+            return "gemini-flash-latest"
 
     # -------------------------------------------------------------- chat column
     def _build_chat_column(self) -> QWidget:

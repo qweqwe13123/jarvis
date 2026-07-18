@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from core.language import detect_language, load_language, phrase
+from core.language import detect_language, phrase
 
 
 def _base_dir() -> Path:
@@ -77,15 +77,9 @@ def _sanitise(text: str, max_len: int = 200) -> str:
 
 
 def _spoken_message(message: str, language: str) -> str:
-    """Natural, JARVIS-style reminder phrasing in the original language."""
+    """Reminder payload — Live adds natural phrasing in the user's language."""
     clean = _sanitise(message, 160) or message or "your reminder"
-    prefixes = {
-        "ru": f"Бро, напоминаю: {clean}.",
-        "tr": f"Kanka, hatırlatma: {clean}.",
-        "az": f"Qardaş, xatırlatma: {clean}.",
-        "en": f"Hey, quick reminder: {clean}.",
-    }
-    return prefixes.get(language, prefixes["en"])
+    return clean
 
 
 def reminder(parameters: dict, response=None, player=None, session_memory=None) -> str:
@@ -121,8 +115,8 @@ def reminder(parameters: dict, response=None, player=None, session_memory=None) 
         return "That time has already passed — I can't set a reminder in the past."
 
     safe_msg = _sanitise(message)
-    lang_hint = parameters.get("language") or parameters.get("source_language") or ""
-    reminder_lang = lang_hint if lang_hint in {"ru", "en", "tr", "az"} else detect_language(message)
+    lang_hint = (parameters.get("language") or parameters.get("source_language") or "").strip().lower()
+    reminder_lang = lang_hint or detect_language(message)
 
     if _is_duplicate(safe_msg, target_dt):
         return phrase("reminder_set", time=target_dt.strftime("%Y-%m-%d %H:%M"))
@@ -153,8 +147,6 @@ def reminder(parameters: dict, response=None, player=None, session_memory=None) 
         if delay_seconds < 60:
             return phrase("timer_set_seconds", seconds=delay_seconds)
         minutes = round(delay_seconds / 60, 1)
-        if load_language() == "ru" and minutes == 1:
-            return "Таймер установлен на 1 минуту."
         return phrase("timer_set_minutes", minutes=f"{minutes:g}")
 
     friendly_time = target_dt.strftime("%B %d at %I:%M %p")

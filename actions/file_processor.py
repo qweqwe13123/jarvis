@@ -25,18 +25,14 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-import google.generativeai as genai
+from core.gemini_models import generate_legacy
 
 
 def _get_api_key() -> str:
-    config_path = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
-    with open(config_path, "r", encoding="utf-8") as f:
+    from core.app_paths import api_keys_path
+
+    with open(api_keys_path(), "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
-
-
-def _gemini_client():
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel("gemini-2.5-flash")
 
 
 def _detect_type(path: Path) -> str:
@@ -87,7 +83,6 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
 
     if action in ("describe", "ocr", "analyze", "read", "extract_text"):
         try:
-            model  = _gemini_client()
             img    = Image.open(path)
             prompt = {
                 "describe": "Describe this image in detail.",
@@ -100,7 +95,7 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
             if params.get("instruction"):
                 prompt = params["instruction"]
 
-            response = model.generate_content([prompt, img])
+            response = generate_legacy("vision", [prompt, img], api_key=_get_api_key())
             result   = response.text.strip()
 
             if len(result) > 500 and params.get("save", True):
@@ -207,8 +202,11 @@ def _process_pdf(path: Path, action: str, params: dict, speak=None) -> str:
             "reformat":       f"Reformat this text cleanly with proper structure:\n\n{text}",
         }
         try:
-            model    = _gemini_client()
-            response = model.generate_content(prompt_map.get(action, f"Analyze:\n\n{text}"))
+            response = generate_legacy(
+                "balanced",
+                prompt_map.get(action, f"Analyze:\n\n{text}"),
+                api_key=_get_api_key(),
+            )
             result   = response.text.strip()
             if len(result) > 600 and params.get("save", True):
                 out = _output_path(path, action, ".txt")
@@ -297,8 +295,7 @@ def _process_text_doc(path: Path, file_type: str, action: str,
         instruction = action
 
     try:
-        model    = _gemini_client()
-        response = model.generate_content(prompt_map[action])
+        response = generate_legacy("balanced", prompt_map[action], api_key=_get_api_key())
         result   = response.text.strip()
         if len(result) > 600 and params.get("save", True):
             out = _output_path(path, action, ".txt")
@@ -344,8 +341,7 @@ def _process_data(path: Path, file_type: str, action: str,
                    f"Rows: {len(df)}\nPreview:\n{preview}\n\n"
                    f"Give insights, patterns, and notable findings.")
         try:
-            model    = _gemini_client()
-            response = model.generate_content(prompt)
+            response = generate_legacy("balanced", prompt, api_key=_get_api_key())
             return response.text.strip()
         except Exception as e:
             return f"AI analysis failed: {e}"
@@ -398,9 +394,10 @@ def _process_data(path: Path, file_type: str, action: str,
 
     preview = df.head(30).to_string()
     try:
-        model    = _gemini_client()
-        response = model.generate_content(
-            f"Task: {action}\nDataset ({len(df)} rows, cols: {list(df.columns)}):\n{preview}"
+        response = generate_legacy(
+            "balanced",
+            f"Task: {action}\nDataset ({len(df)} rows, cols: {list(df.columns)}):\n{preview}",
+            api_key=_get_api_key(),
         )
         return response.text.strip()
     except Exception as e:
@@ -429,8 +426,7 @@ def _process_json(path: Path, action: str, params: dict, speak=None) -> str:
         if params.get("instruction"):
             prompt = f"{params['instruction']}\n\nJSON data:\n{preview}"
         try:
-            model    = _gemini_client()
-            response = model.generate_content(prompt)
+            response = generate_legacy("balanced", prompt, api_key=_get_api_key())
             return response.text.strip()
         except Exception as e:
             return f"AI processing failed: {e}"
@@ -493,8 +489,7 @@ def _process_code(path: Path, action: str, params: dict, speak=None) -> str:
         prompt = prompt_map[action]
 
     try:
-        model    = _gemini_client()
-        response = model.generate_content(prompt)
+        response = generate_legacy("balanced", prompt, api_key=_get_api_key())
         result   = response.text.strip()
 
         if action in ("fix", "optimize", "document") and params.get("save", True):
@@ -527,17 +522,16 @@ def _process_audio(path: Path, action: str, params: dict, speak=None) -> str:
 
     if action == "transcribe":
         try:
-            model   = _gemini_client()
             content = path.read_bytes()
             mime    = {
                 "mp3": "audio/mp3", "wav": "audio/wav",
                 "ogg": "audio/ogg", "m4a": "audio/mp4",
                 "aac": "audio/aac", "flac": "audio/flac",
             }.get(path.suffix.lstrip(".").lower(), "audio/mpeg")
-            response = model.generate_content([
+            response = generate_legacy("balanced", [
                 "Transcribe all speech in this audio file accurately.",
                 {"mime_type": mime, "data": content}
-            ])
+            ], api_key=_get_api_key())
             result = response.text.strip()
             if params.get("save", True):
                 out = _output_path(path, "transcript", ".txt")
@@ -764,9 +758,8 @@ def _process_pptx(path: Path, action: str, params: dict, speak=None) -> str:
             out.write_text(text, encoding="utf-8")
             return f"Text extracted. Saved: {out.name}"
         try:
-            model    = _gemini_client()
             prompt   = f"{'Summarize' if action == 'summarize' else 'Analyze'} this presentation:\n{text[:30000]}"
-            response = model.generate_content(prompt)
+            response = generate_legacy("balanced", prompt, api_key=_get_api_key())
             return response.text.strip()
         except Exception as e:
             return f"AI processing failed: {e}"
@@ -797,9 +790,8 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
     if file_type == "unknown":
         try:
             content = path.read_text(encoding="utf-8", errors="ignore")[:10000]
-            model   = _gemini_client()
             prompt  = f"File: {path.name}\nContent preview:\n{content}\n\nTask: {action or instruction or 'Describe what this file contains and what can be done with it.'}"
-            response = model.generate_content(prompt)
+            response = generate_legacy("balanced", prompt, api_key=_get_api_key())
             return response.text.strip()
         except Exception as e:
             return f"Unknown file type ({path.suffix}). Could not process: {e}"

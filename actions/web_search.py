@@ -12,7 +12,8 @@ def _get_base_dir() -> Path:
 
 
 BASE_DIR        = _get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.app_paths import api_keys_path as _api_keys_path
+API_CONFIG_PATH = _api_keys_path()
 
 
 def _get_api_key() -> str:
@@ -21,13 +22,17 @@ def _get_api_key() -> str:
 
 
 def _gemini_search(query: str) -> str:
-    from google import genai
+    from google.genai import types as gtypes
 
-    client   = genai.Client(api_key=_get_api_key())
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=query,
-        config={"tools": [{"google_search": {}}]},
+    from core.gemini_models import generate_content as gemini_generate_content
+
+    response = gemini_generate_content(
+        "fast",
+        query,
+        api_key=_get_api_key(),
+        config=gtypes.GenerateContentConfig(
+            tools=[gtypes.Tool(google_search=gtypes.GoogleSearch())]
+        ),
     )
 
     text = ""
@@ -110,8 +115,7 @@ def _deep_research(query: str, max_sources: int = 5) -> str:
     if not sources:
         return _format_ddg(query, results)
 
-    from google import genai
-    client = genai.Client(api_key=_get_api_key())
+    from core.gemini_models import generate_content as gemini_generate_content
     source_block = "\n\n".join(
         f"SOURCE {i}\nTitle: {s['title']}\nURL: {s['url']}\nText: {s['text']}"
         for i, s in enumerate(sources, 1)
@@ -132,7 +136,7 @@ Do not invent facts not supported by the sources.
 
 {source_block}
 """
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    response = gemini_generate_content("balanced", prompt, api_key=_get_api_key())
     text = (response.text or "").strip()
     if not text:
         return _format_ddg(query, results)

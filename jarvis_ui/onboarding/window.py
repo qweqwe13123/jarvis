@@ -12,27 +12,6 @@ from jarvis_ui.onboarding.persistence import mark_onboarding_done
 from jarvis_ui.onboarding.welcome_antigravity import AntigravityWelcomePage
 
 
-def _has_gemini_key() -> bool:
-    import json
-    import sys
-    from pathlib import Path
-
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).resolve().parents[2]
-    path = base / "config" / "api_keys.json"
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return bool(str(data.get("gemini_api_key", "")).strip()) and bool(
-            data.get("os_system")
-        )
-    except Exception:
-        return False
-
-
 class OnboardingWindow(QWidget):
     finished = pyqtSignal()
     skipped = pyqtSignal()
@@ -62,7 +41,8 @@ class OnboardingWindow(QWidget):
         self._permissions.cta.clicked.connect(self._after_permissions)
         self._stack.addWidget(self._permissions)
 
-        self._api = ApiKeySetupPage()
+        # Production: live Google probe. Preview tooling: format-only (no network).
+        self._api = ApiKeySetupPage(require_live_verify=not preview)
         self._api.submitted.connect(self._on_api_submitted)
         self._stack.addWidget(self._api)
 
@@ -76,32 +56,57 @@ class OnboardingWindow(QWidget):
             self._permissions.play_enter()
 
     def _after_permissions(self) -> None:
-        # Always collect the key inside onboarding — MainWindow crash must not block this.
-        if _has_gemini_key() and not self._preview:
-            self._complete()
-            return
+        # Always show Gemini key step on download/setup (welcome → permissions → key).
         self.setStyleSheet(f"QWidget#OnboardingWindow {{ background: {T.CREAM}; }}")
         self.resize(T.WIN_W, T.WIN_H)
+        if hasattr(self._api, "prefill_existing_key"):
+            try:
+                self._api.prefill_existing_key()
+            except Exception:
+                pass
         self._stack.setCurrentWidget(self._api)
         if hasattr(self._api, "play_enter"):
             self._api.play_enter()
 
     def _on_api_submitted(self, key: str, os_name: str) -> None:
-        if not self._preview:
-            try:
+        # Keep this slot exception-free: PyQt6 aborts the process on slot errors
+        # (common when writing keys while still on a DMG volume).
+        try:
+            if not self._preview:
                 save_api_keys(key, os_name)
-            except Exception as e:
-                print(f"[AURA] Failed to save API key: {e}")
-                return
-        self._complete()
+            # Defer teardown so the submit slot returns cleanly.
+            QTimer.singleShot(0, self._complete)
+        except Exception as e:
+            print(f"[AURA] Failed to save API key: {e}")
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+
+                QMessageBox.critical(
+                    self,
+                    "Could not save API key",
+                    f"AURA could not save your Gemini key.\n\n{e}",
+                )
+            except Exception:
+                pass
 
     def _complete(self) -> None:
+        if self._completed:
+            return
         self._completed = True
-        if not self._preview:
-            mark_onboarding_done()
-        self.finished.emit()
-        self.hide()
-        QTimer.singleShot(50, self.close)
+        try:
+            if not self._preview:
+                mark_onboarding_done()
+        except Exception as e:
+            print(f"[AURA] mark_onboarding_done failed: {e}")
+        try:
+            self.finished.emit()
+        except Exception:
+            pass
+        try:
+            self.hide()
+        except Exception:
+            pass
+        QTimer.singleShot(80, self.close)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if not self._completed:

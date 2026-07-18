@@ -126,48 +126,25 @@ class _GlowLogo(QWidget):
         self._rise = 0.0
         self._pix: QPixmap | None = None
 
-        names = (
-            "aura_logo_onboarding.png",
-            "aura_logo.png",
-            "aura_logo_square_bg.png",
-        )
-        roots: list[Path] = []
-        here = Path(__file__).resolve()
-        # Dev: repo root (…/jarvis_ui/onboarding → parents[2])
-        roots.append(here.parents[2])
-        # Frozen: MEIPASS / Contents/{Resources,Frameworks}
-        meipass = getattr(__import__("sys"), "_MEIPASS", None)
-        if meipass:
-            roots.append(Path(meipass))
         try:
-            contents = Path(__import__("sys").executable).resolve().parent.parent
-            roots.extend([contents / "Resources", contents / "Frameworks"])
-        except Exception:
-            pass
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        candidates: list[Path] = []
-        for root in roots:
-            key = str(root)
-            if key in seen:
-                continue
-            seen.add(key)
-            for name in names:
-                candidates.append(root / "assets" / name)
+            from jarvis_ui.paths import brand_asset_path
 
-        for candidate in candidates:
-            if not candidate.is_file():
-                continue
-            img = QPixmap(str(candidate))
-            if img.isNull():
-                continue
-            self._pix = img.scaled(
-                size,
-                size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+            candidate = brand_asset_path(
+                "aura_logo_onboarding.png",
+                "aura_logo.png",
+                "aura_logo_square_bg.png",
             )
-            break
+        except Exception:
+            candidate = None
+        if candidate is not None:
+            img = QPixmap(str(candidate))
+            if not img.isNull():
+                self._pix = img.scaled(
+                    size,
+                    size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
 
     def get_reveal(self) -> float:
         return self._reveal
@@ -241,40 +218,8 @@ class _GlowLogo(QWidget):
         p.end()
 
 
-def _asset_candidates(*names: str) -> list[Path]:
-    """Resolve brand assets across repo, frozen Resources, and Frameworks."""
-    roots: list[Path] = []
-    try:
-        from jarvis_ui.paths import resource_dir
-
-        roots.append(Path(resource_dir()))
-    except Exception:
-        pass
-    here = Path(__file__).resolve()
-    # …/jarvis_ui/onboarding/this.py → repo root or Frameworks/
-    roots.append(here.parents[2])
-    # …/Contents/Resources when loaded from Frameworks/jarvis_ui
-    try:
-        contents = here.parents[3]
-        roots.append(contents / "Resources")
-        roots.append(contents / "Frameworks")
-    except Exception:
-        pass
-    out: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        for name in names:
-            path = root / "assets" / name
-            key = str(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(path)
-    return out
-
-
 class _GoogleG(QWidget):
-    """Official multicolor Google G (SVG / PNG), matching Sign-in chrome."""
+    """Official multicolor Google G (PNG / SVG) — never a plain letter."""
 
     def __init__(self, size: int = 18, parent=None):
         super().__init__(parent)
@@ -284,12 +229,23 @@ class _GoogleG(QWidget):
         self._pix: QPixmap | None = None
         self._svg = None
 
-        for png in _asset_candidates(
-            "google_g.png",
+        try:
+            from jarvis_ui.paths import brand_asset_candidates
+        except Exception:
+            brand_asset_candidates = None  # type: ignore[assignment]
+
+        png_names = (
             "google_g_72.png",
+            "google_g.png",
             "google_g_54.png",
             "google_g_36.png",
-        ):
+        )
+        candidates = (
+            brand_asset_candidates(*png_names)
+            if brand_asset_candidates
+            else [Path(__file__).resolve().parents[2] / "assets" / n for n in png_names]
+        )
+        for png in candidates:
             if not png.is_file():
                 continue
             pm = QPixmap(str(png))
@@ -303,7 +259,12 @@ class _GoogleG(QWidget):
                 break
 
         if self._pix is None:
-            for svg in _asset_candidates("google_g.svg"):
+            svg_candidates = (
+                brand_asset_candidates("google_g.svg")
+                if brand_asset_candidates
+                else [Path(__file__).resolve().parents[2] / "assets" / "google_g.svg"]
+            )
+            for svg in svg_candidates:
                 if not svg.is_file():
                     continue
                 try:

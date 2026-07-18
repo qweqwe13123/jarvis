@@ -60,13 +60,23 @@ jobs:
           - Linux AppImage
           - macOS universal + Windows builds"
 
+      - name: Ensure blockmaps
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          AI="dist/releases/AURA-${V}-linux-x64.AppImage"
+          ZIP="dist/releases/AURA-${V}-linux-x64.zip"
+          [[ -f "$AI" ]] && python packaging/make_blockmap.py "$AI" -o "${AI}.blockmap"
+          [[ -f "$ZIP" ]] && python packaging/make_blockmap.py "$ZIP" -o "${ZIP}.blockmap"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: aura-linux-appimage
           path: |
             dist/releases/AURA-*-linux-x64.AppImage
+            dist/releases/AURA-*-linux-x64.AppImage.blockmap
             dist/releases/AURA-*-linux-x64.zip
+            dist/releases/AURA-*-linux-x64.zip.blockmap
             dist/releases/manifest.json
 
       - name: Attach to GitHub Release
@@ -78,7 +88,11 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "AURA ${V}" --notes "AURA ${V}"
           fi
-          gh release upload "$TAG" \
-            "dist/releases/AURA-${V}-linux-x64.AppImage" \
-            "dist/releases/AURA-${V}-linux-x64.zip" \
-            --clobber
+          shopt -s nullglob
+          FILES=(
+            "dist/releases/AURA-${V}-linux-x64.AppImage"
+            "dist/releases/AURA-${V}-linux-x64.AppImage.blockmap"
+            "dist/releases/AURA-${V}-linux-x64.zip"
+            "dist/releases/AURA-${V}-linux-x64.zip.blockmap"
+          )
+          gh release upload "$TAG" "${FILES[@]}" --clobber

@@ -3,11 +3,14 @@ import json
 import platform
 from pathlib import Path
 
-_CONFIG_PATH = Path(__file__).parent / "api_keys.json"
+from core.app_paths import api_keys_path
+
 
 def get_config() -> dict:
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+    path = api_keys_path()
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def get_os() -> str:
     """Returns: 'windows' | 'mac' | 'linux'"""
@@ -18,6 +21,14 @@ def get_os() -> str:
         return "windows"
     return "linux"
 
-def is_windows() -> bool: return get_os() == "windows"
-def is_mac()     -> bool: return get_os() == "mac"
-def is_linux()   -> bool: return get_os() == "linux"
+
+def is_windows() -> bool:
+    return get_os() == "windows"
+
+
+def is_mac() -> bool:
+    return get_os() == "mac"
+
+
+def is_linux() -> bool:
+    return get_os() == "linux"
