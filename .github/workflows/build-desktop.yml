@@ -62,6 +62,14 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure Windows .ico
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ ! -f assets/AURA.ico ]]; then
+            python packaging/make_windows_ico.py
+          fi
+
       - name: Build release artifacts
         env:
           AURA_UPDATE_MANIFEST_URL: https://www.hiauraai.com/api/releases/latest

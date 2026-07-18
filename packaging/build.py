@@ -421,6 +421,8 @@ def build_windows_onefile() -> Path:
     prompt = ROOT / "core" / "prompt.txt"
     config = ROOT / "config"
     ui = ROOT / "jarvis_ui"
+    assets = ROOT / "assets"
+    ico = assets / "AURA.ico"
     cmd = [
         sys.executable,
         "-m",
@@ -435,11 +437,15 @@ def build_windows_onefile() -> Path:
         "--add-data=%s%s%s" % (prompt, sep, "core"),
         "--add-data=%s%s%s" % (config, sep, "config"),
         "--add-data=%s%s%s" % (ui, sep, "jarvis_ui"),
+        # Brand logos for onboarding / tray — without this, Windows falls back to "A".
+        "--add-data=%s%s%s" % (assets, sep, "assets"),
         "--hidden-import=PyQt6.QtWebEngineWidgets",
         "--hidden-import=PyQt6.QtWebEngineCore",
         "--hidden-import=google.genai",
         str(ROOT / "main.py"),
     ]
+    if ico.is_file():
+        cmd.insert(-1, "--icon=%s" % ico)
     _run(cmd)
     return ROOT / "dist" / f"{APP_NAME}.exe"
 

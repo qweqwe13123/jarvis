@@ -88,6 +88,13 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# Windows Explorer / taskbar icon (macOS uses BUNDLE .icns below).
+_exe_icon = None
+if platform.system() == "Windows":
+    _ico = ROOT / "assets" / "AURA.ico"
+    if _ico.is_file():
+        _exe_icon = str(_ico)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -99,6 +106,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=_exe_icon,
 )
 
 coll = COLLECT(

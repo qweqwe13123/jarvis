@@ -71,6 +71,15 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved version=$V tag=$TAG"
 
+      - name: Ensure Windows .ico
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ ! -f assets/AURA.ico ]]; then
+            python packaging/make_windows_ico.py
+          fi
+          ls -la assets/AURA.ico
+
       - name: Build release artifacts
         env:
           AURA_UPDATE_MANIFEST_URL: https://www.hiauraai.com/api/releases/latest
@@ -84,7 +93,8 @@ jobs:
             --notes "## A.U.R.A ${V}
 
           - Windows + Linux desktop builds
-          - In-app updates via ZIP + blockmap (same path as macOS)"
+          - In-app updates via ZIP + blockmap (same path as macOS)
+          - Windows app icon + onboarding brand logos bundled"
 
       - name: Ensure blockmaps exist
         shell: bash

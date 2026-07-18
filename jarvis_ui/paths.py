@@ -34,7 +34,7 @@ def cloud_config_path():
 
 
 def brand_asset_candidates(*names: str) -> list[Path]:
-    """Resolve logo / Google mark across repo + frozen Contents/{Resources,Frameworks}."""
+    """Resolve logo / Google mark across repo + frozen bundles (macOS / Windows / Linux)."""
     roots: list[Path] = []
     try:
         roots.append(Path(resource_dir()))
@@ -48,7 +48,11 @@ def brand_asset_candidates(*names: str) -> list[Path]:
         if meipass:
             roots.append(Path(meipass))
         try:
-            contents = Path(sys.executable).resolve().parent.parent
+            exe_dir = Path(sys.executable).resolve().parent
+            # Windows / Linux onedir: assets sit next to the binary.
+            roots.append(exe_dir)
+            # macOS .app: Contents/{Resources,Frameworks}
+            contents = exe_dir.parent
             roots.extend([contents / "Resources", contents / "Frameworks"])
         except Exception:
             pass
