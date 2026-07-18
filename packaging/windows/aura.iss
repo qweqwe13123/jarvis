@@ -1,4 +1,4 @@
-; AURA Windows installer (Cursor-style user install via Inno Setup).
+; AURA Windows installer — Cursor-style Inno Setup (modern wizard + brand art).
 ; Built by packaging/make_windows_installer.py — do not run by hand without defines.
 
 #ifndef MyAppVersion
@@ -15,6 +15,15 @@
 #endif
 #ifndef MyAppIcon
   #define MyAppIcon "..\..\assets\AURA.ico"
+#endif
+#ifndef MyWizardImage
+  #define MyWizardImage "wizard-image.bmp"
+#endif
+#ifndef MyWizardSmallImage
+  #define MyWizardSmallImage "wizard-small-image.bmp"
+#endif
+#ifndef MyLicenseFile
+  #define MyLicenseFile "LICENSE.txt"
 #endif
 
 #define MyAppName "AURA"
@@ -34,6 +43,7 @@ AppUpdatesURL={#MyAppURL}/download
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+DisableWelcomePage=no
 DisableDirPage=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -42,13 +52,18 @@ OutputDir={#MyAppOutputDir}
 OutputBaseFilename={#MyAppOutputBase}
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+LicenseFile={#MyLicenseFile}
+WizardImageFile={#MyWizardImage}
+WizardSmallImageFile={#MyWizardSmallImage}
+WizardStyle=modern
+WizardSizePercent=120
+WizardImageStretch=yes
 Compression=lzma2/fast
 SolidCompression=yes
-WizardStyle=modern
-WizardSizePercent=100
 CloseApplications=force
 RestartApplications=no
 ChangesAssociations=no
+ShowLanguageDialog=no
 VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Setup
@@ -57,9 +72,11 @@ VersionInfoProductVersion={#MyAppVersion}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "quicklaunchicon"; Description: "Create a Quick Launch icon"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1
 
 [Files]
 ; PyInstaller onedir payload (AURA.exe + _internal / deps)
@@ -67,6 +84,7 @@ Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]

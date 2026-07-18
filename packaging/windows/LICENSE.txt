@@ -1,0 +1,14 @@
+AURA End User License Agreement
+
+By installing AURA, you agree to our Terms of Service and Privacy Policy:
+
+  https://www.hiauraai.com/terms
+  https://www.hiauraai.com/privacy
+
+AURA is a desktop assistant. You are responsible for how you use it on your computer,
+including permissions you grant (microphone, camera, screen, accessibility) and any
+actions you ask AURA to perform.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+Click "I accept the agreement" to continue.

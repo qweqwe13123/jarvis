@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ISS = ROOT / "packaging" / "windows" / "aura.iss"
 DEFAULT_ICON = ROOT / "assets" / "AURA.ico"
+WIZARD_DIR = ROOT / "packaging" / "windows" / "wizard"
+LICENSE = ROOT / "packaging" / "windows" / "LICENSE.txt"
 
 
 def _find_iscc() -> Path:
@@ -40,6 +42,17 @@ def _find_iscc() -> Path:
     )
 
 
+def _ensure_wizard_art() -> tuple[Path, Path]:
+    big = WIZARD_DIR / "wizard-image.bmp"
+    small = WIZARD_DIR / "wizard-small-image.bmp"
+    # Always regenerate so logo updates ship with each release.
+    art = ROOT / "packaging" / "make_windows_wizard_art.py"
+    subprocess.run([sys.executable, str(art)], check=True)
+    if not big.is_file() or not small.is_file():
+        raise FileNotFoundError(f"Wizard art missing after generate: {WIZARD_DIR}")
+    return big, small
+
+
 def make_installer(
     source_dir: Path,
     out_path: Path,
@@ -59,6 +72,10 @@ def make_installer(
         raise FileNotFoundError(f"Missing icon: {icon}")
     if not ISS.is_file():
         raise FileNotFoundError(f"Missing Inno script: {ISS}")
+    if not LICENSE.is_file():
+        raise FileNotFoundError(f"Missing license: {LICENSE}")
+
+    wizard_image, wizard_small = _ensure_wizard_art()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
@@ -82,12 +99,14 @@ def make_installer(
         _d("MyAppOutputDir", out_path.parent),
         _d("MyAppOutputBase", base),
         _d("MyAppIcon", icon),
+        _d("MyWizardImage", wizard_image),
+        _d("MyWizardSmallImage", wizard_small),
+        _d("MyLicenseFile", LICENSE),
         str(ISS),
     ]
     print("[Inno] ", " ".join(cmd))
     subprocess.run(cmd, check=True)
     if not out_path.is_file():
-        # ISCC may write slightly different casing; locate the artifact.
         produced = out_path.parent / f"{base}.exe"
         if produced.is_file():
             if produced.resolve() != out_path.resolve():
