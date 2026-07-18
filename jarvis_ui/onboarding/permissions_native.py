@@ -52,7 +52,8 @@ _MAC_PREF: dict[str, str] = {
 _WIN_SETTINGS: dict[str, str] = {
     "mic": "ms-settings:privacy-microphone",
     "camera": "ms-settings:privacy-webcam",
-    "screen": "ms-settings:privacy",
+    # Win11 graphics capture / screen privacy; falls back gracefully on older builds.
+    "screen": "ms-settings:privacy-graphicscapture",
     "a11y": "ms-settings:easeofaccess-keyboard",
     "automation": "ms-settings:appsfeatures",
 }
@@ -135,12 +136,13 @@ def open_system_settings(kind: PermissionKind) -> bool:
                 os.startfile(uri)  # type: ignore[attr-defined]
                 return True
             except Exception:
-                subprocess.Popen(
+                from core.win_subprocess import popen as _win_popen
+
+                _win_popen(
                     ["cmd", "/c", "start", "", uri],
                     shell=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 return True
         # Linux — best-effort desktop settings.

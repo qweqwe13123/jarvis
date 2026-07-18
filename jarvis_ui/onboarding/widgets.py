@@ -292,6 +292,7 @@ class StatusChip(QLabel):
                 }}
                 """
             )
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self.setText("Allow")
             self.setStyleSheet(
@@ -306,6 +307,14 @@ class StatusChip(QLabel):
                 """
             )
             self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        # Forward to PermissionRow — QLabel would otherwise swallow the click.
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "mousePressEvent"):
+            parent.mousePressEvent(event)
+            return
+        super().mousePressEvent(event)
 
 
 class PermissionRow(QFrame):
@@ -349,9 +358,8 @@ class PermissionRow(QFrame):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            # Re-click allowed until granted — e.g. open Settings again on Windows.
-            if not self._on:
-                self.toggled.emit(self._key)
+            # Always re-fire so Windows/Linux can reopen Settings after Allowed.
+            self.toggled.emit(self._key)
         super().mousePressEvent(event)
 
 
