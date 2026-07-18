@@ -1998,6 +1998,17 @@ def main():
     except Exception:
         pass
 
+    # Windows Privacy settings list apps by AppUserModelID when possible.
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "app.hiaura.aura.desktop"
+            )
+    except Exception:
+        pass
+
     # Double-click on DMG → auto-copy to Applications → relaunch → exit.
     # Onboarding runs in the installed app (not from the read-only disk).
     try:

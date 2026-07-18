@@ -52,8 +52,8 @@ _MAC_PREF: dict[str, str] = {
 _WIN_SETTINGS: dict[str, str] = {
     "mic": "ms-settings:privacy-microphone",
     "camera": "ms-settings:privacy-webcam",
-    # Win11 graphics capture / screen privacy; falls back gracefully on older builds.
-    "screen": "ms-settings:privacy-graphicscapture",
+    # Screen capture via mss/GDI is NOT listed under Graphics Capture — open mic/privacy hub.
+    "screen": "ms-settings:privacy",
     "a11y": "ms-settings:easeofaccess-keyboard",
     "automation": "ms-settings:appsfeatures",
 }
@@ -268,8 +268,31 @@ def _request_non_darwin(
         return
 
     # Screen / accessibility / automation — open the relevant settings page.
+    if kind == "screen" and platform.system() == "Windows":
+        # Windows does not list desktop capture apps like macOS Screen Recording.
+        # AURA uses mss/GDI — prove capture works instead of a misleading Settings page.
+        ok = _windows_screen_capture_ok()
+        done(ok, needs_settings=False, prompted=True)
+        return
+
     opened = open_system_settings(kind)
     done(opened, needs_settings=not opened, prompted=True)
+
+
+def _windows_screen_capture_ok() -> bool:
+    """True when a tiny desktop grab succeeds (no Privacy list entry required)."""
+    try:
+        import mss
+
+        sct_cls = getattr(mss, "MSS", None) or mss.mss
+        with sct_cls() as sct:
+            monitors = getattr(sct, "monitors", None) or []
+            if len(monitors) < 2:
+                return False
+            shot = sct.grab(monitors[1])
+            return bool(shot and getattr(shot, "size", (0, 0))[0] > 0)
+    except Exception:
+        return False
 
 
 def _settings_on_retry(attempt: int, *, force: bool = False) -> bool:

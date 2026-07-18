@@ -258,7 +258,12 @@ class GlobalHotkeyService(QObject):
             return
         self._last_fire = now
         _dbg("FIRE")
-        QTimer.singleShot(0, self.triggered.emit)
+        # pyqtSignal.emit is thread-safe. Never create QTimer from the Win32
+        # RegisterHotKey thread — that silently drops the toggle on Windows.
+        try:
+            self.triggered.emit()
+        except Exception as e:
+            _dbg(f"FIRE emit failed: {e}")
 
     def _qt_event_matches(self, event) -> bool:  # noqa: ANN001
         want_mods, want_key = _parse_combo(self._combo)
@@ -479,22 +484,20 @@ class GlobalHotkeyService(QObject):
                 return
             _dbg("RegisterHotKey Ctrl+A armed")
             msg = wintypes.MSG()
+            # GetMessageW blocks until a message arrives — more reliable than Peek+sleep
+            # for WM_HOTKEY delivery on a dedicated thread.
             while not self._win_hotkey_stop.is_set():
-                # Peek so we can exit cleanly; wait briefly between polls.
-                has = user32.PeekMessageW(
-                    ctypes.byref(msg), None, 0, 0, 1  # PM_REMOVE
-                )
-                if has:
-                    if msg.message == WM_HOTKEY and msg.wParam == hotkey_id:
-                        _dbg("win HOTKEY match → fire")
-                        self._fire()
-                    elif msg.message == WM_QUIT:
-                        break
-                    else:
-                        user32.TranslateMessage(ctypes.byref(msg))
-                        user32.DispatchMessageW(ctypes.byref(msg))
-                else:
-                    time.sleep(0.02)
+                ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret == 0 or ret == -1:
+                    break
+                if msg.message == WM_HOTKEY and msg.wParam == hotkey_id:
+                    _dbg("win HOTKEY match → fire")
+                    self._fire()
+                    continue
+                if msg.message == WM_QUIT:
+                    break
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
             try:
                 user32.UnregisterHotKey(None, hotkey_id)
             except Exception:

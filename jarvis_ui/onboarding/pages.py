@@ -36,8 +36,8 @@ def _permissions_hint() -> str:
         return "Tap each row → Allow. macOS will open the right Settings page."
     if system == "Windows":
         return (
-            "Tap each row → Allow. Windows will ask for mic/camera and open "
-            "Privacy settings when needed."
+            "Tap each row → Allow. Mic/Camera open Windows Privacy settings. "
+            "Screen capture usually needs no toggle on Windows (not listed like on macOS)."
         )
     return (
         "Tap each row → Allow. Your desktop settings app will open so you can "
@@ -121,8 +121,12 @@ class PermissionsOnlyPage(FadePage):
             ),
             (
                 "screen",
-                "Screen Recording",
-                "So AURA can understand what’s on your display.",
+                "Screen Recording" if platform.system() == "Darwin" else "Screen capture",
+                (
+                    "So AURA can understand what’s on your display."
+                    if platform.system() == "Darwin"
+                    else "Desktop capture for vision. Windows usually does not list this under Privacy."
+                ),
             ),
             (
                 "a11y",
