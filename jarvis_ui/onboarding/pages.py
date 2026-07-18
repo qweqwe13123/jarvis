@@ -30,23 +30,19 @@ from jarvis_ui.onboarding.widgets import (
     title_html,
 )
 
-_PREF = {
-    "mic": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-    "camera": "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
-    "screen": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    "a11y": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-    "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
-}
-
-
-def _open_pref(key: str) -> None:
-    url = _PREF.get(key)
-    if not url:
-        return
-    try:
-        subprocess.Popen(["open", url])
-    except Exception:
-        pass
+def _permissions_hint() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return "Tap each row → Allow. macOS will open the right Settings page."
+    if system == "Windows":
+        return (
+            "Tap each row → Allow. Windows will ask for mic/camera and open "
+            "Privacy settings when needed."
+        )
+    return (
+        "Tap each row → Allow. Your desktop settings app will open so you can "
+        "enable microphone, camera, and related access."
+    )
 
 
 class PermissionsOnlyPage(FadePage):
@@ -56,6 +52,7 @@ class PermissionsOnlyPage(FadePage):
         super().__init__(parent)
         self.setStyleSheet(f"background: {T.CREAM};")
         self._granted: set[str] = set()
+        self._rows: dict[str, PermissionRow] = {}
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -84,7 +81,7 @@ class PermissionsOnlyPage(FadePage):
         left.addWidget(
             muted(
                 "These permissions make voice, wake, vision, and automation work. "
-                "You can change them later in System Settings."
+                "You can change them later in system settings."
             )
         )
         left.addSpacing(28)
@@ -142,19 +139,35 @@ class PermissionsOnlyPage(FadePage):
         for key, title, body in items:
             row = PermissionRow(key, title, body)
             row.toggled.connect(self._on_toggle)
+            self._rows[key] = row
             right.addWidget(row)
             right.addSpacing(10)
 
         right.addSpacing(8)
-        right.addWidget(
-            muted("Tap each row → Allow. macOS will open the right Settings page.", 12)
-        )
+        right.addWidget(muted(_permissions_hint(), 12))
         right.addStretch(1)
         root.addWidget(right_w, 58)
 
     def _on_toggle(self, key: str) -> None:
-        self._granted.add(key)
-        _open_pref(key)
+        from jarvis_ui.onboarding.permissions_native import request_in_app
+
+        row = self._rows.get(key)
+
+        def _result(
+            ok: bool,
+            *,
+            needs_settings: bool = False,
+            prompted: bool = False,
+        ) -> None:
+            if ok:
+                self._granted.add(key)
+                if row is not None:
+                    row.set_allowed(True)
+            else:
+                if row is not None:
+                    row.set_allowed(False)
+
+        request_in_app(key, _result)  # type: ignore[arg-type]
 
 
 class _GeminiVerifyWorker(QThread):

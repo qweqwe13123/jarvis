@@ -316,6 +316,7 @@ class PermissionRow(QFrame):
         self._key = key
         self._on = False
         self.setObjectName("PermissionRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(
             f"""
             QFrame#PermissionRow {{
@@ -342,11 +343,15 @@ class PermissionRow(QFrame):
         self._chip = StatusChip()
         lay.addWidget(self._chip)
 
+    def set_allowed(self, allowed: bool) -> None:
+        self._on = bool(allowed)
+        self._chip.set_allowed(self._on)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and not self._on:
-            self._on = True
-            self._chip.set_allowed(True)
-            self.toggled.emit(self._key)
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Re-click allowed until granted — e.g. open Settings again on Windows.
+            if not self._on:
+                self.toggled.emit(self._key)
         super().mousePressEvent(event)
 
 

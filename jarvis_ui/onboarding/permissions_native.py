@@ -1,13 +1,15 @@
-"""Request / inspect macOS permissions used during onboarding.
+"""Request / inspect OS permissions used during onboarding.
 
-Status truth comes only from OS APIs. The UI must re-read aggressively when
-the user returns from System Settings — never cache a stale Deny.
+macOS uses TCC / System Settings. Windows and Linux open the matching privacy
+pages and use Qt prompts for microphone / camera when available.
 """
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
+import sys
 import warnings
 from collections.abc import Callable
 from typing import Literal
@@ -39,14 +41,28 @@ _ERR_NOT_PERMITTED = -1743
 _ERR_NEEDS_CONSENT = -1744
 _ERR_PROC_NOT_FOUND = -600
 
+_MAC_PREF: dict[str, str] = {
+    "mic": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+    "camera": "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
+    "screen": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    "a11y": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    "automation": "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+}
+
+_WIN_SETTINGS: dict[str, str] = {
+    "mic": "ms-settings:privacy-microphone",
+    "camera": "ms-settings:privacy-webcam",
+    "screen": "ms-settings:privacy",
+    "a11y": "ms-settings:easeofaccess-keyboard",
+    "automation": "ms-settings:appsfeatures",
+}
+
 
 def required_kinds() -> tuple[PermissionKind, ...]:
     return _REQUIRED
 
 
 def supports_in_app_prompt(kind: PermissionKind) -> bool:
-    if platform.system() != "Darwin":
-        return False
     return kind in _REQUIRED
 
 
@@ -56,17 +72,22 @@ def reset_prompt_attempts() -> None:
 
 def is_granted(kind: PermissionKind) -> bool | None:
     """Fresh OS read — never cache across calls."""
-    if platform.system() != "Darwin":
-        return True
+    system = platform.system()
     try:
         if kind in ("mic", "camera"):
-            return _mic_camera_granted(kind)
-        if kind == "screen":
-            return _screen_granted()
-        if kind == "a11y":
-            return _a11y_granted()
-        if kind == "automation":
-            return _automation_granted()
+            if system == "Darwin":
+                return _mic_camera_granted(kind)
+            return _qt_status(kind)
+        if system == "Darwin":
+            if kind == "screen":
+                return _screen_granted()
+            if kind == "a11y":
+                return _a11y_granted()
+            if kind == "automation":
+                return _automation_granted()
+        # Windows / Linux: no macOS-style TCC gate — unknown until user opens Settings.
+        if kind in ("screen", "a11y", "automation"):
+            return None
     except Exception:
         return None
     return None
@@ -94,6 +115,79 @@ def screen_needs_relaunch() -> bool:
         return False
 
 
+def open_system_settings(kind: PermissionKind) -> bool:
+    """Open the OS privacy / capability page for this permission."""
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            url = _MAC_PREF.get(kind)
+            if not url:
+                return False
+            subprocess.Popen(
+                ["open", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        if system == "Windows":
+            uri = _WIN_SETTINGS.get(kind) or "ms-settings:privacy"
+            try:
+                os.startfile(uri)  # type: ignore[attr-defined]
+                return True
+            except Exception:
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", uri],
+                    shell=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                return True
+        # Linux — best-effort desktop settings.
+        cmds: list[list[str]] = []
+        if kind in ("mic", "camera"):
+            cmds.extend(
+                [
+                    ["gnome-control-center", "applications"],
+                    ["gnome-control-center", "privacy"],
+                    ["systemsettings", "kcm_pulseaudio"],
+                    ["systemsettings5", "kcm_pulseaudio"],
+                ]
+            )
+        elif kind == "a11y":
+            cmds.extend(
+                [
+                    ["gnome-control-center", "universal-access"],
+                    ["systemsettings", "kcm_access"],
+                    ["systemsettings5", "kcm_access"],
+                ]
+            )
+        else:
+            cmds.extend(
+                [
+                    ["gnome-control-center", "privacy"],
+                    ["gnome-control-center", "applications"],
+                    ["systemsettings"],
+                    ["systemsettings5"],
+                ]
+            )
+        cmds.append(["xdg-open", "settings://privacy"])
+        for cmd in cmds:
+            try:
+                subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+    return False
+
+
 def request_in_app(
     kind: PermissionKind,
     on_result: ResultCallback | None = None,
@@ -118,16 +212,17 @@ def request_in_app(
             except TypeError:
                 on_result(bool(ok))
 
-    if platform.system() != "Darwin":
-        _done(True)
-        return
-
     if is_granted(kind) is True:
         _done(True)
         return
 
     attempt = _prompt_attempts.get(kind, 0) + 1
     _prompt_attempts[kind] = attempt
+
+    # Windows / Linux path.
+    if platform.system() != "Darwin":
+        _request_non_darwin(kind, _done, attempt=attempt)
+        return
 
     if kind in ("mic", "camera"):
         _request_mic_camera(kind, _done, attempt=attempt)
@@ -142,6 +237,37 @@ def request_in_app(
         _request_automation(_done, attempt=attempt)
         return
     _done(False, needs_settings=True)
+
+
+def _request_non_darwin(
+    kind: PermissionKind,
+    done: ResultCallback,
+    *,
+    attempt: int,
+) -> None:
+    """Qt mic/camera prompts + open the matching OS settings page."""
+    if kind in ("mic", "camera"):
+        existing = _qt_status(kind)
+        if existing is True:
+            done(True, prompted=False)
+            return
+
+        def _finish(ok: bool, *, prompted: bool = True) -> None:
+            granted = bool(ok) or (_qt_status(kind) is True)
+            if not granted:
+                open_system_settings(kind)
+            # Still mark progress so onboarding can continue after Settings opens.
+            done(True, needs_settings=not granted, prompted=prompted)
+
+        if _request_via_qt(kind, lambda ok: _finish(ok, prompted=True)):
+            return
+        opened = open_system_settings(kind)
+        done(opened, needs_settings=True, prompted=False)
+        return
+
+    # Screen / accessibility / automation — open the relevant settings page.
+    opened = open_system_settings(kind)
+    done(opened, needs_settings=not opened, prompted=True)
 
 
 def _settings_on_retry(attempt: int, *, force: bool = False) -> bool:

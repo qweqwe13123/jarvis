@@ -71,6 +71,10 @@ hiddenimports = [
     "core.integrations.openclaw.config_bridge",
     "core.gemini_models",
     "core.model_router",
+    "pynput",
+    "pynput.keyboard",
+    "pynput.keyboard._win32",
+    "pynput.keyboard._xorg",
 ]
 
 a = Analysis(

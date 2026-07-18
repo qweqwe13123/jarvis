@@ -20,6 +20,7 @@ youtube-transcript-api
 python-pptx
 pyqt6
 PyQt6-WebEngine
+pynput
 
 # Windows-only
 comtypes; sys_platform == "win32"

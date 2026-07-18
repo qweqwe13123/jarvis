@@ -161,6 +161,10 @@ class GlobalHotkeyService(QObject):
         self._ns_global = None
         self._ns_local = None
         self._last_fire = 0.0
+        self._win_hotkey_id = 0xA11A
+        self._win_hotkey_thread: threading.Thread | None = None
+        self._win_hotkey_stop = threading.Event()
+        self._win_thread_id = 0
 
     @property
     def combo(self) -> str:
@@ -189,9 +193,12 @@ class GlobalHotkeyService(QObject):
             local_ok = self._try_nsevent_local()
             global_ok = self._try_nsevent_global()
         else:
-            # Windows / Linux: same in-app stack + pynput for other-app focus.
+            # Windows / Linux: in-app stack + OS global hook.
             local_ok = True  # QAction + filter + shortcut cover focused AURA
-            global_ok = self._try_pynput()
+            if platform.system() == "Windows":
+                global_ok = self._try_win_register_hotkey()
+            if not global_ok:
+                global_ok = self._try_pynput()
 
         label = hotkey_display(self._combo)
         if global_ok:
@@ -199,7 +206,7 @@ class GlobalHotkeyService(QObject):
         else:
             tip = {
                 "Darwin": "Enable Accessibility for system-wide use.",
-                "Windows": "Run as admin or allow AURA in antivirus if global shortcut fails.",
+                "Windows": "Allow AURA in antivirus if global Ctrl+A fails.",
                 "Linux": "X11 works best; on Wayland use tray or keep AURA focused.",
             }.get(platform.system(), "")
             self.status_changed.emit(f"Hotkey: {label} (in-app). {tip}".strip())
@@ -211,6 +218,7 @@ class GlobalHotkeyService(QObject):
         print(f"[AURA] Overlay hotkey armed: {label} local={local_ok} global={global_ok}")
 
     def stop(self) -> None:
+        self._stop_win_hotkey()
         with self._lock:
             listener = self._listener
             self._listener = None
@@ -428,6 +436,114 @@ class GlobalHotkeyService(QObject):
                 except Exception:
                     pass
                 setattr(self, attr, None)
+
+    def _try_win_register_hotkey(self) -> bool:
+        """Native RegisterHotKey — reliable system-wide Ctrl+A on Windows."""
+        if platform.system() != "Windows":
+            return False
+        mods, key = _parse_combo(self._combo)
+        if key != "a" or mods != {"ctrl"}:
+            # Keep RegisterHotKey path focused on the product default for now.
+            _dbg(f"win RegisterHotKey skip non-default combo mods={mods} key={key}")
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except Exception as e:
+            _dbg(f"win ctypes unavailable: {e}")
+            return False
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        MOD_CONTROL = 0x0002
+        MOD_NOREPEAT = 0x4000
+        VK_A = 0x41
+        WM_HOTKEY = 0x0312
+        WM_QUIT = 0x0012
+        hotkey_id = int(self._win_hotkey_id)
+        self._win_hotkey_stop.clear()
+        ready = threading.Event()
+        ok_box = {"ok": False}
+
+        def _loop() -> None:
+            self._win_thread_id = int(kernel32.GetCurrentThreadId())
+            registered = bool(
+                user32.RegisterHotKey(
+                    None, hotkey_id, MOD_CONTROL | MOD_NOREPEAT, VK_A
+                )
+            )
+            ok_box["ok"] = registered
+            ready.set()
+            if not registered:
+                _dbg(f"RegisterHotKey failed err={ctypes.GetLastError()}")
+                return
+            _dbg("RegisterHotKey Ctrl+A armed")
+            msg = wintypes.MSG()
+            while not self._win_hotkey_stop.is_set():
+                # Peek so we can exit cleanly; wait briefly between polls.
+                has = user32.PeekMessageW(
+                    ctypes.byref(msg), None, 0, 0, 1  # PM_REMOVE
+                )
+                if has:
+                    if msg.message == WM_HOTKEY and msg.wParam == hotkey_id:
+                        _dbg("win HOTKEY match → fire")
+                        self._fire()
+                    elif msg.message == WM_QUIT:
+                        break
+                    else:
+                        user32.TranslateMessage(ctypes.byref(msg))
+                        user32.DispatchMessageW(ctypes.byref(msg))
+                else:
+                    time.sleep(0.02)
+            try:
+                user32.UnregisterHotKey(None, hotkey_id)
+            except Exception:
+                pass
+            _dbg("RegisterHotKey released")
+
+        try:
+            t = threading.Thread(
+                target=_loop, name="AURA-WinHotkey", daemon=True
+            )
+            t.start()
+            if not ready.wait(2.0):
+                self._win_hotkey_stop.set()
+                _dbg("RegisterHotKey thread timeout")
+                return False
+            if not ok_box["ok"]:
+                return False
+            self._win_hotkey_thread = t
+            return True
+        except Exception as e:
+            _dbg(f"RegisterHotKey start failed: {e}")
+            return False
+
+    def _stop_win_hotkey(self) -> None:
+        if platform.system() != "Windows":
+            return
+        self._win_hotkey_stop.set()
+        tid = int(self._win_thread_id or 0)
+        if tid:
+            try:
+                import ctypes
+
+                ctypes.windll.user32.PostThreadMessageW(tid, 0x0012, 0, 0)  # WM_QUIT
+            except Exception:
+                pass
+        t = self._win_hotkey_thread
+        self._win_hotkey_thread = None
+        self._win_thread_id = 0
+        if t is not None and t.is_alive():
+            try:
+                t.join(timeout=1.0)
+            except Exception:
+                pass
+        try:
+            import ctypes
+
+            ctypes.windll.user32.UnregisterHotKey(None, int(self._win_hotkey_id))
+        except Exception:
+            pass
 
     def _try_pynput(self) -> bool:
         """System-wide hotkey on Windows / Linux (X11). Wayland often blocks this."""
