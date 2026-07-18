@@ -249,10 +249,21 @@ def _focus_window(title: str) -> str:
 
     if os_name == "windows":
         try:
+            from core.win_subprocess import run as _win_run
+
             script = f'(New-Object -ComObject WScript.Shell).AppActivate("{title}")'
-            subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True, timeout=5,
+            _win_run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                timeout=5,
             )
             time.sleep(0.3)
             return f"Focused window: {title}"

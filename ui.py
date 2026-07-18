@@ -124,7 +124,8 @@ class _SysMetrics:
                 self._update()
             except Exception:
                 pass
-            time.sleep(1.5)
+            # Windows WMI temp probe is expensive and used to flash PowerShell windows.
+            time.sleep(8.0 if _OS == "Windows" else 1.5)
 
     def _update(self):
         cpu = psutil.cpu_percent(interval=None)
@@ -154,15 +155,22 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
+        run_fn = subprocess.run
+        extra: dict = {}
+        if _OS == "Windows":
+            from core.win_subprocess import run as run_fn, hidden_kwargs
+
+            extra.update(hidden_kwargs())
         # NVIDIA
         try:
-            r = subprocess.run(
+            result = run_fn(
                 ["nvidia-smi", "--query-gpu=utilization.gpu",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2
+                capture_output=True, text=True, timeout=2,
+                **extra,
             )
-            if r.returncode == 0:
-                vals = [float(v.strip()) for v in r.stdout.strip().split("\n") if v.strip()]
+            if result.returncode == 0:
+                vals = [float(v.strip()) for v in result.stdout.strip().split("\n") if v.strip()]
                 if vals:
                     return sum(vals) / len(vals)
         except Exception:
@@ -246,18 +254,10 @@ class _SysMetrics:
             except Exception:
                 pass
 
+        # Windows: never spawn PowerShell for a HUD temperature probe.
+        # WMI via powershell.exe was flashing a console every few seconds.
         if _OS == "Windows":
-            try:
-                r = subprocess.run(
-                    ["powershell", "-Command",
-                     "(Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace root/wmi).CurrentTemperature"],
-                    capture_output=True, text=True, timeout=3
-                )
-                if r.returncode == 0 and r.stdout.strip():
-                    raw = float(r.stdout.strip().split("\n")[0])
-                    return (raw / 10.0) - 273.15
-            except Exception:
-                pass
+            return -1.0
 
         return -1.0
 
