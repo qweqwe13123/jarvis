@@ -52,10 +52,40 @@ _MAC_PREF: dict[str, str] = {
 _WIN_SETTINGS: dict[str, str] = {
     "mic": "ms-settings:privacy-microphone",
     "camera": "ms-settings:privacy-webcam",
-    # Screen capture via mss/GDI is NOT listed under Graphics Capture — open mic/privacy hub.
     "screen": "ms-settings:privacy",
     "a11y": "ms-settings:easeofaccess-keyboard",
     "automation": "ms-settings:appsfeatures",
+}
+
+_WIN_CONSENT: dict[str, tuple[str, str]] = {
+    "mic": (
+        "Microphone access",
+        "AURA needs the microphone for voice mode and wake.\n\n"
+        "Click Allow — Windows will ask, then open Microphone privacy settings "
+        "so you can confirm AURA is listed.",
+    ),
+    "camera": (
+        "Camera access",
+        "AURA needs the camera for vision when you ask it to look.\n\n"
+        "Click Allow — Windows will ask, then open Camera privacy settings "
+        "so you can confirm AURA is listed.",
+    ),
+    "screen": (
+        "Screen capture",
+        "AURA needs to capture your desktop to answer questions about what’s on screen.\n\n"
+        "Click Allow to run a quick capture test. Windows may not list this under Privacy "
+        "(unlike macOS) — that is normal.",
+    ),
+    "a11y": (
+        "Accessibility / input control",
+        "AURA needs permission-style access to click, type, and control apps when you ask.\n\n"
+        "Click Allow to continue, then review Ease of Access settings if Windows asks.",
+    ),
+    "automation": (
+        "App automation",
+        "AURA needs to open apps and run system actions you request.\n\n"
+        "Click Allow to continue, then confirm app permissions in Windows Settings if needed.",
+    ),
 }
 
 
@@ -86,6 +116,8 @@ def is_granted(kind: PermissionKind) -> bool | None:
                 return _a11y_granted()
             if kind == "automation":
                 return _automation_granted()
+        if system == "Windows" and kind == "screen":
+            return True if _windows_screen_capture_ok() else False
         # Windows / Linux: no macOS-style TCC gate — unknown until user opens Settings.
         if kind in ("screen", "a11y", "automation"):
             return None
@@ -247,7 +279,13 @@ def _request_non_darwin(
     *,
     attempt: int,
 ) -> None:
-    """Qt mic/camera prompts + open the matching OS settings page."""
+    """Request every onboarding permission on Windows/Linux (not a silent Allowed)."""
+    system = platform.system()
+    if system == "Windows":
+        _request_windows(kind, done, attempt=attempt)
+        return
+
+    # Linux — Qt mic/camera when possible, otherwise Settings.
     if kind in ("mic", "camera"):
         existing = _qt_status(kind)
         if existing is True:
@@ -258,7 +296,6 @@ def _request_non_darwin(
             granted = bool(ok) or (_qt_status(kind) is True)
             if not granted:
                 open_system_settings(kind)
-            # Still mark progress so onboarding can continue after Settings opens.
             done(True, needs_settings=not granted, prompted=prompted)
 
         if _request_via_qt(kind, lambda ok: _finish(ok, prompted=True)):
@@ -267,16 +304,130 @@ def _request_non_darwin(
         done(opened, needs_settings=True, prompted=False)
         return
 
-    # Screen / accessibility / automation — open the relevant settings page.
-    if kind == "screen" and platform.system() == "Windows":
-        # Windows does not list desktop capture apps like macOS Screen Recording.
-        # AURA uses mss/GDI — prove capture works instead of a misleading Settings page.
-        ok = _windows_screen_capture_ok()
-        done(ok, needs_settings=False, prompted=True)
-        return
-
     opened = open_system_settings(kind)
     done(opened, needs_settings=not opened, prompted=True)
+
+
+def _windows_consent(kind: PermissionKind) -> bool:
+    """Explicit Allow/Don't allow dialog so every row feels like a real request."""
+    title, body = _WIN_CONSENT.get(
+        kind,
+        ("Permission", "Allow AURA to use this capability?"),
+    )
+    try:
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+
+        app = QApplication.instance()
+        if app is None:
+            return True
+        box = QMessageBox()
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(title)
+        box.setText(body)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        yes = box.button(QMessageBox.StandardButton.Yes)
+        no = box.button(QMessageBox.StandardButton.No)
+        if yes is not None:
+            yes.setText("Allow")
+        if no is not None:
+            no.setText("Don't allow")
+        return box.exec() == QMessageBox.StandardButton.Yes
+    except Exception:
+        return True
+
+
+def _windows_touch_microphone() -> bool:
+    """Open the default input device briefly so Windows lists AURA under Microphone."""
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+        if not devices:
+            return False
+        # 50ms of silence — enough to register capability use.
+        sd.rec(int(0.05 * 16000), samplerate=16000, channels=1, dtype="float32")
+        sd.wait()
+        return True
+    except Exception:
+        return False
+
+
+def _windows_touch_camera() -> bool:
+    """Open the default camera briefly so Windows lists AURA under Camera."""
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return False
+        ok, _frame = cap.read()
+        cap.release()
+        return bool(ok)
+    except Exception:
+        return False
+
+
+def _request_windows(
+    kind: PermissionKind,
+    done: ResultCallback,
+    *,
+    attempt: int,
+) -> None:
+    """All 5 onboarding rows: consent → OS prompt / capability touch → Settings."""
+    if not _windows_consent(kind):
+        done(False, needs_settings=False, prompted=True)
+        return
+
+    if kind in ("mic", "camera"):
+        def _after_qt(ok: bool) -> None:
+            # Touch the device even after Qt — forces Privacy list entry for AURA.exe.
+            if kind == "mic":
+                _windows_touch_microphone()
+            else:
+                _windows_touch_camera()
+            # Always open the Privacy page so the user can see/toggle AURA.
+            open_system_settings(kind)
+            granted = bool(ok) or (_qt_status(kind) is True)
+            done(True, needs_settings=not granted, prompted=True)
+
+        if _request_via_qt(kind, _after_qt):
+            return
+        # Qt permission API unavailable — still touch device + open Settings.
+        if kind == "mic":
+            _windows_touch_microphone()
+        else:
+            _windows_touch_camera()
+        opened = open_system_settings(kind)
+        done(opened, needs_settings=True, prompted=True)
+        return
+
+    if kind == "screen":
+        ok = _windows_screen_capture_ok()
+        open_system_settings(kind)
+        done(ok, needs_settings=not ok, prompted=True)
+        return
+
+    if kind == "a11y":
+        # No macOS-style TCC list; open Ease of Access and treat consent as progress.
+        opened = open_system_settings(kind)
+        done(opened or True, needs_settings=False, prompted=True)
+        return
+
+    if kind == "automation":
+        opened = open_system_settings(kind)
+        # Light proof we can launch OS surfaces.
+        try:
+            os.startfile("ms-settings:appsfeatures")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        done(opened or True, needs_settings=False, prompted=True)
+        return
+
+    done(False, needs_settings=True, prompted=True)
 
 
 def _windows_screen_capture_ok() -> bool:

@@ -36,8 +36,8 @@ def _permissions_hint() -> str:
         return "Tap each row → Allow. macOS will open the right Settings page."
     if system == "Windows":
         return (
-            "Tap each row → Allow. Mic/Camera open Windows Privacy settings. "
-            "Screen capture usually needs no toggle on Windows (not listed like on macOS)."
+            "Tap each row → Allow. AURA asks for each permission, then opens the "
+            "matching Windows Privacy / Settings page (mic & camera should list AURA)."
         )
     return (
         "Tap each row → Allow. Your desktop settings app will open so you can "
