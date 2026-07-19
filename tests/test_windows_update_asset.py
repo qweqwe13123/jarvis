@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from core.updater.installer import _windows_setup_args
 from core.updater.manifest import _pick_asset_fields
 
 
@@ -40,3 +43,12 @@ def test_windows_falls_back_to_update_exe():
     assert name.endswith(".exe")
     assert url.endswith(".exe")
     assert sha == "d" * 64
+
+
+def test_windows_setup_args_no_embedded_quotes():
+    args = _windows_setup_args(Path(r"C:\Users\test\AppData\Local\Programs\AURA"))
+    assert "/SP-" in args
+    assert "/VERYSILENT" in args
+    dir_arg = next(a for a in args if a.startswith("/DIR="))
+    assert '"' not in dir_arg
+    assert "AURA" in dir_arg

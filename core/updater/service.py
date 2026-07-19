@@ -174,8 +174,16 @@ class UpdateService:
                     prefer_differential=True,
                 )
                 self._set(package_path=package)
-                time.sleep(0.3)
-                launch_updater(package, parent_pid)
+                # Let the UI paint the final progress tick, then hand off.
+                time.sleep(0.35)
+                launch_updater(
+                    package,
+                    parent_pid,
+                    expected_version=release.version,
+                )
+                # Brief pause so the detached updater can break away from this
+                # process/job before we tear down the parent.
+                time.sleep(0.6)
                 os._exit(0)
             except Exception as exc:
                 self._set(error=str(exc), downloading=False)

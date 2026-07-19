@@ -46,6 +46,7 @@ DisableProgramGroupPage=yes
 DisableWelcomePage=no
 DisableDirPage=no
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#MyAppOutputDir}
