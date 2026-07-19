@@ -1,17 +1,20 @@
 """JARVIS workspace UI components — screenshot-matched design."""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QUrl, QRectF, QPointF, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QEvent, QUrl, QRectF, QPointF, QPoint, QSize
 from PyQt6.QtGui import (
     QFont, QFontMetrics, QDesktopServices, QPainter, QPen, QColor, QPolygonF, QPainterPath, QBrush,
+    QCursor,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QGridLayout, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QDialog, QFrame, QGridLayout, QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QTextBrowser,
-    QTextEdit, QVBoxLayout, QWidget, QMenu,
+    QTextEdit, QToolButton, QVBoxLayout, QWidget, QMenu,
 )
 
 from jarvis_ui.markdown_utils import markdown_to_html
@@ -365,7 +368,11 @@ class _SideRow(QFrame):
 
 
 class _ElidedLabel(QLabel):
-    """Single-line label that always truncates with … when text is too wide."""
+    """Single-line label that always truncates with … when text is too wide.
+
+    sizeHint must stay small — otherwise QScrollArea grows wider than the
+    sidebar viewport and right-side chat actions get clipped off-screen.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -373,6 +380,12 @@ class _ElidedLabel(QLabel):
         self.setWordWrap(False)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def sizeHint(self):  # noqa: N802
+        return QSize(40, super().sizeHint().height())
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
 
     def set_full_text(self, text: str):
         self._full = text or ""
@@ -402,16 +415,23 @@ class _ChatIconBtn(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self._icon = _LineIcon(icon_name, T.SB_TEXT_MUTED, 14)
+        self._icon = _LineIcon(icon_name, T.SB_TEXT, 14)
         lay.addWidget(self._icon, alignment=Qt.AlignmentFlag.AlignCenter)
         self._apply()
 
+    def set_icon_color(self, color: str) -> None:
+        self._icon.set_color(color)
+
     def _apply(self):
-        bg = "rgba(255,255,255,0.08)" if self._hover else "transparent"
+        bg = "rgba(255,255,255,0.10)" if self._hover else "transparent"
         self.setStyleSheet(
             f"QFrame#ChatIconBtn {{ background: {bg}; border: none; border-radius: 6px; }}"
         )
-        self._icon.set_color(T.SB_TEXT if self._hover else T.SB_TEXT_MUTED)
+        if not self._hover:
+            # Keep explicit color from parent when not hovering the icon itself.
+            pass
+        else:
+            self._icon.set_color(T.SB_TEXT_ACTIVE)
 
     def enterEvent(self, e):
         self._hover = True
@@ -432,7 +452,11 @@ class _ChatIconBtn(QFrame):
 
 
 class _ChatSidebarRow(QFrame):
-    """ChatGPT-style chat row: bubble, elided title, trash + ⋮ on active/hover."""
+    """Chat row with rename/delete drawn in paintEvent (no fragile child buttons)."""
+
+    _BTN = 20
+    _GAP = 0
+    _ACTIONS_W = _BTN + _GAP + _BTN + 4  # trash + more + padding
 
     def __init__(self, title: str, chat_id: str, active: bool, pinned: bool,
                  on_select, on_delete, on_rename=None, parent=None):
@@ -440,111 +464,181 @@ class _ChatSidebarRow(QFrame):
         self.setObjectName("ChatSidebarRow")
         self._id = chat_id
         self._full_title = (title or "New chat").strip() or "New chat"
-        self._active = active
+        self._active = bool(active)
         self._hover = False
         self._on_select = on_select
+        self._on_delete = on_delete
         self._on_rename = on_rename
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(36)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self._apply_style(active, False)
+        self.setMouseTracking(True)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._open_context_menu)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 4, 0)
+        lay.setContentsMargins(10, 0, self._ACTIONS_W, 0)
         lay.setSpacing(8)
 
         self._icon = _LineIcon("chat", T.SB_TEXT_MUTED, 16)
         self._icon.setFixedSize(16, 16)
+        self._icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lay.addWidget(self._icon)
 
         self._title = _ElidedLabel()
-        self._title.setFont(QFont(T.SB_FONT, 13, QFont.Weight.Medium if active else QFont.Weight.Normal))
+        self._title.setFont(
+            QFont(T.SB_FONT, 13, QFont.Weight.Medium if active else QFont.Weight.Normal)
+        )
         self._title.setStyleSheet(
             f"color: {T.SB_TEXT_ACTIVE if active else T.SB_TEXT}; "
             "background: transparent; border: none;"
         )
         self._title.set_full_text(self._full_title)
+        self._title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lay.addWidget(self._title, stretch=1)
-
-        self._actions = QWidget()
-        self._actions.setStyleSheet("background: transparent; border: none;")
-        self._actions.setFixedWidth(56)
-        al = QHBoxLayout(self._actions)
-        al.setContentsMargins(0, 0, 0, 0)
-        al.setSpacing(0)
-        al.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        self._delete_btn = _ChatIconBtn("trash")
-        self._delete_btn.clicked.connect(lambda: on_delete(chat_id))
-        al.addWidget(self._delete_btn)
-
-        self._more_btn = _ChatIconBtn("more")
-        self._more_btn.clicked.connect(self._open_more_menu)
-        al.addWidget(self._more_btn)
-
-        lay.addWidget(self._actions)
-        self._sync_actions()
         self._sync_icon()
 
-    def _sync_icon(self):
+    def _sync_icon(self) -> None:
         self._icon.set_color(T.CYAN if self._active else T.SB_TEXT_MUTED)
-
-    def _sync_actions(self):
-        # Match screenshot: actions visible on selected row and on hover.
-        show = self._active or self._hover
-        self._actions.setVisible(show)
-
-    def _apply_style(self, active: bool, hover: bool):
-        if active:
-            bg = "rgba(0, 209, 255, 0.12)"
-        elif hover:
-            bg = T.SB_HOVER
-        else:
-            bg = "transparent"
-        self.setStyleSheet(
-            f"QFrame#ChatSidebarRow {{ background: {bg}; border: none; border-radius: 8px; }}"
+        weight = QFont.Weight.Medium if self._active else QFont.Weight.Normal
+        self._title.setFont(QFont(T.SB_FONT, 13, weight))
+        self._title.setStyleSheet(
+            f"color: {T.SB_TEXT_ACTIVE if self._active else T.SB_TEXT}; "
+            "background: transparent; border: none;"
         )
 
-    def _open_more_menu(self):
-        menu = QMenu(self)
-        menu.setStyleSheet(
+    def _delete_rect(self) -> QRectF:
+        """Trash — left of the action pair (matches reference)."""
+        y = (self.height() - self._BTN) / 2
+        x = self.width() - 6 - self._BTN - self._GAP - self._BTN
+        return QRectF(x, y, self._BTN, self._BTN)
+
+    def _more_rect(self) -> QRectF:
+        """Vertical ⋮ menu — far right."""
+        y = (self.height() - self._BTN) / 2
+        x = self.width() - 6 - self._BTN
+        return QRectF(x, y, self._BTN, self._BTN)
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if self._active:
+            bg = QColor(0, 209, 255, 31)
+        elif self._hover:
+            bg = QColor(0, 209, 255, 15)
+        else:
+            bg = QColor(0, 0, 0, 0)
+        if bg.alpha():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+
+        # Muted line icons like the reference: trash + vertical kebab.
+        icon_color = QColor(T.SB_TEXT_MUTED)
+        pen = QPen(icon_color)
+        pen.setWidthF(1.55)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Trash (slightly smaller glyph than the ⋮)
+        trash = self._delete_rect()
+        s = min(trash.width(), trash.height()) / 24.0 * 0.82
+        ox = trash.x() + (trash.width() - 24 * s) / 2
+        oy = trash.y() + (trash.height() - 24 * s) / 2
+        pen.setWidthF(1.4)
+        p.setPen(pen)
+        p.drawLine(QPointF(ox + 8 * s, oy + 6 * s), QPointF(ox + 16 * s, oy + 6 * s))
+        p.drawLine(QPointF(ox + 10 * s, oy + 6 * s), QPointF(ox + 10.5 * s, oy + 4.2 * s))
+        p.drawLine(QPointF(ox + 13.5 * s, oy + 6 * s), QPointF(ox + 14 * s, oy + 4.2 * s))
+        p.drawLine(QPointF(ox + 10.5 * s, oy + 4.2 * s), QPointF(ox + 13.5 * s, oy + 4.2 * s))
+        p.drawRoundedRect(QRectF(ox + 7 * s, oy + 7 * s, 10 * s, 12 * s), 1.4 * s, 1.4 * s)
+        p.drawLine(QPointF(ox + 10 * s, oy + 10 * s), QPointF(ox + 10 * s, oy + 16 * s))
+        p.drawLine(QPointF(ox + 12 * s, oy + 10 * s), QPointF(ox + 12 * s, oy + 16 * s))
+        p.drawLine(QPointF(ox + 14 * s, oy + 10 * s), QPointF(ox + 14 * s, oy + 16 * s))
+
+        # Vertical ellipsis (⋮)
+        more = self._more_rect()
+        s = min(more.width(), more.height()) / 24.0
+        ox = more.x() + (more.width() - 24 * s) / 2
+        oy = more.y() + (more.height() - 24 * s) / 2
+        p.setBrush(icon_color)
+        p.setPen(Qt.PenStyle.NoPen)
+        for cy in (7.0, 12.0, 17.0):
+            p.drawEllipse(QRectF(ox + 10.5 * s, oy + (cy - 1.5) * s, 3.0 * s, 3.0 * s))
+        p.end()
+
+    def _set_hover(self, hover: bool) -> None:
+        if self._hover == hover:
+            return
+        self._hover = hover
+        self.update()
+
+    def _menu_stylesheet(self) -> str:
+        return (
             f"QMenu {{ background: {T.BG_CARD}; color: {T.CHAT_TEXT}; "
             f"border: 1px solid {T.BORDER}; padding: 4px 0; border-radius: 8px; }}"
             "QMenu::item { padding: 8px 16px; }"
             "QMenu::item:selected { background: rgba(255,255,255,0.08); }"
         )
+
+    def _run_chat_menu(self, global_pos: QPoint) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet(self._menu_stylesheet())
         rename_act = menu.addAction("Rename")
         delete_act = menu.addAction("Delete")
-        chosen = menu.exec(self._more_btn.mapToGlobal(QPoint(0, self._more_btn.height())))
+        chosen = menu.exec(global_pos)
         if chosen is rename_act and self._on_rename:
             self._on_rename(self._id)
-        elif chosen is delete_act:
-            self._delete_btn.clicked.emit()
+        elif chosen is delete_act and self._on_delete:
+            self._on_delete(self._id)
+
+    def _open_context_menu(self, pos: QPoint) -> None:
+        self._run_chat_menu(self.mapToGlobal(pos))
+
+    def event(self, e):  # noqa: N802
+        et = e.type()
+        if et == QEvent.Type.HoverEnter:
+            self._set_hover(True)
+        elif et == QEvent.Type.HoverLeave:
+            self._set_hover(False)
+        return super().event(e)
 
     def enterEvent(self, e):
-        self._hover = True
-        self._apply_style(self._active, True)
-        self._sync_actions()
+        self._set_hover(True)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self._hover = False
-        self._apply_style(self._active, False)
-        self._sync_actions()
+        if self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            return
+        self._set_hover(False)
         super().leaveEvent(e)
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton and self._on_select:
-            # Ignore clicks that landed on action buttons (they accept the event).
-            child = self.childAt(e.position().toPoint())
-            if child is not None and (
-                child is self._delete_btn or child is self._more_btn
-                or self._actions.isAncestorOf(child)
-            ):
-                super().mousePressEvent(e)
-                return
+        if e.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(e)
+            return
+        pos = e.position()
+        if self._delete_rect().contains(pos):
+            if self._on_delete:
+                self._on_delete(self._id)
+            e.accept()
+            return
+        if self._more_rect().contains(pos):
+            # Open menu under the ⋮ hit target.
+            r = self._more_rect()
+            self._run_chat_menu(
+                self.mapToGlobal(QPoint(int(r.left()), int(r.bottom())))
+            )
+            e.accept()
+            return
+        if self._on_select:
             self._on_select(self._id)
-        super().mousePressEvent(e)
+        e.accept()
 
 
 def _spaced_font(family: str, size: int, px: float, bold: bool = False) -> QFont:
@@ -861,6 +955,277 @@ class _SidebarShieldBadge(QWidget):
         p.drawLine(QPointF(7.8 * s, 10.8 * s), QPointF(9.8 * s, 12.8 * s))
         p.drawLine(QPointF(9.8 * s, 12.8 * s), QPointF(14.2 * s, 8.4 * s))
         p.end()
+
+
+_SUPPORT_EMAIL = "aura.companydev@gmail.com"
+_WELCOME_PREVIEW = (
+    "Thank you for choosing AURA and becoming one of our first users. "
+    "Tap to read a note from our team."
+)
+
+
+def _welcome_card_state_path() -> Path:
+    try:
+        from jarvis_ui.onboarding.persistence import _support_base
+
+        return _support_base() / "welcome_card.json"
+    except Exception:
+        return Path(__file__).resolve().parents[1] / "runtime" / "welcome_card.json"
+
+
+def is_welcome_card_dismissed() -> bool:
+    path = _welcome_card_state_path()
+    if not path.exists():
+        return False
+    try:
+        return bool(json.loads(path.read_text(encoding="utf-8")).get("dismissed"))
+    except Exception:
+        return False
+
+
+def mark_welcome_card_dismissed() -> None:
+    path = _welcome_card_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"dismissed": True}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+class _ImportantMark(QWidget):
+    """Attention badge — soft amber plate + exclamation."""
+
+    def __init__(self, size: int = 22, parent=None):
+        super().__init__(parent)
+        self._d = int(size)
+        self.setFixedSize(self._d, self._d)
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        d = float(self._d)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        p.setPen(QPen(QColor(255, 184, 48, 160), 1.1))
+        p.setBrush(QColor(255, 184, 48, 42))
+        p.drawRoundedRect(QRectF(0.5, 0.5, d - 1.0, d - 1.0), 6.0, 6.0)
+
+        # Triangle
+        s = d / 22.0
+        tri = QPainterPath()
+        tri.moveTo(11 * s, 4.2 * s)
+        tri.lineTo(18.2 * s, 17.2 * s)
+        tri.lineTo(3.8 * s, 17.2 * s)
+        tri.closeSubpath()
+        amber = QColor(255, 196, 72)
+        p.setPen(QPen(amber, max(1.2, 1.25 * s)))
+        p.setBrush(QColor(255, 184, 48, 36))
+        p.drawPath(tri)
+
+        # Exclamation
+        pen = QPen(amber, max(1.5, 1.55 * s))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(11 * s, 8.2 * s), QPointF(11 * s, 13.2 * s))
+        p.setBrush(amber)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QRectF(10.1 * s, 14.6 * s, 1.8 * s, 1.8 * s))
+        p.end()
+
+
+class WelcomeFoundersDialog(QDialog):
+    """Full early-user welcome note from the AURA team."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Welcome to AURA")
+        self.setModal(True)
+        self.setMinimumWidth(460)
+        self.setMaximumWidth(540)
+        self.setStyleSheet(
+            f"QDialog {{ background: {T.BG}; }}"
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 22)
+        root.setSpacing(14)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(_ImportantMark(28), 0, Qt.AlignmentFlag.AlignTop)
+        titles = QVBoxLayout()
+        titles.setSpacing(4)
+        badge = QLabel("FOR NEW USERS")
+        badge.setFont(QFont(T.SB_FONT, 10, QFont.Weight.DemiBold))
+        badge.setStyleSheet(
+            "color: #ffc448; background: rgba(255, 184, 48, 0.12);"
+            "border: 1px solid rgba(255, 184, 48, 0.35); border-radius: 8px;"
+            "padding: 3px 8px;"
+        )
+        titles.addWidget(badge, 0, Qt.AlignmentFlag.AlignLeft)
+        title = QLabel("Welcome!")
+        title.setFont(QFont(T.CHAT_FONT, 22, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {T.WHITE}; background: transparent;")
+        titles.addWidget(title)
+        head.addLayout(titles, stretch=1)
+        root.addLayout(head)
+
+        body = QLabel(
+            "Thank you for choosing <b>AURA</b> and becoming one of our first users. "
+            "We're truly glad you decided to try our app — your support helps us grow every day."
+            "<br/><br/>"
+            "We're a young team working hard to make the product as convenient, fast, and useful "
+            "as possible. We continuously add new features, refine the design, and fix issues as "
+            "we find them."
+            "<br/><br/>"
+            "If you notice a bug, crash, or anything that doesn't work as expected, please reach "
+            "out by email:"
+            f"<br/><br/><a href=\"mailto:{_SUPPORT_EMAIL}\" style=\"color:#00d1ff;\">"
+            f"{_SUPPORT_EMAIL}</a>"
+            "<br/><br/>"
+            "Describe the issue in as much detail as you can, and our team will do our best to "
+            "investigate and fix it quickly."
+            "<br/><br/>"
+            "Thank you for helping us make <b>AURA</b> better!"
+            "<br/><br/>"
+            "— The AURA Team"
+        )
+        body.setWordWrap(True)
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setOpenExternalLinks(True)
+        body.setFont(QFont(T.CHAT_FONT, 13))
+        body.setStyleSheet(f"color: {T.TEXT_MED}; background: transparent; line-height: 1.45;")
+        root.addWidget(body)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        mail = QPushButton("Email support")
+        mail.setCursor(Qt.CursorShape.PointingHandCursor)
+        mail.setFixedHeight(36)
+        mail.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {T.CYAN}; "
+            f"border: 1px solid rgba(0, 209, 255, 0.35); border-radius: 10px; padding: 0 16px; "
+            f"font-family: '{T.SB_FONT}'; font-size: 12px; font-weight: 600; }}"
+            "QPushButton:hover { background: rgba(0, 209, 255, 0.08); }"
+        )
+        mail.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(f"mailto:{_SUPPORT_EMAIL}"))
+        )
+        actions.addWidget(mail)
+        actions.addStretch()
+        close = QPushButton("Got it")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setFixedHeight(36)
+        close.setDefault(True)
+        close.setStyleSheet(
+            f"QPushButton {{ background: {T.CYAN}; color: #041018; border: none; "
+            f"border-radius: 10px; padding: 0 18px; font-family: '{T.SB_FONT}'; "
+            "font-size: 12px; font-weight: 700; }"
+            "QPushButton:hover { background: #33daff; }"
+        )
+        close.clicked.connect(self.accept)
+        actions.addWidget(close)
+        root.addLayout(actions)
+
+
+class _SidebarWelcomeCard(QFrame):
+    """Compact early-user row — same size as Permissions."""
+
+    clicked = pyqtSignal()
+    dismissed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SidebarWelcomeCard")
+        self._hover = False
+        self.setFixedHeight(T.SB_ROW_H + 2)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(_WELCOME_PREVIEW)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(10)
+
+        self._mark = _ImportantMark(22)
+        lay.addWidget(self._mark, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._label = QLabel("Welcome!")
+        self._label.setFont(QFont(T.SB_FONT, T.SB_FONT_SIZE, QFont.Weight.Medium))
+        lay.addWidget(self._label, stretch=1)
+
+        self._close = QFrame(self)
+        self._close.setObjectName("SidebarWelcomeClose")
+        self._close.setFixedSize(18, 18)
+        self._close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close.setToolTip("Dismiss")
+        close_lay = QHBoxLayout(self._close)
+        close_lay.setContentsMargins(0, 0, 0, 0)
+        self._close_icon = _LineIcon("close", T.SB_TEXT_MUTED, size=11)
+        close_lay.addWidget(self._close_icon, 0, Qt.AlignmentFlag.AlignCenter)
+        self._close.mousePressEvent = self._on_close_press  # type: ignore[method-assign]
+        lay.addWidget(self._close, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._chev = QLabel("›")
+        self._chev.setFont(QFont(T.SB_FONT, 16, QFont.Weight.Light))
+        lay.addWidget(self._chev, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._apply()
+
+    def _apply(self) -> None:
+        bg = "rgba(255, 184, 48, 0.14)" if self._hover else "rgba(255, 184, 48, 0.08)"
+        border = "rgba(255, 184, 48, 0.42)" if self._hover else "rgba(255, 184, 48, 0.26)"
+        self.setStyleSheet(
+            f"""
+            QFrame#SidebarWelcomeCard {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
+            QFrame#SidebarWelcomeClose {{
+                background: transparent;
+                border: none;
+                border-radius: 5px;
+            }}
+            """
+        )
+        fg = T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT
+        self._label.setStyleSheet(
+            f"color: {fg}; background: transparent; border: none;"
+        )
+        self._chev.setStyleSheet(
+            f"color: {'#ffc448' if self._hover else T.SB_TEXT_MUTED}; "
+            "background: transparent; border: none;"
+        )
+        self._close_icon.set_color(T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT_MUTED)
+
+    def _on_close_press(self, e) -> None:  # noqa: ANN001
+        if e.button() == Qt.MouseButton.LeftButton:
+            e.accept()
+            mark_welcome_card_dismissed()
+            self.hide()
+            self.dismissed.emit()
+            return
+        QFrame.mousePressEvent(self._close, e)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self._apply()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self._close.geometry().contains(e.position().toPoint()):
+                return
+            self.clicked.emit()
+            e.accept()
+            return
+        super().mousePressEvent(e)
 
 
 class _SidebarPermissionsRow(QFrame):
@@ -1850,10 +2215,6 @@ class NavSidebar(QWidget):
         top_lay.setContentsMargins(0, 0, 10, 0)
         top_lay.setSpacing(0)
         top_lay.addWidget(_SidebarLogo())
-        top_lay.addSpacing(6)
-        new_btn = _SidebarNewSessionBtn()
-        new_btn.clicked.connect(self.new_chat.emit)
-        top_lay.addWidget(new_btn)
         top_lay.addSpacing(8)
         root.addWidget(top)
 
@@ -1864,6 +2225,9 @@ class NavSidebar(QWidget):
         # Always show the rail so the barrier line is visible even with few chats.
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         body = QWidget()
+        body.setMinimumWidth(0)
+        body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._scroll_body = body
         self._body_lay = QVBoxLayout(body)
         self._body_lay.setContentsMargins(0, 0, 10, 0)
         self._body_lay.setSpacing(1)
@@ -1888,10 +2252,15 @@ class NavSidebar(QWidget):
             self._body_lay.addWidget(row)
 
         self._body_lay.addSpacing(6)
-        self._body_lay.addWidget(self._section_label("CHATS"))
+        self._chats_section = self._section_label("CHATS")
+        self._body_lay.addWidget(self._chats_section)
         self._chat_host = QVBoxLayout()
         self._chat_host.setSpacing(2)
         self._chat_wrap = QWidget()
+        self._chat_wrap.setMinimumWidth(0)
+        self._chat_wrap.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self._chat_wrap.setLayout(self._chat_host)
         self._body_lay.addWidget(self._chat_wrap)
 
@@ -1903,6 +2272,12 @@ class NavSidebar(QWidget):
         foot_lay = QVBoxLayout(foot_wrap)
         foot_lay.setContentsMargins(0, 0, 10, 0)
         foot_lay.setSpacing(6)
+        # Early-user welcome note above Permissions (dismissible).
+        self._welcome_card = _SidebarWelcomeCard()
+        self._welcome_card.clicked.connect(self._open_welcome_note)
+        if is_welcome_card_dismissed():
+            self._welcome_card.hide()
+        foot_lay.addWidget(self._welcome_card)
         # Permissions sits above promo + profile chip.
         self._perm_btn = _SidebarPermissionsRow()
         self._perm_btn.clicked.connect(self._open_permissions)
@@ -1990,6 +2365,16 @@ class NavSidebar(QWidget):
             " { background: transparent; }"
         )
         self._edge_rail.sync_from_sidebar()
+        self._sync_scroll_body_width()
+
+    def _sync_scroll_body_width(self) -> None:
+        """Pin scroll content to viewport width so right-side chat actions stay visible."""
+        body = getattr(self, "_scroll_body", None)
+        if body is None:
+            return
+        w = int(self._scroll.viewport().width())
+        if w > 0:
+            body.setFixedWidth(w)
 
     def _set_rail_hot(self, hot: bool):
         if self._rail_hot == hot:
@@ -2018,6 +2403,7 @@ class NavSidebar(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._sync_scroll_body_width()
         self._edge_rail.sync_from_sidebar()
         self._edge_rail.raise_()
 
@@ -2072,6 +2458,13 @@ class NavSidebar(QWidget):
         self._list_rows.clear()
 
         self._clear_layout(self._chat_host)
+        if hasattr(self, "_chats_section"):
+            self._chats_section.setText("CHATS")
+            self._chats_section.setStyleSheet(
+                f"color: {T.SB_TEXT_MUTED}; background: transparent; "
+                f"padding: 8px 8px 4px; letter-spacing: 1.2px;"
+            )
+        self._sync_scroll_body_width()
         for chat in chats:
             cid = chat.get("id", "")
             title = chat.get("title", "Session")
@@ -2115,6 +2508,15 @@ class NavSidebar(QWidget):
         if action == "settings":
             self.settings_requested.emit()
         self.profile_menu_action.emit(action)
+
+    def _open_welcome_note(self) -> None:
+        try:
+            dlg = WelcomeFoundersDialog(self.window() or self)
+            dlg.exec()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.information(self, "Welcome", str(e))
 
     def _open_permissions(self) -> None:
         try:

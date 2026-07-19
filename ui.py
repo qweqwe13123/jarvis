@@ -1529,37 +1529,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[AURA] Floating overlay / hotkey init deferred: {e}")
     def _init_floating_overlay(self) -> None:
-        """Create once: floating launcher, global hotkey, system tray."""
-        self._float = FloatingOverlay()
-        self._float.submitted.connect(self._on_float_submit)
-        self._float.home_clicked.connect(self._on_float_home)
-        self._float.voice_clicked.connect(self._toggle_mute)
-        self._float.dismissed.connect(lambda: setattr(self, "_float_session", False))
-        self._float_skip_user_mirror = False
+        """Create once: floating launcher + hotkey (macOS), system tray (all OS)."""
+        # Floating Ctrl/⌘+A bar is macOS-only for now — Win/Linux keep tray + main window.
+        if _OS == "Darwin":
+            self._float = FloatingOverlay()
+            self._float.submitted.connect(self._on_float_submit)
+            self._float.home_clicked.connect(self._on_float_home)
+            self._float.voice_clicked.connect(self._toggle_mute)
+            self._float.dismissed.connect(lambda: setattr(self, "_float_session", False))
+            self._float_skip_user_mirror = False
 
-        self._hotkeys = GlobalHotkeyService(self)
-        self._hotkeys.set_host(self)
+            self._hotkeys = GlobalHotkeyService(self)
+            self._hotkeys.set_host(self)
 
-        def _on_overlay_hotkey() -> None:
-            print(f"[AURA] Overlay hotkey fired → toggle ({hotkey_display(self._hotkeys.combo)})")
-            try:
-                self._log.append_log(
-                    f"SYS: Overlay hotkey {hotkey_display(self._hotkeys.combo)}"
-                )
-            except Exception:
-                pass
-            self._float.toggle()
+            def _on_overlay_hotkey() -> None:
+                print(f"[AURA] Overlay hotkey fired → toggle ({hotkey_display(self._hotkeys.combo)})")
+                try:
+                    self._log.append_log(
+                        f"SYS: Overlay hotkey {hotkey_display(self._hotkeys.combo)}"
+                    )
+                except Exception:
+                    pass
+                self._float.toggle()
 
-        self._hotkeys.triggered.connect(_on_overlay_hotkey)
-        self._hotkeys.status_changed.connect(self._computer_use.set_hotkey_status)
-        self._hotkeys.start(default_hotkey())
+            self._hotkeys.triggered.connect(_on_overlay_hotkey)
+            self._hotkeys.status_changed.connect(self._computer_use.set_hotkey_status)
+            self._hotkeys.start(default_hotkey())
 
-        self._computer_use.open_overlay.connect(self._float.show_animated)
+            self._computer_use.open_overlay.connect(self._float.show_animated)
 
-        # Dev self-test: AURA_TEST_OVERLAY_HOTKEY=1 → synthesize ⌘+A and report result.
-        import os as _os
-        if _os.environ.get("AURA_TEST_OVERLAY_HOTKEY", "").strip() in ("1", "true", "yes"):
-            QTimer.singleShot(800, self._selftest_overlay_hotkey)
+            # Dev self-test: AURA_TEST_OVERLAY_HOTKEY=1 → synthesize ⌘+A and report result.
+            import os as _os
+            if _os.environ.get("AURA_TEST_OVERLAY_HOTKEY", "").strip() in ("1", "true", "yes"):
+                QTimer.singleShot(800, self._selftest_overlay_hotkey)
+
+            self._show_keyboard_shortcuts_overlay_hint()
 
         self._tray = AppTrayController(self)
         self._tray.open_requested.connect(self._on_tray_open)
@@ -1568,7 +1572,6 @@ class MainWindow(QMainWindow):
         self._tray.quit_requested.connect(self._quit_app)
         self._tray.start()
 
-        self._show_keyboard_shortcuts_overlay_hint()
         self._start_cloud_entitlement_sync()
 
     def _start_cloud_entitlement_sync(self) -> None:
@@ -1779,9 +1782,14 @@ class MainWindow(QMainWindow):
             self._float.show_animated()
 
     def _on_tray_open(self) -> None:
-        # Prefer floating overlay; open main only via Home.
-        self._float_session = True
-        self._float.show_animated()
+        # macOS: floating overlay. Windows/Linux: main window (overlay disabled for now).
+        if hasattr(self, "_float"):
+            self._float_session = True
+            self._float.show_animated()
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def _on_tray_check_updates(self) -> None:
         updater = getattr(self, "_updater_ref", None)

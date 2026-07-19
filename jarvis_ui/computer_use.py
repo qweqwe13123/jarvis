@@ -185,8 +185,13 @@ class ComputerUseView(QWidget):
         page_title.setFont(_serif(32, QFont.Weight.Normal))
         page_title.setStyleSheet(f"color: {_TITLE}; background: transparent;")
         il.addWidget(page_title)
+        current = platform.system()
+        overlay_enabled = current == "Darwin"
         page_sub = QLabel(
             "Summon the floating AURA bar from anywhere — over any app, on any screen."
+            if overlay_enabled
+            else "On Windows and Linux the floating bar is temporarily disabled. "
+            "Use the system tray to open AURA. ⌘A floating bar remains available on macOS."
         )
         page_sub.setWordWrap(True)
         page_sub.setFont(_sans(13))
@@ -197,11 +202,12 @@ class ComputerUseView(QWidget):
         # —— Floating bar ——
         il.addWidget(self._section_header(
             "Floating bar",
-            "Summon and position the AURA bar from anywhere.",
+            "Summon and position the AURA bar from anywhere."
+            if overlay_enabled
+            else "macOS only for now — coming back to Windows and Linux later.",
         ))
         il.addSpacing(12)
         float_card = _SettingsCard()
-        current = platform.system()
         float_card.add_row(_SettingRow(
             "macOS",
             "Press ⌘A anytime — even when AURA is minimized or another app is focused. "
@@ -212,17 +218,14 @@ class ComputerUseView(QWidget):
         ))
         float_card.add_row(_SettingRow(
             "Windows",
-            "Press Ctrl+A anytime — even when AURA is minimized or another app is focused. "
-            "Press again (or Esc) to hide. If another app steals the shortcut, open from "
-            "the system tray.",
-            _KeyGroup(["Ctrl", "A"]),
+            "Floating Ctrl+A bar is temporarily off. Open AURA from the system tray instead.",
+            _KeyGroup(["Tray"], highlight_first=True),
             show_divider=True,
         ))
         float_card.add_row(_SettingRow(
             "Linux",
-            "Press Ctrl+A anytime (best on X11). On Wayland some desktops block global "
-            "shortcuts — keep AURA focused or open from the tray. Press again (or Esc) to hide.",
-            _KeyGroup(["Ctrl", "A"]),
+            "Floating Ctrl+A bar is temporarily off. Open AURA from the system tray instead.",
+            _KeyGroup(["Tray"], highlight_first=True),
             show_divider=True,
         ))
         yours = {
@@ -230,20 +233,30 @@ class ComputerUseView(QWidget):
             "Windows": "Windows",
             "Linux": "Linux",
         }.get(current, "Linux")
-        float_card.add_row(_SettingRow(
-            "Show or hide the bar",
-            f"You’re on {yours}. The shortcut above for your system is active. "
-            "Bring the floating bar forward, or tuck it out of the way.",
-            _KeyGroup(self._current_key_parts()),
-            show_divider=False,
-        ))
+        if overlay_enabled:
+            float_card.add_row(_SettingRow(
+                "Show or hide the bar",
+                f"You’re on {yours}. The shortcut above for your system is active. "
+                "Bring the floating bar forward, or tuck it out of the way.",
+                _KeyGroup(self._current_key_parts()),
+                show_divider=False,
+            ))
+        else:
+            float_card.add_row(_SettingRow(
+                "On this computer",
+                f"You’re on {yours}. Use the tray menu → Open AURA for now.",
+                _KeyGroup(["Open AURA"], highlight_first=True),
+                show_divider=False,
+            ))
         il.addWidget(float_card)
         il.addSpacing(32)
 
         # —— Permissions ——
         il.addWidget(self._section_header(
             "Permissions",
-            "One-time setup so the global shortcut works while other apps are focused.",
+            "One-time setup so the global shortcut works while other apps are focused."
+            if overlay_enabled
+            else "Needed on macOS for the floating bar shortcut.",
         ))
         il.addSpacing(12)
         perm = _SettingsCard()
@@ -252,22 +265,23 @@ class ComputerUseView(QWidget):
             "System Settings → Privacy & Security → Accessibility — enable AURA "
             "(or Terminal / Python). Also allow Input Monitoring if asked, then restart AURA.",
             _KeyGroup(["Settings"], highlight_first=True),
-            show_divider=True,
+            show_divider=overlay_enabled,
         ))
-        perm.add_row(_SettingRow(
-            "Windows",
-            "Usually no extra setup. If Ctrl+A only works while AURA is focused, allow AURA "
-            "in antivirus / privacy settings.",
-            _KeyGroup(["Ctrl", "A"]),
-            show_divider=True,
-        ))
-        perm.add_row(_SettingRow(
-            "Linux",
-            "Best on X11 for global Ctrl+A. Under Wayland, grant input permissions in your "
-            "desktop settings or use the tray / keep AURA focused.",
-            _KeyGroup(["X11"], highlight_first=True),
-            show_divider=False,
-        ))
+        if overlay_enabled:
+            perm.add_row(_SettingRow(
+                "Windows",
+                "Usually no extra setup. If Ctrl+A only works while AURA is focused, allow AURA "
+                "in antivirus / privacy settings.",
+                _KeyGroup(["Ctrl", "A"]),
+                show_divider=True,
+            ))
+            perm.add_row(_SettingRow(
+                "Linux",
+                "Best on X11 for global Ctrl+A. Under Wayland, grant input permissions in your "
+                "desktop settings or use the tray / keep AURA focused.",
+                _KeyGroup(["X11"], highlight_first=True),
+                show_divider=False,
+            ))
         il.addWidget(perm)
         il.addSpacing(32)
 
@@ -288,23 +302,28 @@ class ComputerUseView(QWidget):
         il.addWidget(tray)
         il.addSpacing(28)
 
-        try_btn = QPushButton("Try floating overlay now")
-        try_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        try_btn.setFixedHeight(44)
-        try_btn.setFont(_sans(13, QFont.Weight.DemiBold))
-        try_btn.setStyleSheet(
-            f"QPushButton {{ background: {_TITLE}; color: {_CARD}; border: none; "
-            f"border-radius: 14px; padding: 0 22px; }}"
-            "QPushButton:hover { background: #333; }"
-        )
-        try_btn.clicked.connect(self.open_overlay.emit)
-        il.addWidget(try_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-
         self._status = QLabel("")
         self._status.setWordWrap(True)
         self._status.setFont(_sans(12))
         self._status.setStyleSheet(f"color: {_BODY}; background: transparent; margin-top: 10px;")
         il.addWidget(self._status)
+
+        if overlay_enabled:
+            try_btn = QPushButton("Try floating overlay now")
+            try_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            try_btn.setFixedHeight(44)
+            try_btn.setFont(_sans(13, QFont.Weight.DemiBold))
+            try_btn.setStyleSheet(
+                f"QPushButton {{ background: {_TITLE}; color: {_CARD}; border: none; "
+                f"border-radius: 14px; padding: 0 22px; }}"
+                "QPushButton:hover { background: #333; }"
+            )
+            try_btn.clicked.connect(self.open_overlay.emit)
+            il.addWidget(try_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        else:
+            self._status.setText(
+                "Floating overlay is disabled on this platform. Use the system tray to open AURA."
+            )
 
         lay.addWidget(inner)
         scroll.setWidget(page)
