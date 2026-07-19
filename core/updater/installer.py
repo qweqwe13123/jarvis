@@ -81,14 +81,13 @@ def apply_update(package: Path, parent_pid: int | None = None) -> int:
             _install_appimage(package, target)
         elif package.suffix.lower() == ".zip":
             _install_zip(package, target, staging)
-        elif package.suffix.lower() in {".exe", ".dmg"}:
+        elif package.suffix.lower() == ".dmg":
             if normalize_os() == "darwin":
                 subprocess.Popen(["open", str(package)])
-            elif normalize_os() == "windows":
-                subprocess.Popen([str(package)], shell=False)
-            else:
-                raise ValueError(f"Unsupported update package: {package.name}")
-            return 0
+                return 0
+            raise ValueError(f"Unsupported update package: {package.name}")
+        elif package.suffix.lower() == ".exe" and normalize_os() == "windows":
+            _run_windows_setup(package, target)
         else:
             raise ValueError(f"Unsupported update package: {package.name}")
 
@@ -283,6 +282,9 @@ def launch_updater(package: Path, parent_pid: int) -> None:
     if os_name == "linux" and package.name.lower().endswith(".appimage"):
         _launch_linux_appimage_updater(package, target, parent_pid)
         return
+    if os_name == "windows" and package.suffix.lower() == ".exe":
+        _launch_windows_exe_updater(package, target, parent_pid)
+        return
     if os_name == "windows" and package.suffix.lower() == ".zip":
         _launch_windows_zip_updater(package, target, parent_pid)
         return
@@ -458,42 +460,66 @@ def _launch_linux_appimage_updater(package: Path, target: Path, parent_pid: int)
     _ulog(f"spawned Linux AppImage updater script={script}")
 
 
-def _launch_windows_zip_updater(package: Path, target: Path, parent_pid: int) -> None:
-    work = Path(tempfile.mkdtemp(prefix="aura-win-update-"))
-    payload = _extract_app_payload(package, work)
-    script = work / "apply.ps1"
-    log = _log_path()
-    pq = _ps_quote
-    script.write_text(
-        "$ErrorActionPreference = 'Stop'\n"
-        f"$log = '{pq(log)}'\n"
-        f"$parent = {int(parent_pid)}\n"
-        f"$src = '{pq(payload)}'\n"
-        f"$dst = '{pq(target)}'\n"
-        f"$pkg = '{pq(package)}'\n"
-        f"$work = '{pq(work)}'\n"
-        "New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null\n"
-        "Add-Content $log \"$(Get-Date -Format o) Windows updater start\"\n"
-        "for ($i=0; $i -lt 300; $i++) {\n"
-        "  try { Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }\n"
-        "  catch { break }\n"
-        "}\n"
-        "Start-Sleep -Seconds 1\n"
-        "$bak = \"$dst.backup\"\n"
-        "if (Test-Path $bak) { Remove-Item -Recurse -Force $bak }\n"
-        "if (Test-Path $dst) { Rename-Item $dst $bak }\n"
-        "Copy-Item -Recurse -Force $src $dst\n"
-        "if (Test-Path $bak) { Remove-Item -Recurse -Force $bak }\n"
-        "Remove-Item -Force $pkg -ErrorAction SilentlyContinue\n"
-        "Remove-Item -Force \"$pkg.json\" -ErrorAction SilentlyContinue\n"
-        "$exe = Join-Path $dst 'AURA.exe'\n"
-        "if (-not (Test-Path $exe)) { $exe = Join-Path $dst 'JARVIS.exe' }\n"
-        "Add-Content $log \"$(Get-Date -Format o) launching $exe\"\n"
-        "Start-Process -FilePath $exe\n"
-        "Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue\n",
-        encoding="utf-8",
-    )
-    # CREATE_NO_WINDOW is required — DETACHED_PROCESS alone still flashes a console.
+def _windows_setup_args(install_dir: Path, log_file: Path | None = None) -> list[str]:
+    """Inno Setup silent flags; keep the existing install location."""
+    # Quoted DIR/LOG so paths with spaces survive Start-Process -ArgumentList.
+    args = [
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/CLOSEAPPLICATIONS",
+        "/FORCECLOSEAPPLICATIONS",
+        f'/DIR="{install_dir}"',
+    ]
+    if log_file is not None:
+        args.append(f'/LOG="{log_file}"')
+    return args
+
+
+def _run_windows_setup(package: Path, target: Path) -> None:
+    """Run Inno Setup against the current install dir (sync; used by fallback helper)."""
+    install_dir = target if target.is_dir() else target.parent
+    log = _log_path().with_name("setup-update.log")
+    args = _windows_setup_args(install_dir, log)
+    _ulog(f"windows setup sync package={package} dir={install_dir} args={args}")
+    # Prefer non-elevated first (DefaultDirName is LocalAppData). Elevate when needed.
+    try:
+        probe = install_dir / ".aura_write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        needs_admin = False
+    except OSError:
+        needs_admin = True
+    if "program files" in str(install_dir).lower():
+        needs_admin = True
+
+    if needs_admin:
+        arg_lit = ", ".join(f"'{_ps_quote(a)}'" for a in args)
+        ps = (
+            f"$p = Start-Process -FilePath '{_ps_quote(package)}' "
+            f"-ArgumentList @({arg_lit}) "
+            f"-Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+        )
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ],
+            check=False,
+        )
+        if completed.returncode not in (0, None):
+            raise RuntimeError(f"Windows setup failed (elevated) code={completed.returncode}")
+    else:
+        completed = subprocess.run([str(package), *args], check=False)
+        if completed.returncode != 0:
+            raise RuntimeError(f"Windows setup failed code={completed.returncode}")
+    _ulog("windows setup finished OK")
+
+def _spawn_hidden_powershell(script: Path) -> None:
     from core.win_subprocess import merge_flags
 
     flags = merge_flags(
@@ -516,7 +542,146 @@ def _launch_windows_zip_updater(package: Path, target: Path, parent_pid: int) ->
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    _ulog(f"spawned Windows PowerShell updater script={script}")
+
+
+def _launch_windows_exe_updater(package: Path, target: Path, parent_pid: int) -> None:
+    """Wait for app exit, run Inno Setup silently into the same dir, relaunch."""
+    work = Path(tempfile.mkdtemp(prefix="aura-win-setup-"))
+    setup = work / package.name
+    shutil.copy2(package, setup)
+    install_dir = target if target.is_dir() else target.parent
+    script = work / "apply.ps1"
+    log = _log_path()
+    setup_log = log.with_name("setup-update.log")
+    pq = _ps_quote
+    # Argument list as a PowerShell string array literal.
+    arg_items = ", ".join(
+        f"'{_ps_quote(a)}'" for a in _windows_setup_args(install_dir, setup_log)
+    )
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$log = '{pq(log)}'\n"
+        f"$parent = {int(parent_pid)}\n"
+        f"$setup = '{pq(setup)}'\n"
+        f"$dst = '{pq(install_dir)}'\n"
+        f"$pkg = '{pq(package)}'\n"
+        f"$work = '{pq(work)}'\n"
+        f"$setupArgs = @({arg_items})\n"
+        "New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null\n"
+        "Add-Content $log \"$(Get-Date -Format o) Windows exe updater start\"\n"
+        "for ($i=0; $i -lt 300; $i++) {\n"
+        "  try { Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }\n"
+        "  catch { break }\n"
+        "}\n"
+        "Start-Sleep -Seconds 1.2\n"
+        "# Extra settle: release file locks from the just-exited process.\n"
+        "Get-Process -Name 'AURA','JARVIS' -ErrorAction SilentlyContinue |\n"
+        "  Where-Object { $_.Id -ne $parent } |\n"
+        "  Stop-Process -Force -ErrorAction SilentlyContinue\n"
+        "Start-Sleep -Seconds 0.8\n"
+        "function Test-AuraWritable([string]$dir) {\n"
+        "  try {\n"
+        "    $t = Join-Path $dir '.aura_write_test'\n"
+        "    [IO.File]::WriteAllText($t, 'ok')\n"
+        "    Remove-Item -Force $t -ErrorAction SilentlyContinue\n"
+        "    return $true\n"
+        "  } catch { return $false }\n"
+        "}\n"
+        "$elevate = (-not (Test-AuraWritable $dst)) -or ($dst -match '(?i)Program Files')\n"
+        "Add-Content $log \"$(Get-Date -Format o) running setup elevate=$elevate dir=$dst\"\n"
+        "try {\n"
+        "  if ($elevate) {\n"
+        "    $p = Start-Process -FilePath $setup -ArgumentList $setupArgs -Verb RunAs -Wait -PassThru\n"
+        "  } else {\n"
+        "    $p = Start-Process -FilePath $setup -ArgumentList $setupArgs -Wait -PassThru\n"
+        "  }\n"
+        "  Add-Content $log \"$(Get-Date -Format o) setup exit=$($p.ExitCode)\"\n"
+        "  if ($p.ExitCode -ne 0) { throw \"setup failed exit=$($p.ExitCode)\" }\n"
+        "} catch {\n"
+        "  Add-Content $log \"$(Get-Date -Format o) setup FAILED: $_\"\n"
+        "}\n"
+        "$exe = Join-Path $dst 'AURA.exe'\n"
+        "if (-not (Test-Path $exe)) { $exe = Join-Path $dst 'JARVIS.exe' }\n"
+        "if (Test-Path $exe) {\n"
+        "  Add-Content $log \"$(Get-Date -Format o) launching $exe\"\n"
+        "  Start-Process -FilePath $exe\n"
+        "} else {\n"
+        "  Add-Content $log \"$(Get-Date -Format o) AURA.exe missing after setup\"\n"
+        "}\n"
+        "Remove-Item -Force $pkg -ErrorAction SilentlyContinue\n"
+        "Remove-Item -Force \"$pkg.json\" -ErrorAction SilentlyContinue\n"
+        "Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue\n",
+        encoding="utf-8",
+    )
+    _spawn_hidden_powershell(script)
+    _ulog(f"spawned Windows exe updater script={script}")
+
+
+def _launch_windows_zip_updater(package: Path, target: Path, parent_pid: int) -> None:
+    """Portable/ZIP fallback: overwrite in place; elevate when the install dir is locked down."""
+    work = Path(tempfile.mkdtemp(prefix="aura-win-update-"))
+    payload = _extract_app_payload(package, work)
+    script = work / "apply.ps1"
+    log = _log_path()
+    pq = _ps_quote
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$log = '{pq(log)}'\n"
+        f"$parent = {int(parent_pid)}\n"
+        f"$src = '{pq(payload)}'\n"
+        f"$dst = '{pq(target)}'\n"
+        f"$pkg = '{pq(package)}'\n"
+        f"$work = '{pq(work)}'\n"
+        "New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null\n"
+        "Add-Content $log \"$(Get-Date -Format o) Windows zip updater start\"\n"
+        "for ($i=0; $i -lt 300; $i++) {\n"
+        "  try { Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }\n"
+        "  catch { break }\n"
+        "}\n"
+        "Start-Sleep -Seconds 1.2\n"
+        "Get-Process -Name 'AURA','JARVIS' -ErrorAction SilentlyContinue |\n"
+        "  Stop-Process -Force -ErrorAction SilentlyContinue\n"
+        "Start-Sleep -Seconds 0.8\n"
+        "function Invoke-AuraCopy {\n"
+        "  New-Item -ItemType Directory -Force -Path $dst | Out-Null\n"
+        "  Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force\n"
+        "}\n"
+        "try {\n"
+        "  Invoke-AuraCopy\n"
+        "  Add-Content $log \"$(Get-Date -Format o) zip copy OK\"\n"
+        "} catch {\n"
+        "  Add-Content $log \"$(Get-Date -Format o) zip copy failed, elevating: $_\"\n"
+        "  $inner = @'\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$src = '{pq(payload)}'\n"
+        f"$dst = '{pq(target)}'\n"
+        "New-Item -ItemType Directory -Force -Path $dst | Out-Null\n"
+        "Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force\n"
+        "'@\n"
+        "  $tmp = Join-Path $env:TEMP ('aura-elevate-' + [guid]::NewGuid().ToString() + '.ps1')\n"
+        "  Set-Content -Path $tmp -Value $inner -Encoding UTF8\n"
+        "  $p = Start-Process -FilePath powershell -ArgumentList @(\n"
+        "    '-NoProfile','-ExecutionPolicy','Bypass','-File',$tmp\n"
+        "  ) -Verb RunAs -Wait -PassThru\n"
+        "  Remove-Item -Force $tmp -ErrorAction SilentlyContinue\n"
+        "  if ($p.ExitCode -ne 0) { throw \"elevated zip copy failed exit=$($p.ExitCode)\" }\n"
+        "  Add-Content $log \"$(Get-Date -Format o) elevated zip copy OK\"\n"
+        "}\n"
+        "Remove-Item -Force $pkg -ErrorAction SilentlyContinue\n"
+        "Remove-Item -Force \"$pkg.json\" -ErrorAction SilentlyContinue\n"
+        "$exe = Join-Path $dst 'AURA.exe'\n"
+        "if (-not (Test-Path $exe)) { $exe = Join-Path $dst 'JARVIS.exe' }\n"
+        "if (Test-Path $exe) {\n"
+        "  Add-Content $log \"$(Get-Date -Format o) launching $exe\"\n"
+        "  Start-Process -FilePath $exe\n"
+        "} else {\n"
+        "  Add-Content $log \"$(Get-Date -Format o) AURA.exe missing after zip update\"\n"
+        "}\n"
+        "Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue\n",
+        encoding="utf-8",
+    )
+    _spawn_hidden_powershell(script)
+    _ulog(f"spawned Windows PowerShell zip updater script={script}")
 
 
 def _launch_command(target: Path) -> list[str]:

@@ -263,9 +263,23 @@ for key, entry in list(platforms.items()):
     if pname.lower().endswith(".appimage") and "blockmap_url" not in entry:
         attach_blockmap(entry, pname, prefix="blockmap")
 
+# Windows in-app updates must use the Inno .exe. ZIP replace fails under Program Files
+# ACLs and leaves users on the old build after the app has already quit. Also lets
+# older clients (that prefer update_url) download a package they can actually apply.
+win = platforms.get("win-x64")
+if win and str(win.get("filename") or "").lower().endswith(".exe") and win.get("url"):
+    win["update_filename"] = win["filename"]
+    win["update_url"] = win["url"]
+    win["update_sha256"] = win["sha256"]
+    win["update_size"] = win["size"]
+    for k in list(win.keys()):
+        if k.startswith("update_blockmap"):
+            del win[k]
+    print("win-x64: in-app update_url -> Inno Setup .exe")
+
 prev = json.loads(saas.read_text()) if saas.exists() else {}
-# Keep non-mac platforms from the previous site manifest when a mac-only deploy runs.
-for k in ("win-x64", "linux-x64"):
+# Keep platforms missing from this GitHub tag (e.g. mac-only or win/linux-only deploys).
+for k in ("darwin-arm64", "darwin-x64", "darwin-universal", "win-x64", "linux-x64"):
     if k not in platforms and k in (prev.get("platforms") or {}):
         platforms[k] = prev["platforms"][k]
         print(f"preserved {k} from previous site manifest")
