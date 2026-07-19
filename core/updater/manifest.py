@@ -56,7 +56,9 @@ def _parse_version(value: str) -> tuple[int, ...]:
     return tuple(parts or [0])
 
 
-def is_newer(remote: str, local: str = VERSION) -> bool:
+def is_newer(remote: str, local: str | None = None) -> bool:
+    if local is None:
+        local = VERSION
     return _parse_version(remote) > _parse_version(local)
 
 
@@ -203,19 +205,25 @@ def _pick_asset_fields(entry: dict[str, Any]) -> tuple[str, str, str, int, str, 
     return "", "", "", 0, "", ""
 
 
+def _platform_asset_version(entry: dict[str, Any], fallback: str = "") -> str:
+    """Prefer per-platform version so Win-only deploys don't fake a Mac update."""
+    explicit = str(entry.get("version") or "").strip()
+    if explicit:
+        return explicit
+    for key in ("update_filename", "filename", "url"):
+        raw = str(entry.get(key) or "")
+        m = re.search(r"AURA-(\d+\.\d+\.\d+)", raw, re.I)
+        if m:
+            return m.group(1)
+    return str(fallback or "").strip()
+
+
 def parse_release(
     data: dict[str, Any],
     target: str | None = None,
     *,
     require_newer: bool = True,
 ) -> ReleaseInfo | None:
-    version = str(data.get("version", "")).strip()
-    if not version:
-        return None
-    forced, min_supported = force_update_required(data)
-    if require_newer and not is_newer(version) and not forced:
-        return None
-
     key = target or platform_key()
     platforms = data.get("platforms") or {}
     entry = None
@@ -226,6 +234,17 @@ def parse_release(
             resolved_key = candidate
             break
     if not entry:
+        return None
+
+    top_version = str(data.get("version", "")).strip()
+    version = _platform_asset_version(entry, top_version)
+    if not version:
+        return None
+
+    forced, min_supported = force_update_required(data)
+    # Never offer an update unless THIS platform actually has a newer package.
+    # (Win-only bumps must not force Mac to "update" to the same 1.0.22 zip.)
+    if require_newer and not is_newer(version):
         return None
 
     url, sha256, filename, size, blockmap_url, blockmap_sha = _pick_asset_fields(entry)

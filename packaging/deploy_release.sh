@@ -284,6 +284,22 @@ for k in ("darwin-arm64", "darwin-x64", "darwin-universal", "win-x64", "linux-x6
         platforms[k] = prev["platforms"][k]
         print(f"preserved {k} from previous site manifest")
 
+# Stamp each platform with the version encoded in its filename so in-app update
+# compares Mac against Mac packages (not a newer Windows-only site version).
+import re as _re_ver
+for _k, _entry in list(platforms.items()):
+    if not isinstance(_entry, dict):
+        continue
+    stamped = str(_entry.get("version") or "").strip()
+    if not stamped:
+        for _fk in ("update_filename", "filename", "url"):
+            _m = _re_ver.search(r"AURA-(\d+\.\d+\.\d+)", str(_entry.get(_fk) or ""), _re_ver.I)
+            if _m:
+                stamped = _m.group(1)
+                break
+    if stamped:
+        _entry["version"] = stamped
+
 # Monotonic release index + force-update window (current + 2 prior = 3 releases).
 release_index = int(prev.get("release_index") or 0) + 1
 max_behind = 2
