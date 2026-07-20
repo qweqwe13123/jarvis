@@ -93,6 +93,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallRun]
 Filename: "schtasks"; Parameters: "/Delete /TN AURAWake /F"; Flags: runhidden; RunOnceId: "RemoveAuraWakeTask"
+Filename: "{cmd}"; Parameters: "/c del /f /q ""%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\AURA Wake.cmd"""; Flags: runhidden; RunOnceId: "RemoveAuraWakeStartup"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

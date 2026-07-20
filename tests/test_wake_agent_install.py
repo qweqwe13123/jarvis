@@ -20,9 +20,51 @@ def test_program_command_includes_wake_flags_and_gaps():
     assert "0.12" in cmd
 
 
-def test_windows_install_creates_schtasks(monkeypatch, tmp_path):
+def test_windows_install_uses_startup_even_if_schtasks_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(iwa.sys, "platform", "win32")
     monkeypatch.setattr(iwa, "_support_wake", lambda: tmp_path / "wake")
+    monkeypatch.setattr(iwa, "_win_startup_dir", lambda: tmp_path / "Startup")
+    monkeypatch.setattr(
+        iwa,
+        "_program_command",
+        lambda: [r"C:\Users\t\AppData\Local\Programs\AURA\AURA.exe", "--wake-listener", "--threshold", "0.08"],
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append(list(cmd))
+        m = MagicMock()
+        # Pretend schtasks /Create always fails (real 1.0.42 failure mode).
+        if len(cmd) >= 2 and cmd[0] == "schtasks" and cmd[1] == "/Create":
+            m.returncode = 1
+            m.stderr = "Access is denied."
+            m.stdout = ""
+        else:
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+        return m
+
+    started: list = []
+    monkeypatch.setattr(iwa, "_run", fake_run)
+    monkeypatch.setattr(iwa, "_start_windows_wake_now", lambda cmd: started.append(list(cmd)))
+    iwa._install_windows()
+    startup = tmp_path / "Startup" / "AURA Wake.cmd"
+    wrapper = tmp_path / "wake" / "aura-wake.cmd"
+    assert startup.is_file()
+    assert wrapper.is_file()
+    assert "--wake-listener" in startup.read_text(encoding="utf-8")
+    assert (tmp_path / "wake" / "installed").is_file()
+    marker = (tmp_path / "wake" / "installed").read_text(encoding="utf-8")
+    assert "startup:" in marker
+    assert "schtasks_skipped:" in marker
+    assert started and "--wake-listener" in started[0]
+
+
+def test_windows_install_creates_schtasks_when_allowed(monkeypatch, tmp_path):
+    monkeypatch.setattr(iwa.sys, "platform", "win32")
+    monkeypatch.setattr(iwa, "_support_wake", lambda: tmp_path / "wake")
+    monkeypatch.setattr(iwa, "_win_startup_dir", lambda: tmp_path / "Startup")
     monkeypatch.setattr(
         iwa,
         "_program_command",
@@ -39,22 +81,27 @@ def test_windows_install_creates_schtasks(monkeypatch, tmp_path):
         return m
 
     monkeypatch.setattr(iwa, "_run", fake_run)
+    monkeypatch.setattr(iwa, "_start_windows_wake_now", lambda cmd: None)
     iwa._install_windows()
     create = next(c for c in calls if c[:2] == ["schtasks", "/Create"])
     assert "/TN" in create and iwa.WIN_TASK in create
     assert "/SC" in create and "ONLOGON" in create
-    assert "/RL" in create and "LIMITED" in create
+    assert "/IT" in create
     tr = create[create.index("/TR") + 1]
-    assert "AURA.exe" in tr
-    assert "--wake-listener" in tr
+    assert tr.endswith("aura-wake.cmd")
+    assert (tmp_path / "Startup" / "AURA Wake.cmd").is_file()
     assert (tmp_path / "wake" / "installed").is_file()
 
 
-def test_windows_uninstall_deletes_task(monkeypatch, tmp_path):
+def test_windows_uninstall_removes_startup(monkeypatch, tmp_path):
     monkeypatch.setattr(iwa.sys, "platform", "win32")
     monkeypatch.setattr(iwa, "_support_wake", lambda: tmp_path / "wake")
+    monkeypatch.setattr(iwa, "_win_startup_dir", lambda: tmp_path / "Startup")
     (tmp_path / "wake").mkdir(parents=True)
     (tmp_path / "wake" / "installed").write_text("x", encoding="utf-8")
+    (tmp_path / "wake" / "aura-wake.cmd").write_text("x", encoding="utf-8")
+    (tmp_path / "Startup").mkdir(parents=True)
+    (tmp_path / "Startup" / "AURA Wake.cmd").write_text("x", encoding="utf-8")
     calls: list[list[str]] = []
 
     def fake_run(cmd, check=False, **kwargs):
@@ -67,6 +114,7 @@ def test_windows_uninstall_deletes_task(monkeypatch, tmp_path):
     iwa._uninstall_windows()
     assert any(c[:3] == ["schtasks", "/Delete", "/TN"] for c in calls)
     assert not (tmp_path / "wake" / "installed").exists()
+    assert not (tmp_path / "Startup" / "AURA Wake.cmd").exists()
 
 
 def test_linux_systemd_unit_contents(monkeypatch, tmp_path):

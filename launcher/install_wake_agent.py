@@ -1,7 +1,7 @@
 """Install the double-clap wake agent on macOS, Windows, and Linux.
 
 macOS  → LaunchAgent (com.jarvis.wake)
-Windows → Scheduled Task (AURAWake) at user logon
+Windows → Startup folder .cmd (+ optional schtasks AURAWake)
 Linux   → systemd --user unit, with autostart .desktop fallback
 """
 
@@ -201,16 +201,77 @@ def _run(cmd: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
 # ── Windows ──────────────────────────────────────────────────────────────────
 
 
-def _win_task_exists() -> bool:
-    result = _run(["schtasks", "/Query", "/TN", WIN_TASK])
-    return result.returncode == 0
+def _win_startup_dir() -> Path:
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def _install_windows() -> None:
-    cmd = _program_command()
-    tr = _quote_cmd(cmd)
-    # Replace any previous task, then create at logon for the current user.
+def _win_startup_cmd() -> Path:
+    return _win_startup_dir() / "AURA Wake.cmd"
+
+
+def _win_wrapper_cmd() -> Path:
+    return _support_wake() / "aura-wake.cmd"
+
+
+def _win_cmd_escape(path: str) -> str:
+    """Quote a path for .cmd / schtasks when it has spaces."""
+    if not path:
+        return '""'
+    if any(ch in path for ch in (' ', '\t', '&', '^', '(', ')', '%')):
+        return '"' + path.replace('"', "") + '"'
+    return path
+
+
+def _write_windows_wake_cmd(cmd: list[str]) -> Path:
+    """Write a one-line launcher .cmd (schtasks + Startup both point here)."""
+    if not cmd:
+        raise RuntimeError("empty wake command")
+    exe, *args = cmd
+    support = _support_wake()
+    support.mkdir(parents=True, exist_ok=True)
+    wrapper = _win_wrapper_cmd()
+    # `start ""` detaches so Startup/.cmd exits immediately (no stuck console).
+    line = "start \"\" " + " ".join(_win_cmd_escape(p) for p in [exe, *args])
+    wrapper.write_text("@echo off\r\n" + line + "\r\n", encoding="utf-8")
+    return wrapper
+
+
+def _install_windows_startup(wrapper: Path) -> Path:
+    startup = _win_startup_dir()
+    startup.mkdir(parents=True, exist_ok=True)
+    dest = _win_startup_cmd()
+    shutil.copy2(wrapper, dest)
+    return dest
+
+
+def _start_windows_wake_now(cmd: list[str]) -> None:
+    """Spawn the listener immediately (do not wait for next logon)."""
+    kw: dict = {}
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if flag:
+        kw["creationflags"] = flag
+    # Avoid inheriting the UI console; listener is long-lived.
+    kw["stdout"] = subprocess.DEVNULL
+    kw["stderr"] = subprocess.DEVNULL
+    kw["stdin"] = subprocess.DEVNULL
+    try:
+        # CREATE_NEW_PROCESS_GROUP keeps the child alive if parent UI exits.
+        if sys.platform == "win32":
+            kw["creationflags"] = int(kw.get("creationflags", 0)) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        subprocess.Popen(cmd, **kw)
+    except Exception as e:
+        raise RuntimeError(f"failed to start wake listener: {e}") from e
+
+
+def _try_schtasks(wrapper: Path) -> tuple[bool, str]:
+    """Best-effort scheduled task. Returns (ok, detail)."""
+    tr = str(wrapper)
     _run(["schtasks", "/Delete", "/TN", WIN_TASK, "/F"])
+    # /IT = interactive token (needed for mic access in some Windows builds).
+    # Point /TR at a single .cmd so quoting never breaks on multi-arg lines.
     create = _run(
         [
             "schtasks",
@@ -223,27 +284,56 @@ def _install_windows() -> None:
             "ONLOGON",
             "/RL",
             "LIMITED",
+            "/IT",
             "/F",
         ]
     )
     if create.returncode != 0:
-        err = (create.stderr or create.stdout or "schtasks /Create failed").strip()
-        raise RuntimeError(err)
-    # Start immediately so wake works without waiting for next login.
+        detail = (create.stderr or create.stdout or "schtasks /Create failed").strip()
+        return False, detail
     _run(["schtasks", "/Run", "/TN", WIN_TASK])
-    _write_marker(f"windows-task:{WIN_TASK}\ncmd:{tr}")
-    print(f"Installed Windows wake task: {WIN_TASK}")
+    return True, f"task:{WIN_TASK}"
+
+
+def _win_task_exists() -> bool:
+    result = _run(["schtasks", "/Query", "/TN", WIN_TASK])
+    return result.returncode == 0
+
+
+def _install_windows() -> None:
+    cmd = _program_command()
+    wrapper = _write_windows_wake_cmd(cmd)
+    startup = _install_windows_startup(wrapper)
+    task_ok, task_detail = _try_schtasks(wrapper)
+    # Always start now — Startup only helps on next login; schtasks often fails
+    # on locked-down machines (the 1.0.42 failure mode).
+    _start_windows_wake_now(cmd)
+    parts = [f"startup:{startup}", f"wrapper:{wrapper}", f"cmd:{_quote_cmd(cmd)}"]
+    if task_ok:
+        parts.append(task_detail)
+    else:
+        parts.append(f"schtasks_skipped:{task_detail}")
+    _write_marker("\n".join(parts))
+    print(f"Installed Windows wake via Startup: {startup}")
+    if not task_ok:
+        print(f"[Wake] schtasks unavailable ({task_detail}); Startup folder is enough.")
 
 
 def _uninstall_windows() -> None:
     _run(["schtasks", "/End", "/TN", WIN_TASK])
     _run(["schtasks", "/Delete", "/TN", WIN_TASK, "/F"])
+    for path in (_win_startup_cmd(), _win_wrapper_cmd()):
+        try:
+            if path.is_file():
+                path.unlink()
+        except Exception:
+            pass
     _clear_marker()
-    print(f"Uninstalled Windows wake task: {WIN_TASK}")
+    print("Uninstalled Windows wake agent")
 
 
 def _is_installed_windows() -> bool:
-    if _marker_path().is_file() and _win_task_exists():
+    if _win_startup_cmd().is_file() or _marker_path().is_file():
         return True
     return _win_task_exists()
 
