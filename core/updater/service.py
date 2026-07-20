@@ -23,6 +23,7 @@ from core.updater.manifest import (
 class UpdateState:
     checking: bool = False
     downloading: bool = False
+    applying: bool = False
     downloaded_bytes: int = 0
     total_bytes: int | None = None
     error: str = ""
@@ -45,6 +46,7 @@ class UpdateService:
             return UpdateState(
                 checking=self._state.checking,
                 downloading=self._state.downloading,
+                applying=self._state.applying,
                 downloaded_bytes=self._state.downloaded_bytes,
                 total_bytes=self._state.total_bytes,
                 error=self._state.error,
@@ -157,7 +159,13 @@ class UpdateService:
             return
 
         def _run() -> None:
-            self._set(downloading=True, downloaded_bytes=0, total_bytes=None, error="")
+            self._set(
+                downloading=True,
+                applying=False,
+                downloaded_bytes=0,
+                total_bytes=release.asset.size or None,
+                error="",
+            )
             try:
                 if not is_frozen():
                     raise RuntimeError(
@@ -167,25 +175,31 @@ class UpdateService:
                 def progress(done: int, total: int | None) -> None:
                     self._set(downloaded_bytes=done, total_bytes=total)
 
+                from core.platform_detect import normalize_os
+
                 package = download_asset_smart(
                     release.asset,
                     version=release.version,
                     on_progress=progress,
                     prefer_differential=True,
+                    # Never block quit on a 600MB+ cache copy / blockmap regen.
+                    persist_cache=normalize_os() != "windows",
                 )
-                self._set(package_path=package)
-                # Let the UI paint the final progress tick, then hand off.
+                self._set(
+                    package_path=package,
+                    applying=True,
+                    downloaded_bytes=release.asset.size or self._state.downloaded_bytes,
+                    total_bytes=release.asset.size or self._state.total_bytes,
+                )
                 time.sleep(0.35)
                 launch_updater(
                     package,
                     parent_pid,
                     expected_version=release.version,
                 )
-                # Brief pause so the detached updater can break away from this
-                # process/job before we tear down the parent.
                 time.sleep(0.6)
                 os._exit(0)
             except Exception as exc:
-                self._set(error=str(exc), downloading=False)
+                self._set(error=str(exc), downloading=False, applying=False)
 
         threading.Thread(target=_run, daemon=True).start()

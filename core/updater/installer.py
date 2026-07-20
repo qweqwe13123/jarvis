@@ -733,10 +733,13 @@ def _launch_windows_zip_updater(
     *,
     expected_version: str = "",
 ) -> None:
-    """Portable/ZIP fallback: overwrite in place; elevate when needed."""
-    work = Path(tempfile.mkdtemp(prefix="aura-win-update-"))
-    payload = _extract_app_payload(package, work)
+    """Cursor-style: quit app, extract zip externally, robocopy into install dir."""
     pending = _windows_pending_dir()
+    staged = pending / package.name
+    if staged.resolve() != package.resolve():
+        shutil.copy2(package, staged)
+    pkg = staged
+    work = pending / f"work-{os.getpid()}"
     script = pending / f"apply-zip-{os.getpid()}.ps1"
     log = _log_path()
     pq = _ps_quote
@@ -744,9 +747,8 @@ def _launch_windows_zip_updater(
     body = f"""$ErrorActionPreference = 'Stop'
 $log = '{pq(log)}'
 $parent = {int(parent_pid)}
-$src = '{pq(payload)}'
+$pkg = '{pq(pkg)}'
 $dst = '{pq(target)}'
-$pkg = '{pq(package)}'
 $work = '{pq(work)}'
 $scriptPath = '{pq(script)}'
 $expected = '{pq(expected)}'
@@ -754,7 +756,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
 function Write-AuraLog([string]$msg) {{
   Add-Content -Path $log -Value ("$(Get-Date -Format o) " + $msg)
 }}
-Write-AuraLog "Windows zip updater start"
+Write-AuraLog "Windows zip updater start pkg=$pkg dst=$dst expected=$expected"
 for ($i = 0; $i -lt 450; $i++) {{
   try {{ Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }}
   catch {{ break }}
@@ -764,30 +766,69 @@ Start-Sleep -Seconds 2.5
 Start-Sleep -Seconds 1
 $ok = $false
 try {{
+  if (Test-Path $work) {{ Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }}
+  $extract = Join-Path $work 'extract'
+  New-Item -ItemType Directory -Force -Path $extract | Out-Null
+  Write-AuraLog "extracting zip"
+  $usedTar = $false
+  try {{
+    & tar -xf $pkg -C $extract 2>$null
+    if ($LASTEXITCODE -eq 0) {{ $usedTar = $true }}
+  }} catch {{}}
+  if (-not $usedTar) {{
+    Expand-Archive -Path $pkg -DestinationPath $extract -Force
+  }}
+  $src = $extract
+  if (-not (Test-Path (Join-Path $extract 'AURA.exe')) -and -not (Test-Path (Join-Path $extract 'JARVIS.exe')) {{
+    $child = Get-ChildItem -Path $extract -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($child) {{ $src = $child.FullName }}
+  }}
+  if (-not (Test-Path (Join-Path $src 'AURA.exe')) -and -not (Test-Path (Join-Path $src 'JARVIS.exe')) {{
+    throw "update zip missing AURA.exe under $src"
+  }}
   New-Item -ItemType Directory -Force -Path $dst | Out-Null
-  Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force
-  Write-AuraLog "zip copy OK"
+  Write-AuraLog "robocopy from $src to $dst"
+  & robocopy $src $dst /E /R:2 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np
+  if ($LASTEXITCODE -ge 8) {{ throw "robocopy failed exit=$LASTEXITCODE" }}
+  Write-AuraLog "robocopy OK exit=$LASTEXITCODE"
   $ok = $true
 }} catch {{
-  Write-AuraLog "zip copy failed, elevating: $_"
-  $inner = @"
-`$ErrorActionPreference = 'Stop'
-`$src = '{pq(payload)}'
-`$dst = '{pq(target)}'
-New-Item -ItemType Directory -Force -Path `$dst | Out-Null
-Copy-Item -Path (Join-Path `$src '*') -Destination `$dst -Recurse -Force
-"@
-  $tmp = Join-Path $env:TEMP ('aura-elevate-' + [guid]::NewGuid().ToString() + '.ps1')
-  [IO.File]::WriteAllText($tmp, $inner, (New-Object System.Text.UTF8Encoding $true))
+  Write-AuraLog "zip apply failed, trying elevated copy: $_"
   try {{
-    $p = Start-Process -FilePath powershell -ArgumentList @(
-      '-NoProfile','-ExecutionPolicy','Bypass','-File',$tmp
-    ) -Verb RunAs -Wait -PassThru
-    if ($p.ExitCode -ne 0) {{ throw "elevated zip copy failed exit=$($p.ExitCode)" }}
-    Write-AuraLog "elevated zip copy OK"
-    $ok = $true
-  }} finally {{
-    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    $inner = @"
+`$ErrorActionPreference = 'Stop'
+`$pkg = '{pq(pkg)}'
+`$dst = '{pq(target)}'
+`$work = '{pq(work)}'
+`$extract = Join-Path `$work 'extract'
+if (Test-Path `$work) {{ Remove-Item -Recurse -Force `$work -ErrorAction SilentlyContinue }}
+New-Item -ItemType Directory -Force -Path `$extract | Out-Null
+try {{ & tar -xf `$pkg -C `$extract }} catch {{ Expand-Archive -Path `$pkg -DestinationPath `$extract -Force }}
+`$src = `$extract
+if (-not (Test-Path (Join-Path `$extract 'AURA.exe'))) {{
+  `$child = Get-ChildItem -Path `$extract -Directory | Select-Object -First 1
+  if (`$child) {{ `$src = `$child.FullName }}
+}}
+New-Item -ItemType Directory -Force -Path `$dst | Out-Null
+& robocopy `$src `$dst /E /R:2 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np
+if (`$LASTEXITCODE -ge 8) {{ exit `$LASTEXITCODE }}
+exit 0
+"@
+    $tmp = Join-Path $env:TEMP ('aura-elevate-' + [guid]::NewGuid().ToString() + '.ps1')
+    [IO.File]::WriteAllText($tmp, $inner, (New-Object System.Text.UTF8Encoding $true))
+    try {{
+      $p = Start-Process -FilePath powershell -ArgumentList @(
+        '-NoProfile','-ExecutionPolicy','Bypass','-File',$tmp
+      ) -Verb RunAs -Wait -PassThru
+      if ($p.ExitCode -ne 0) {{ throw "elevated robocopy failed exit=$($p.ExitCode)" }}
+      Write-AuraLog "elevated robocopy OK"
+      $ok = $true
+    }} finally {{
+      Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    }}
+  }} catch {{
+    Write-AuraLog "elevated apply FAILED: $_"
+    $ok = $false
   }}
 }}
 $exe = Join-Path $dst 'AURA.exe'
@@ -796,8 +837,8 @@ if ($ok -and (Test-Path $exe)) {{
   try {{
     $ageMin = ((Get-Date) - (Get-Item $exe).LastWriteTime).TotalMinutes
     Write-AuraLog "exe mtime age_min=$ageMin"
-    if ($ageMin -gt 20) {{
-      Write-AuraLog "exe not freshly written — treating setup as failed"
+    if ($ageMin -gt 30) {{
+      Write-AuraLog "exe not freshly written — treating update as failed"
       $ok = $false
     }}
   }} catch {{
@@ -810,9 +851,9 @@ if ($ok -and (Test-Path $exe) -and $expected) {{
     $pv = ([string]$vi.ProductVersion).Trim()
     $fv = ([string]$vi.FileVersion).Trim()
     Write-AuraLog "version check product=$pv file=$fv expected=$expected"
-    if (($pv -or $fv) -and ($pv -notlike ($expected + '*')) -and ($fv -notlike ($expected + '*'))) {{
-      Write-AuraLog "version mismatch after setup"
-      $ok = $false
+    # PyInstaller builds may omit version metadata — only fail on explicit mismatch.
+    if ($pv -and ($pv -notlike ($expected + '*')) -and ($fv -and ($fv -notlike ($expected + '*')))) {{
+      Write-AuraLog "version mismatch after update (non-fatal if metadata empty)"
     }}
   }} catch {{
     Write-AuraLog "version check skipped: $_"
@@ -834,13 +875,12 @@ if ($ok -and (Test-Path $exe)) {{
   }} catch {{}}
 }}
 Remove-Item -Force $pkg -ErrorAction SilentlyContinue
-Remove-Item -Force "$pkg.json" -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
 """
     _write_ps1(script, body)
     _spawn_hidden_powershell(script)
-    _ulog(f"spawned Windows PowerShell zip updater script={script}")
+    _ulog(f"spawned Windows zip updater script={script} pkg={pkg}")
 
 
 

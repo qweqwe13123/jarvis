@@ -76,7 +76,7 @@ class UpdateDialog(QDialog):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setFixedWidth(520)
-        self.setMinimumHeight(380)
+        self.setMinimumHeight(440)
 
         shell = QFrame(self)
         shell.setObjectName("AuraUpdateShell")
@@ -287,12 +287,16 @@ class UpdateDialog(QDialog):
         self._version.setText(f"Installed: v{VERSION}  →  Latest: v{release.version}")
         self._notes.setPlainText(_FIXED_WHATS_NEW)
 
-        if state.downloading:
+        if state.downloading or state.applying:
             self._update_btn.setEnabled(False)
             self._later_btn.setEnabled(False)
             self._skip_btn.setEnabled(False)
             self._progress.show()
-            if state.total_bytes:
+            if state.applying:
+                self._progress.setRange(0, 100)
+                self._progress.setValue(100)
+                self._status.setText("Restarting AURA to finish the update…")
+            elif state.total_bytes:
                 pct = max(1, int(state.downloaded_bytes * 100 / state.total_bytes))
                 self._progress.setValue(min(pct, 100))
                 if state.downloaded_bytes >= state.total_bytes:

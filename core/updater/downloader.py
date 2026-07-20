@@ -113,6 +113,7 @@ def download_asset_smart(
     dest_dir: Path | None = None,
     on_progress: ProgressCallback | None = None,
     prefer_differential: bool = True,
+    persist_cache: bool = True,
 ) -> Path:
     """
     Cursor-style download:
@@ -157,19 +158,20 @@ def download_asset_smart(
     if not used_differential:
         dest = download_asset(asset, dest_dir=dest_dir, on_progress=on_progress)
 
-    # Persist for next differential update (installer may delete the temp package).
-    try:
-        bm = None
-        if asset.blockmap_url:
-            try:
-                bm = fetch_blockmap(asset.blockmap_url)
-            except Exception:
-                bm = None
-        if bm is None:
-            bm = generate_blockmap(dest)
-        save_package(dest, version=version, blockmap=bm)
-    except Exception as exc:
-        _ulog_cache_fail(exc)
+    if persist_cache:
+        try:
+            bm = None
+            if asset.blockmap_url:
+                try:
+                    bm = fetch_blockmap(asset.blockmap_url)
+                except Exception:
+                    bm = None
+            if bm is None and not asset.blockmap_url:
+                bm = generate_blockmap(dest)
+            if bm is not None:
+                save_package(dest, version=version, blockmap=bm)
+        except Exception as exc:
+            _ulog_cache_fail(exc)
 
     return dest
 
