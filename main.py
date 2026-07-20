@@ -1925,38 +1925,21 @@ class JarvisLive:
                 backoff = min(backoff * 2, 30)  # exponential backoff, capped
 
 def _ensure_double_clap_wake() -> None:
-    """Install/refresh the macOS LaunchAgent that opens AURA on double clap."""
+    """Install/refresh the double-clap wake agent (LaunchAgent / schtasks / systemd)."""
     try:
-        # Prefer on-disk clap-filter installer (survives frozen-app overwrites).
-        from pathlib import Path
-        import importlib.util
+        from jarvis_ui.wake_bootstrap import is_wake_enabled_pref, set_wake_enabled
 
-        candidates = [
-            Path.home() / "Library/Application Support/AURA/wake/install_launch_agent.py",
-            Path(__file__).resolve().parent / "launcher" / "install_launch_agent.py",
-            Path("/Applications/AURA.app/Contents/Frameworks/launcher/install_launch_agent.py"),
-            Path("/Applications/AURA.app/Contents/Resources/launcher/install_launch_agent.py"),
-        ]
-        for path in candidates:
-            if not path.is_file():
-                continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            # New installer copies listener into Application Support (clap-filter gaps).
-            if "_sync_listener" not in text and "1.80" not in text and "0.90" not in text:
-                continue
-            spec = importlib.util.spec_from_file_location("aura_wake_install", path)
-            if spec is None or spec.loader is None:
-                continue
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            mod.install()
+        if not is_wake_enabled_pref():
             return
+        # Re-run install so login agent stays on the current binary after updates.
+        set_wake_enabled(True)
+    except Exception:
+        try:
+            from launcher.install_wake_agent import install as install_wake
 
-        from launcher.install_launch_agent import install as install_wake_agent
-
-        install_wake_agent()
-    except Exception as e:
-        print(f"[Wake] Could not install double-clap listener: {e}")
+            install_wake()
+        except Exception as e:
+            print(f"[Wake] Could not install double-clap listener: {e}")
 
 
 def main():

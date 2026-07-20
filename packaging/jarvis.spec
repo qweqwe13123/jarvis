@@ -56,6 +56,7 @@ hiddenimports = [
     "launcher",
     "launcher.wake_listener",
     "launcher.install_launch_agent",
+    "launcher.install_wake_agent",
     "aura_openclaw",
     "aura_openclaw.gateway",
     "aura_openclaw.gateway.embedded",

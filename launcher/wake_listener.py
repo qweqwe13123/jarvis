@@ -20,16 +20,43 @@ import sounddevice as sd
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-PYTHON = BASE_DIR / ".venv" / "bin" / "python"
 MAIN = BASE_DIR / "main.py"
+_VENV_PYTHON = (
+    BASE_DIR / ".venv" / "Scripts" / "python.exe"
+    if sys.platform == "win32"
+    else BASE_DIR / ".venv" / "bin" / "python"
+)
 LOCAL_APP_PATH = BASE_DIR / "dist" / "AURA.app"
 APPLICATIONS_APP_PATH = Path("/Applications/AURA.app")
-# Legacy names from older installs.
 _LEGACY_APPS = (
     BASE_DIR / "dist" / "JARVIS.app",
     Path("/Applications/JARVIS.app"),
 )
-LOG = Path.home() / "Library" / "Logs" / "mark_xxxix_wake.log"
+
+_WAKE_FLAGS = ("--wake-listener", "--aura-wake")
+
+
+def _wake_support_dir() -> Path:
+    try:
+        from core.app_paths import support_dir
+
+        return support_dir() / "wake"
+    except Exception:
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / "AURA" / "wake"
+        if sys.platform == "win32":
+            return Path.home() / "AppData" / "Local" / "AURA" / "wake"
+        return Path.home() / ".local" / "share" / "AURA" / "wake"
+
+
+def _log_path() -> Path:
+    # Keep the legacy macOS path so existing installs keep one continuous log.
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "mark_xxxix_wake.log"
+    return _wake_support_dir() / "logs" / "aura_wake.log"
+
+
+LOG = _log_path()
 
 
 def _log(message: str) -> None:
@@ -39,7 +66,25 @@ def _log(message: str) -> None:
         f.write(f"[{stamp}] {message}\n")
 
 
-def _app_running() -> bool:
+def _is_wake_cmdline(cmdline: str) -> bool:
+    low = (cmdline or "").lower()
+    return any(flag in low for flag in _WAKE_FLAGS)
+
+
+def _subprocess_kwargs() -> dict:
+    kw: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        # Avoid flashing a console when the wake agent launches/focuses AURA.
+        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if creation:
+            kw["creationflags"] = creation
+    return kw
+
+
+def _app_running_darwin() -> bool:
     try:
         for pattern in ("AURA.app/Contents/MacOS/AURA", "main.py"):
             result = subprocess.run(
@@ -51,15 +96,76 @@ def _app_running() -> bool:
             out = result.stdout or ""
             if not out.strip():
                 continue
-            if pattern == "main.py" and "wake_listener" in out:
+            if _is_wake_cmdline(out) and "AURA.app" not in pattern:
                 continue
-            return True
+            # UI binary lines may also list the wake child — require a non-wake hit.
+            lines = [ln for ln in out.splitlines() if ln.strip()]
+            ui_lines = [ln for ln in lines if not _is_wake_cmdline(ln)]
+            if ui_lines:
+                return True
         return False
     except Exception:
         return False
 
 
-def _bring_to_front() -> None:
+def _win_no_window_flag() -> int:
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+
+
+def _app_running_win() -> bool:
+    try:
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='AURA.exe'\" | "
+            "Where-Object { $_.CommandLine -notmatch '--wake-listener|--aura-wake' } | "
+            "Select-Object -First 1 -ExpandProperty ProcessId"
+        )
+        kw: dict = {"capture_output": True, "text": True, "timeout": 6}
+        flag = _win_no_window_flag()
+        if flag:
+            kw["creationflags"] = flag
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            **kw,
+        )
+        return bool((result.stdout or "").strip())
+    except Exception:
+        return False
+
+
+def _app_running_linux() -> bool:
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "args="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        for line in (result.stdout or "").splitlines():
+            low = line.lower()
+            if _is_wake_cmdline(line) or "wake_listener" in low:
+                continue
+            if "aura.appimage" in low:
+                return True
+            if "main.py" in low:
+                return True
+            # Frozen binary named AURA / aura without wake flags.
+            parts = low.strip().split()
+            if parts and Path(parts[0]).name in {"aura", "AURA".lower()}:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _app_running() -> bool:
+    if sys.platform == "darwin":
+        return _app_running_darwin()
+    if sys.platform == "win32":
+        return _app_running_win()
+    return _app_running_linux()
+
+
+def _bring_to_front_darwin() -> None:
     for app_name in ("AURA", "JARVIS"):
         try:
             subprocess.run(
@@ -73,56 +179,136 @@ def _bring_to_front() -> None:
             continue
 
 
+def _bring_to_front_win() -> None:
+    # Prefer the main window of AURA.exe; fall back to AppActivate by title.
+    ps = (
+        "$p = Get-Process -Name AURA -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; "
+        "if ($p) { "
+        "  (New-Object -ComObject WScript.Shell).AppActivate($p.Id) | Out-Null "
+        "} else { "
+        "  (New-Object -ComObject WScript.Shell).AppActivate('AURA') | Out-Null "
+        "}"
+    )
+    try:
+        kw: dict = {"timeout": 6}
+        kw.update(_subprocess_kwargs())
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            **kw,
+        )
+    except Exception:
+        pass
+
+
+def _bring_to_front_linux() -> None:
+    for cmd in (
+        ["wmctrl", "-a", "AURA"],
+        ["xdotool", "search", "--name", "AURA", "windowactivate"],
+    ):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if result.returncode == 0:
+                return
+        except Exception:
+            continue
+
+
+def _bring_to_front() -> None:
+    if sys.platform == "darwin":
+        _bring_to_front_darwin()
+    elif sys.platform == "win32":
+        _bring_to_front_win()
+    else:
+        _bring_to_front_linux()
+
+
+def _frozen_exe() -> Path | None:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve()
+    return None
+
+
+def _windows_install_exe() -> Path | None:
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    candidate = Path(local) / "Programs" / "AURA" / "AURA.exe"
+    return candidate if candidate.is_file() else None
+
+
+def _linux_install_candidates() -> list[Path]:
+    home = Path.home()
+    out: list[Path] = []
+    for p in (
+        home / ".local" / "bin" / "AURA",
+        home / ".local" / "bin" / "aura",
+        Path("/usr/local/bin/AURA"),
+        Path("/usr/bin/AURA"),
+    ):
+        out.append(p)
+    # Common AppImage drop locations.
+    for folder in (home / "Applications", home / "Downloads", home / "Desktop"):
+        if not folder.is_dir():
+            continue
+        try:
+            out.extend(sorted(folder.glob("AURA*.AppImage")))
+        except Exception:
+            pass
+    return out
+
+
 def _launch_aura() -> None:
     if _app_running():
         _log("AURA is already running — bringing to front.")
         _bring_to_front()
         return
 
-    candidates = [
-        (APPLICATIONS_APP_PATH, "/Applications"),
-        (LOCAL_APP_PATH, "local dist"),
-    ]
-    candidates.extend((p, str(p)) for p in _LEGACY_APPS)
-    for app_path, label in candidates:
-        if app_path.exists():
-            subprocess.Popen(
-                ["open", "-n", str(app_path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            _log(f"Launched AURA.app from {label}.")
+    frozen = _frozen_exe()
+    if frozen is not None and frozen.is_file():
+        # Wake child is the same binary — start a UI process without wake flags.
+        subprocess.Popen([str(frozen)], **_subprocess_kwargs())
+        _log(f"Launched AURA via frozen binary {frozen}.")
+        return
+
+    if sys.platform == "darwin":
+        candidates = [
+            (APPLICATIONS_APP_PATH, "/Applications"),
+            (LOCAL_APP_PATH, "local dist"),
+        ]
+        candidates.extend((p, str(p)) for p in _LEGACY_APPS)
+        for app_path, label in candidates:
+            if app_path.exists():
+                subprocess.Popen(
+                    ["open", "-n", str(app_path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                _log(f"Launched AURA.app from {label}.")
+                return
+
+    if sys.platform == "win32":
+        win_exe = _windows_install_exe()
+        if win_exe is not None:
+            subprocess.Popen([str(win_exe)], **_subprocess_kwargs())
+            _log(f"Launched AURA.exe from {win_exe.parent}.")
             return
 
-    python = PYTHON if PYTHON.exists() else Path(sys.executable)
+    if sys.platform.startswith("linux"):
+        for path in _linux_install_candidates():
+            if path.is_file() and os.access(path, os.X_OK):
+                subprocess.Popen([str(path)], **_subprocess_kwargs())
+                _log(f"Launched AURA from {path}.")
+                return
+
+    python = _VENV_PYTHON if _VENV_PYTHON.exists() else Path(sys.executable)
     subprocess.Popen(
         [str(python), str(MAIN)],
         cwd=str(BASE_DIR),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        **_subprocess_kwargs(),
     )
     _log("Launched AURA via python fallback.")
 
 
-def _pick_input_device() -> int | None:
-    """Prefer the built-in MacBook mic over headphones/virtual devices."""
-    try:
-        devices = sd.query_devices()
-    except Exception:
-        return None
-    preferred = (
-        "macbook pro microphone",
-        "macbook air microphone",
-        "built-in microphone",
-        "macbook microphone",
-    )
-    for i, d in enumerate(devices):
-        if int(d.get("max_input_channels") or 0) <= 0:
-            continue
-        name = str(d.get("name") or "").lower()
-        if any(p in name for p in preferred):
-            _log(f"Using preferred mic: {d.get('name')}")
-            return i
+def _default_input_device() -> int | None:
     try:
         default = sd.default.device
         if isinstance(default, (list, tuple)):
@@ -130,6 +316,59 @@ def _pick_input_device() -> int | None:
         return int(default) if default is not None else None
     except Exception:
         return None
+
+
+def _pick_input_device() -> int | None:
+    """Prefer a real built-in / array mic over headphones and virtual devices."""
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return None
+
+    if sys.platform == "darwin":
+        preferred = (
+            "macbook pro microphone",
+            "macbook air microphone",
+            "built-in microphone",
+            "macbook microphone",
+        )
+    elif sys.platform == "win32":
+        preferred = (
+            "microphone array",
+            "built-in",
+            "internal microphone",
+            "microphone (",
+            "mic in",
+        )
+    else:
+        preferred = (
+            "built-in",
+            "internal",
+            "laptop",
+            "microphone",
+            "default",
+        )
+
+    skip_bits = (
+        "monitor",
+        "null",
+        "dummy",
+        "loopback",
+        "stereo mix",
+        "what u hear",
+        "cable",
+        "vb-audio",
+    )
+    for i, d in enumerate(devices):
+        if int(d.get("max_input_channels") or 0) <= 0:
+            continue
+        name = str(d.get("name") or "").lower()
+        if any(s in name for s in skip_bits):
+            continue
+        if any(p in name for p in preferred):
+            _log(f"Using preferred mic: {d.get('name')}")
+            return i
+    return _default_input_device()
 
 
 def _band_energy(mag: np.ndarray, freqs: np.ndarray, lo: float, hi: float) -> float:

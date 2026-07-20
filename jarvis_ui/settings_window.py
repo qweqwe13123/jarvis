@@ -899,19 +899,14 @@ class SettingsWindow(QWidget):
 
             on = is_wake_installed() and is_wake_enabled_pref()
         except Exception:
-            try:
-                from launcher.install_launch_agent import PLIST_PATH
-
-                on = PLIST_PATH.is_file()
-            except Exception:
-                on = False
+            on = False
         self._clap_toggle.blockSignals(True)
         self._clap_toggle.setChecked(on)
         self._clap_toggle.blockSignals(False)
         self._clap_status.setText(
             "Wake agent is installed and will start at login."
             if on
-            else "Wake agent is off. Toggle to install the LaunchAgent."
+            else "Wake agent is off. Toggle to install the double-clap listener."
         )
 
     def _refresh_updates(self) -> None:

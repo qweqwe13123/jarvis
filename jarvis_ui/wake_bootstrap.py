@@ -1,8 +1,8 @@
-"""Keep the double-clap LaunchAgent on the clap-filter installer.
+"""Keep the double-clap wake agent installed across platforms.
 
-The frozen AURA binary may reinstall an older wake plist on launch. This
-module (loaded from disk via prefer-disk) re-applies the good agent shortly
-after the UI starts — unless the user disabled wake in Settings.
+macOS may reinstall a legacy LaunchAgent from the frozen binary; this module
+re-applies the clap-filter agent after UI start unless the user disabled wake.
+On Windows/Linux it installs/refreshes the scheduled task or systemd unit.
 """
 
 from __future__ import annotations
@@ -10,30 +10,63 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "AURA" / "wake"
-_SUPPORT_INSTALLER = _SUPPORT_DIR / "install_launch_agent.py"
-_SUPPORT_LISTENER = _SUPPORT_DIR / "wake_listener.py"
-_PREFS_PATH = _SUPPORT_DIR / "prefs.json"
-_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.wake.plist"
 
-_INSTALLER_CANDIDATES = (
-    _REPO_ROOT / "launcher" / "install_launch_agent.py",
-    Path("/Applications/AURA.app/Contents/Frameworks/launcher/install_launch_agent.py"),
-    Path("/Applications/AURA.app/Contents/Resources/launcher/install_launch_agent.py"),
-    _SUPPORT_INSTALLER,
-)
-_LISTENER_CANDIDATES = (
-    _REPO_ROOT / "launcher" / "wake_listener.py",
-    Path("/Applications/AURA.app/Contents/Frameworks/launcher/wake_listener.py"),
-    Path("/Applications/AURA.app/Contents/Resources/launcher/wake_listener.py"),
-    _SUPPORT_LISTENER,
-)
+
+def _support_dir() -> Path:
+    try:
+        from core.app_paths import support_dir
+
+        return support_dir() / "wake"
+    except Exception:
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / "AURA" / "wake"
+        if sys.platform == "win32":
+            return Path.home() / "AppData" / "Local" / "AURA" / "wake"
+        return Path.home() / ".local" / "share" / "AURA" / "wake"
+
+
+def _prefs_path() -> Path:
+    return _support_dir() / "prefs.json"
+
+
+def _log_path() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "mark_xxxix_wake.log"
+    return _support_dir() / "logs" / "aura_wake.log"
+
+
+_SUPPORT_INSTALLER = None  # resolved lazily via _support_dir()
+
+
+def _installer_candidates() -> tuple[Path, ...]:
+    support = _support_dir()
+    return (
+        _REPO_ROOT / "launcher" / "install_wake_agent.py",
+        _REPO_ROOT / "launcher" / "install_launch_agent.py",
+        Path("/Applications/AURA.app/Contents/Frameworks/launcher/install_wake_agent.py"),
+        Path("/Applications/AURA.app/Contents/Resources/launcher/install_wake_agent.py"),
+        Path("/Applications/AURA.app/Contents/Frameworks/launcher/install_launch_agent.py"),
+        Path("/Applications/AURA.app/Contents/Resources/launcher/install_launch_agent.py"),
+        support / "install_wake_agent.py",
+        support / "install_launch_agent.py",
+    )
+
+
+def _listener_candidates() -> tuple[Path, ...]:
+    support = _support_dir()
+    return (
+        _REPO_ROOT / "launcher" / "wake_listener.py",
+        Path("/Applications/AURA.app/Contents/Frameworks/launcher/wake_listener.py"),
+        Path("/Applications/AURA.app/Contents/Resources/launcher/wake_listener.py"),
+        support / "wake_listener.py",
+    )
 
 
 def _is_clap_filter(path: Path) -> bool:
@@ -54,26 +87,50 @@ def _safe_copy(src: Path, dst: Path) -> None:
 
 
 def _copy_support_files() -> Path | None:
-    src_install = next((p for p in _INSTALLER_CANDIDATES if p.is_file()), None)
-    src_listener = next((p for p in _LISTENER_CANDIDATES if p.is_file() and _is_clap_filter(p)), None)
+    """Copy installer + listener into writable support dir (macOS LaunchAgent path)."""
+    src_install = next((p for p in _installer_candidates() if p.is_file()), None)
+    src_listener = next(
+        (p for p in _listener_candidates() if p.is_file() and _is_clap_filter(p)), None
+    )
     if src_install is None or src_listener is None:
         return None
-    _SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-    _safe_copy(src_install, _SUPPORT_INSTALLER)
-    _safe_copy(src_listener, _SUPPORT_LISTENER)
-    return _SUPPORT_INSTALLER
+    support = _support_dir()
+    support.mkdir(parents=True, exist_ok=True)
+    # Prefer the multi-platform installer name when available.
+    dst_name = (
+        "install_wake_agent.py"
+        if src_install.name == "install_wake_agent.py"
+        else src_install.name
+    )
+    dst_install = support / dst_name
+    _safe_copy(src_install, dst_install)
+    _safe_copy(src_listener, support / "wake_listener.py")
+    # Keep legacy filename for older macOS bootstrap paths.
+    if dst_name == "install_wake_agent.py":
+        try:
+            legacy = _REPO_ROOT / "launcher" / "install_launch_agent.py"
+            if legacy.is_file():
+                _safe_copy(legacy, support / "install_launch_agent.py")
+        except Exception:
+            pass
+    return dst_install
 
 
 def _load_installer_module():
+    # Prefer in-package multi-platform module when importable.
+    try:
+        from launcher import install_wake_agent as mod
+
+        return mod
+    except Exception:
+        pass
+
     installer = _copy_support_files()
     if installer is None:
-        # Fall back to importable launcher package (dev runs).
         from launcher import install_launch_agent as mod
 
         return mod
-    spec = importlib.util.spec_from_file_location(
-        "aura_wake_install_launch_agent", installer
-    )
+    spec = importlib.util.spec_from_file_location("aura_wake_install_agent", installer)
     if spec is None or spec.loader is None:
         raise RuntimeError("could not load wake installer")
     mod = importlib.util.module_from_spec(spec)
@@ -81,19 +138,20 @@ def _load_installer_module():
     return mod
 
 
+def _plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / "com.jarvis.wake.plist"
+
+
 def _plist_is_clap_filter() -> bool:
     try:
-        text = _PLIST_PATH.read_text(encoding="utf-8", errors="ignore")
+        text = _plist_path().read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return False
-    # Broken legacy: AURA binary invoked with a .py path (not --wake-listener).
     if "AURA.app/Contents/MacOS/AURA" in text and "wake_listener.py" in text:
         if "--wake-listener" not in text:
             return False
-    # Good: shipped app wake mode.
     if "--wake-listener" in text and "AURA.app/Contents/MacOS/AURA" in text:
         return True
-    # Good: python + clap-filter script (local dev / Application Support).
     return (
         "wake_listener.py" in text
         and ("2.40" in text or "2.4" in text or "1.80" in text or "0.90" in text)
@@ -101,18 +159,28 @@ def _plist_is_clap_filter() -> bool:
     )
 
 
+def _agent_looks_healthy(mod) -> bool:
+    if not mod.is_installed():
+        return False
+    if sys.platform == "darwin":
+        return _plist_is_clap_filter()
+    return True
+
+
 def _read_prefs() -> dict:
     try:
-        if _PREFS_PATH.is_file():
-            return json.loads(_PREFS_PATH.read_text(encoding="utf-8"))
+        path = _prefs_path()
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {}
 
 
 def _write_prefs(data: dict) -> None:
-    _SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-    _PREFS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    support = _support_dir()
+    support.mkdir(parents=True, exist_ok=True)
+    _prefs_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def is_wake_enabled_pref() -> bool:
@@ -124,11 +192,18 @@ def is_wake_enabled_pref() -> bool:
 
 
 def is_wake_installed() -> bool:
-    return _PLIST_PATH.is_file()
+    try:
+        mod = _load_installer_module()
+        return bool(mod.is_installed())
+    except Exception:
+        if sys.platform == "darwin":
+            return _plist_path().is_file()
+        marker = _support_dir() / "installed"
+        return marker.is_file()
 
 
 def set_wake_enabled(enabled: bool) -> None:
-    """Install or uninstall the LaunchAgent and persist the preference."""
+    """Install or uninstall the wake agent and persist the preference."""
     enabled = bool(enabled)
     prefs = _read_prefs()
     prefs["enabled"] = enabled
@@ -144,7 +219,7 @@ def ensure_clap_wake_async(delay_s: float = 1.5) -> None:
     """Re-install clap-filter wake after the frozen installer may have run."""
 
     def _run() -> None:
-        log = Path.home() / "Library" / "Logs" / "mark_xxxix_wake.log"
+        log = _log_path()
         try:
             time.sleep(max(0.0, delay_s))
             if not is_wake_enabled_pref():
@@ -155,17 +230,16 @@ def ensure_clap_wake_async(delay_s: float = 1.5) -> None:
                 except Exception:
                     pass
                 return
-            # Retry: frozen main.py may overwrite the plist a few seconds in.
             for attempt in range(4):
                 mod = _load_installer_module()
                 mod.install()
-                if _plist_is_clap_filter():
+                if _agent_looks_healthy(mod):
                     log.parent.mkdir(parents=True, exist_ok=True)
                     with log.open("a", encoding="utf-8") as f:
                         f.write("[wake_bootstrap] clap-filter agent confirmed.\n")
                     return
                 time.sleep(2.0 + attempt)
-            raise RuntimeError("plist still not clap-filter after retries")
+            raise RuntimeError("wake agent still unhealthy after retries")
         except Exception as e:
             try:
                 log.parent.mkdir(parents=True, exist_ok=True)

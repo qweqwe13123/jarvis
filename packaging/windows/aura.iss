@@ -91,5 +91,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+Filename: "schtasks"; Parameters: "/Delete /TN AURAWake /F"; Flags: runhidden; RunOnceId: "RemoveAuraWakeTask"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
