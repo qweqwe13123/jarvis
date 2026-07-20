@@ -902,9 +902,7 @@ try {{
     }}
   }}
   $ok = $true
-  if (Test-Path -LiteralPath $bak) {{
-    Start-Job -ScriptBlock {{ param($p) Start-Sleep -Seconds 2; Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }} -ArgumentList $bak | Out-Null
-  }}
+  Write-AuraLog "swap verified OK — will launch next"
 }} catch {{
   Write-AuraLog "folder swap failed, robocopy fallback: $_"
   try {{
@@ -913,7 +911,6 @@ try {{
     }}
     if (-not (Test-Path -LiteralPath $src)) {{
       if (Test-Path -LiteralPath $dst) {{
-        # payload already moved? abort
         throw "payload missing after failed swap"
       }}
     }}
@@ -933,15 +930,29 @@ try {{
 }}
 $exe = Join-Path $dst 'AURA.exe'
 if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
-if ($ok -and (Test-Path -LiteralPath $exe) -and ($exe -match '^[A-Za-z]:\\')) {{
+# Drive-letter check without fragile regex / backslash quoting (C:\...)
+$isLocal = ($exe.Length -ge 3) -and ($exe[1] -eq [char]':') -and ([int][char]$exe[2] -eq 92)
+if ($ok -and (Test-Path -LiteralPath $exe) -and $isLocal) {{
   Write-AuraLog "launching $exe"
-  Start-Process -FilePath $exe -WorkingDirectory $dst
+  try {{
+    Start-Process -FilePath $exe -WorkingDirectory $dst
+    Write-AuraLog "Start-Process OK"
+  }} catch {{
+    Write-AuraLog "Start-Process FAILED: $_"
+  }}
+  # Cleanup AFTER relaunch — never Start-Job (can hang hidden PS and skip launch).
+  if (Test-Path -LiteralPath $bak) {{
+    Write-AuraLog "scheduling bak cleanup: $bak"
+    Start-Process -FilePath 'cmd.exe' -ArgumentList @(
+      '/c', ('ping -n 4 127.0.0.1 >nul & rd /s /q "' + $bak + '"')
+    ) -WindowStyle Hidden
+  }}
   Remove-Item -Force $pkg -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
   Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
-  Remove-Item -Force ($scriptPath -replace '\\.ps1$','.cmd') -ErrorAction SilentlyContinue
+  Remove-Item -Force ($scriptPath.Replace('.ps1','.cmd')) -ErrorAction SilentlyContinue
 }} else {{
-  Write-AuraLog "zip update aborted; not relaunching stale build"
+  Write-AuraLog ("zip update aborted; not relaunching stale build ok=" + $ok + " exe=" + $exe + " local=" + $isLocal)
   try {{
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     [System.Windows.Forms.MessageBox]::Show(

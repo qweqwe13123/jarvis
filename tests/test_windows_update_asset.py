@@ -70,13 +70,14 @@ def test_windows_zip_apply_ps_is_fast_swap_not_post_quit_extract():
     assert body.count("{") == body.count("}")
     assert "Wait-AuraUnlocked" in body
     assert "Move-Item" in body
-    assert "fast swap" in body or "folder swap" in body.lower() or "swap:" in body
+    assert "Start-Process" in body
+    assert "Start-Job -ScriptBlock" not in body
+    assert "never Start-Job" in body or "scheduling bak cleanup" in body
+    assert "swap verified OK" in body or "will launch next" in body
     assert "version.txt" in body
-    # Must NOT extract the zip after quit on the happy path.
     assert "Expand-Archive" not in body
-    assert "pre-extract" not in body  # extract is in Python before quit
+    assert "need 1-7" in body
     assert "JARVIS.exe')) {{" not in body
-    assert "need 1-7" in body  # robocopy fallback still gated
 
 
 def test_windows_spawn_does_not_use_start_empty_title():
