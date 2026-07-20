@@ -611,7 +611,7 @@ class SettingsWindow(QWidget):
     def _page_voice(self) -> QWidget:
         root, lay = _page_root()
         lay.addWidget(_SectionHeader("Voice & Wake"))
-        lay.addWidget(_Hint("Hands-free wake via the macOS LaunchAgent."))
+        lay.addWidget(_Hint("Hands-free wake: two claps open or focus AURA in the background."))
 
         card = _Card()
         self._clap_toggle = _PillToggle(False)
