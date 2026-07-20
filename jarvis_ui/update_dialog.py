@@ -287,12 +287,17 @@ class UpdateDialog(QDialog):
         self._version.setText(f"Installed: v{VERSION}  →  Latest: v{release.version}")
         self._notes.setPlainText(_FIXED_WHATS_NEW)
 
-        if state.downloading or state.applying:
+        if state.downloading or state.applying or state.preparing:
             self._update_btn.setEnabled(False)
             self._later_btn.setEnabled(False)
             self._skip_btn.setEnabled(False)
             self._progress.show()
-            if state.applying:
+            if state.preparing:
+                self._progress.setRange(0, 0)
+                self._status.setText(
+                    "Preparing update… (almost done — app will restart in a few seconds)"
+                )
+            elif state.applying:
                 self._progress.setRange(0, 100)
                 self._progress.setValue(100)
                 self._status.setText("Restarting AURA to finish the update…")

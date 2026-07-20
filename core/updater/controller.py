@@ -69,7 +69,7 @@ class UpdateController:
 
     def _on_state_main(self, state: UpdateState) -> None:
         available = bool(state.release) and not state.error
-        downloading = bool(state.downloading or state.applying)
+        downloading = bool(state.downloading or state.applying or state.preparing)
         nav = getattr(self._window, "_nav", None)
         if nav is not None and hasattr(nav, "set_update_available"):
             try:

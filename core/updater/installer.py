@@ -761,23 +761,78 @@ Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
     _ulog(f"spawned Windows exe updater script={script}")
 
 
+def _find_windows_onedir_payload(root: Path) -> Path | None:
+    """Locate onedir root that contains AURA.exe / JARVIS.exe."""
+    if not root.is_dir():
+        return None
+    for name in ("AURA.exe", "JARVIS.exe"):
+        if (root / name).is_file():
+            return root
+    for name in ("AURA.exe", "JARVIS.exe"):
+        hits = list(root.rglob(name))
+        if hits:
+            return hits[0].parent
+    return None
+
+
+def _prepare_windows_zip_payload(package: Path, *, expected: str = "") -> Path:
+    """Extract update zip BEFORE app quit (Cursor-style prepare).
+
+    Returns the onedir payload directory (contains AURA.exe + version.txt).
+    """
+    pending = _windows_pending_dir()
+    work = pending / f"prepared-{os.getpid()}"
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)
+    extract = work / "extract"
+    extract.mkdir(parents=True, exist_ok=True)
+    _ulog(f"pre-extract zip before quit package={package} -> {extract}")
+    with zipfile.ZipFile(package, "r") as zf:
+        zf.extractall(extract)
+    found = _find_windows_onedir_payload(extract)
+    if found is None:
+        raise RuntimeError(f"Update zip missing AURA.exe under {extract}")
+    staged = work / "payload"
+    if found.resolve() != staged.resolve():
+        if staged.exists():
+            shutil.rmtree(staged, ignore_errors=True)
+        shutil.move(str(found), str(staged))
+    exe = staged / "AURA.exe"
+    if not exe.is_file():
+        exe = staged / "JARVIS.exe"
+    if not exe.is_file():
+        raise RuntimeError(f"Prepared payload missing exe under {staged}")
+    if expected:
+        ver = staged / "version.txt"
+        if ver.is_file():
+            got = ver.read_text(encoding="utf-8").strip()
+            if got != expected:
+                raise RuntimeError(f"version.txt mismatch got={got} expected={expected}")
+        else:
+            _ulog("prepared payload has no version.txt — size check only at apply")
+    _ulog(f"prepared Windows payload ready path={staged} exe_size={exe.stat().st_size}")
+    return staged
+
+
 def _windows_zip_apply_ps_body(
     *,
     log: Path,
     parent_pid: int,
     pkg: Path,
     target: Path,
+    payload: Path,
     work: Path,
     script: Path,
     expected: str,
 ) -> str:
-    """PowerShell body for Cursor-style zip replace (extracted for tests)."""
+    """PowerShell: after quit, fast folder-swap of a pre-extracted payload."""
     pq = _ps_quote
     return f"""$ErrorActionPreference = 'Continue'
 $log = '{pq(log)}'
 $parent = {int(parent_pid)}
 $pkg = '{pq(pkg)}'
 $dst = '{pq(target)}'
+$src = '{pq(payload)}'
 $work = '{pq(work)}'
 $scriptPath = '{pq(script)}'
 $expected = '{pq(expected)}'
@@ -785,165 +840,100 @@ New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
 function Write-AuraLog([string]$msg) {{
   Add-Content -Path $log -Value ("$(Get-Date -Format o) " + $msg)
 }}
-function Find-AuraPayload([string]$Root) {{
-  foreach ($name in @('AURA.exe','JARVIS.exe')) {{
-    $direct = Join-Path $Root $name
-    if (Test-Path -LiteralPath $direct) {{ return $Root }}
-  }}
-  $hit = Get-ChildItem -LiteralPath $Root -Recurse -Filter 'AURA.exe' -File -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-  if ($hit) {{ return $hit.Directory.FullName }}
-  $hit = Get-ChildItem -LiteralPath $Root -Recurse -Filter 'JARVIS.exe' -File -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-  if ($hit) {{ return $hit.Directory.FullName }}
-  return $null
-}}
 function Wait-AuraUnlocked([string]$InstallDir) {{
   $probe = Join-Path $InstallDir 'AURA.exe'
   if (-not (Test-Path -LiteralPath $probe)) {{ $probe = Join-Path $InstallDir 'JARVIS.exe' }}
   if (-not (Test-Path -LiteralPath $probe)) {{ return }}
-  for ($i = 0; $i -lt 60; $i++) {{
+  for ($i = 0; $i -lt 40; $i++) {{
     try {{
       $fs = [IO.File]::Open($probe, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
       $fs.Close()
       return
     }} catch {{
-      Start-Sleep -Milliseconds 300
+      Start-Sleep -Milliseconds 200
     }}
   }}
 }}
 function Invoke-AuraRobocopy([string]$From, [string]$To) {{
-  # Robocopy: 0 = nothing copied, 1-7 = success, >=8 = failure.
-  # Pass args as an array — never via a fragile cmd /c string.
   $p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
-    $From, $To, '/E', '/R:3', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np'
+    $From, $To, '/E', '/R:2', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np'
   ) -Wait -PassThru -WindowStyle Hidden
   return [int]$p.ExitCode
 }}
-Write-AuraLog "Windows zip updater start pkg=$pkg dst=$dst expected=$expected parent=$parent"
-if (-not (Test-Path -LiteralPath $pkg)) {{
-  Write-AuraLog "FATAL package missing: $pkg"
+Write-AuraLog "Windows zip swap updater start src=$src dst=$dst expected=$expected parent=$parent"
+if (-not (Test-Path -LiteralPath (Join-Path $src 'AURA.exe')) -and -not (Test-Path -LiteralPath (Join-Path $src 'JARVIS.exe'))) {{
+  Write-AuraLog "FATAL prepared payload missing AURA.exe: $src"
   exit 1
 }}
 for ($i = 0; $i -lt 450; $i++) {{
-  try {{ Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }}
+  try {{ Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 300 }}
   catch {{ break }}
 }}
-Write-AuraLog "parent exited; killing install processes"
-Start-Sleep -Seconds 2
+Write-AuraLog "parent exited; fast swap"
+Start-Sleep -Milliseconds 800
 {_windows_kill_install_processes_ps("$dst")}
 Wait-AuraUnlocked $dst
-Start-Sleep -Seconds 1
 $ok = $false
+$bak = Join-Path (Split-Path -Parent $dst) ((Split-Path -Leaf $dst) + '.bak')
 try {{
-  if (Test-Path -LiteralPath $work) {{ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }}
-  $extract = Join-Path $work 'extract'
-  New-Item -ItemType Directory -Force -Path $extract | Out-Null
-  Write-AuraLog "extracting zip"
-  $usedTar = $false
-  if (Get-Command tar -ErrorAction SilentlyContinue) {{
-    $tp = Start-Process -FilePath 'tar' -ArgumentList @('-xf', $pkg, '-C', $extract) -Wait -PassThru -WindowStyle Hidden
-    if ($tp.ExitCode -eq 0) {{ $usedTar = $true }}
+  if (Test-Path -LiteralPath $bak) {{
+    Remove-Item -LiteralPath $bak -Recurse -Force -ErrorAction SilentlyContinue
   }}
-  if (-not $usedTar) {{
-    Expand-Archive -LiteralPath $pkg -DestinationPath $extract -Force
-  }}
-  $src = Find-AuraPayload $extract
-  if (-not $src) {{ throw "update zip missing AURA.exe under $extract" }}
-  Write-AuraLog "payload src=$src"
   $srcExe = Join-Path $src 'AURA.exe'
   if (-not (Test-Path -LiteralPath $srcExe)) {{ $srcExe = Join-Path $src 'JARVIS.exe' }}
   $srcLen = (Get-Item -LiteralPath $srcExe).Length
-  Write-AuraLog "src exe size=$srcLen"
-  New-Item -ItemType Directory -Force -Path $dst | Out-Null
-  Write-AuraLog "robocopy from $src to $dst"
-  $rc = Invoke-AuraRobocopy $src $dst
-  Write-AuraLog "robocopy exit=$rc"
-  if ($rc -lt 1 -or $rc -ge 8) {{ throw "robocopy did not copy files exit=$rc (need 1-7)" }}
+  Write-AuraLog "swap: move install -> bak, payload -> install"
+  if (Test-Path -LiteralPath $dst) {{
+    Move-Item -LiteralPath $dst -Destination $bak -Force
+  }}
+  Move-Item -LiteralPath $src -Destination $dst -Force
   $exe = Join-Path $dst 'AURA.exe'
   if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
-  if (-not (Test-Path -LiteralPath $exe)) {{ throw "AURA.exe missing after robocopy" }}
+  if (-not (Test-Path -LiteralPath $exe)) {{ throw "AURA.exe missing after folder swap" }}
   $dstLen = (Get-Item -LiteralPath $exe).Length
-  Write-AuraLog "dst exe size=$dstLen"
-  if ($dstLen -ne $srcLen) {{ throw "exe size mismatch after copy src=$srcLen dst=$dstLen" }}
-  $verFile = Join-Path $dst 'version.txt'
-  if ($expected -and (Test-Path -LiteralPath $verFile)) {{
-    $got = ([string](Get-Content -LiteralPath $verFile -Raw)).Trim()
-    Write-AuraLog "version.txt=$got expected=$expected"
-    if ($got -ne $expected) {{ throw "version.txt mismatch got=$got expected=$expected" }}
-  }} else {{
-    Write-AuraLog "version.txt missing or no expected — size check only"
+  Write-AuraLog "swap OK dst exe size=$dstLen (src was $srcLen)"
+  if ($dstLen -ne $srcLen) {{ throw "exe size mismatch after swap" }}
+  if ($expected) {{
+    $verFile = Join-Path $dst 'version.txt'
+    if (Test-Path -LiteralPath $verFile) {{
+      $got = ([string](Get-Content -LiteralPath $verFile -Raw)).Trim()
+      Write-AuraLog "version.txt=$got expected=$expected"
+      if ($got -ne $expected) {{ throw "version.txt mismatch" }}
+    }}
   }}
   $ok = $true
-}} catch {{
-  Write-AuraLog "zip apply failed, trying elevated copy: $_"
-  try {{
-    $inner = @"
-`$ErrorActionPreference = 'Continue'
-`$pkg = '{pq(pkg)}'
-`$dst = '{pq(target)}'
-`$work = '{pq(work)}'
-`$expected = '{pq(expected)}'
-`$extract = Join-Path `$work 'extract'
-if (Test-Path -LiteralPath `$work) {{ Remove-Item -LiteralPath `$work -Recurse -Force -ErrorAction SilentlyContinue }}
-New-Item -ItemType Directory -Force -Path `$extract | Out-Null
-`$usedTar = `$false
-if (Get-Command tar -ErrorAction SilentlyContinue) {{
-  `$tp = Start-Process -FilePath 'tar' -ArgumentList @('-xf', `$pkg, '-C', `$extract) -Wait -PassThru -WindowStyle Hidden
-  if (`$tp.ExitCode -eq 0) {{ `$usedTar = `$true }}
-}}
-if (-not `$usedTar) {{ Expand-Archive -LiteralPath `$pkg -DestinationPath `$extract -Force }}
-`$src = `$null
-foreach (`$name in @('AURA.exe','JARVIS.exe')) {{
-  `$direct = Join-Path `$extract `$name
-  if (Test-Path -LiteralPath `$direct) {{ `$src = `$extract; break }}
-}}
-if (-not `$src) {{
-  `$hit = Get-ChildItem -LiteralPath `$extract -Recurse -Filter 'AURA.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (`$hit) {{ `$src = `$hit.Directory.FullName }}
-}}
-if (-not `$src) {{ exit 2 }}
-New-Item -ItemType Directory -Force -Path `$dst | Out-Null
-`$p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
-  `$src, `$dst, '/E', '/R:3', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np'
-) -Wait -PassThru -WindowStyle Hidden
-`$rc = [int]`$p.ExitCode
-if (`$rc -lt 1 -or `$rc -ge 8) {{ exit `$rc }}
-if (`$expected) {{
-  `$vf = Join-Path `$dst 'version.txt'
-  if (Test-Path -LiteralPath `$vf) {{
-    `$got = ([string](Get-Content -LiteralPath `$vf -Raw)).Trim()
-    if (`$got -ne `$expected) {{ exit 3 }}
+  if (Test-Path -LiteralPath $bak) {{
+    Start-Job -ScriptBlock {{ param($p) Start-Sleep -Seconds 2; Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }} -ArgumentList $bak | Out-Null
   }}
-}}
-exit 0
-"@
-    $tmp = Join-Path $env:TEMP ('aura-elevate-' + [guid]::NewGuid().ToString() + '.ps1')
-    [IO.File]::WriteAllText($tmp, $inner, (New-Object System.Text.UTF8Encoding $true))
-    try {{
-      $p = Start-Process -FilePath powershell -ArgumentList @(
-        '-NoProfile','-ExecutionPolicy','Bypass','-File',$tmp
-      ) -Verb RunAs -Wait -PassThru
-      if ($p.ExitCode -ne 0) {{ throw "elevated robocopy failed exit=$($p.ExitCode)" }}
-      Write-AuraLog "elevated robocopy OK"
-      $ok = $true
-    }} finally {{
-      Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+}} catch {{
+  Write-AuraLog "folder swap failed, robocopy fallback: $_"
+  try {{
+    if ((-not (Test-Path -LiteralPath $dst)) -and (Test-Path -LiteralPath $bak)) {{
+      Move-Item -LiteralPath $bak -Destination $dst -Force -ErrorAction SilentlyContinue
     }}
+    if (-not (Test-Path -LiteralPath $src)) {{
+      if (Test-Path -LiteralPath $dst) {{
+        # payload already moved? abort
+        throw "payload missing after failed swap"
+      }}
+    }}
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    $rc = Invoke-AuraRobocopy $src $dst
+    Write-AuraLog "robocopy fallback exit=$rc"
+    if ($rc -lt 1 -or $rc -ge 8) {{ throw "robocopy fallback failed exit=$rc (need 1-7)" }}
+    $ok = $true
   }} catch {{
-    Write-AuraLog "elevated apply FAILED: $_"
+    Write-AuraLog "robocopy fallback FAILED: $_"
     $ok = $false
+    if ((-not (Test-Path -LiteralPath $dst)) -and (Test-Path -LiteralPath $bak)) {{
+      Move-Item -LiteralPath $bak -Destination $dst -Force -ErrorAction SilentlyContinue
+      Write-AuraLog "restored bak after failure"
+    }}
   }}
 }}
 $exe = Join-Path $dst 'AURA.exe'
 if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
-if ($ok -and (Test-Path -LiteralPath $exe)) {{
-  if ($exe -notmatch '^[A-Za-z]:\\') {{
-    Write-AuraLog "refusing to launch non-local path: $exe"
-    $ok = $false
-  }}
-}}
-if ($ok -and (Test-Path -LiteralPath $exe)) {{
+if ($ok -and (Test-Path -LiteralPath $exe) -and ($exe -match '^[A-Za-z]:\\')) {{
   Write-AuraLog "launching $exe"
   Start-Process -FilePath $exe -WorkingDirectory $dst
   Remove-Item -Force $pkg -ErrorAction SilentlyContinue
@@ -951,7 +941,7 @@ if ($ok -and (Test-Path -LiteralPath $exe)) {{
   Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
   Remove-Item -Force ($scriptPath -replace '\\.ps1$','.cmd') -ErrorAction SilentlyContinue
 }} else {{
-  Write-AuraLog "zip update aborted; not relaunching stale build (keeping work dir for debug)"
+  Write-AuraLog "zip update aborted; not relaunching stale build"
   try {{
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     [System.Windows.Forms.MessageBox]::Show(
@@ -972,10 +962,9 @@ def _launch_windows_zip_updater(
     *,
     expected_version: str = "",
 ) -> None:
-    """Cursor-style: quit app, extract zip externally, robocopy into install dir."""
+    """Cursor-style: pre-extract while app runs, then fast folder-swap after quit."""
     pending = _windows_pending_dir()
     staged = pending / package.name
-    # Prefer move (instant) over copy — a 600MB+ copy before quit looks like a hang.
     if staged.resolve() != package.resolve():
         try:
             if staged.exists():
@@ -985,22 +974,25 @@ def _launch_windows_zip_updater(
             shutil.copy2(package, staged)
             package.unlink(missing_ok=True)
     pkg = staged
-    work = pending / f"work-{os.getpid()}"
+    expected = (expected_version or "").strip()
+    # Heavy work happens NOW (app still alive) — UI shows Preparing…
+    payload = _prepare_windows_zip_payload(pkg, expected=expected)
+    work = payload.parent  # prepared-<pid>
     script = pending / f"apply-zip-{os.getpid()}.ps1"
     log = _log_path()
-    expected = (expected_version or "").strip()
     body = _windows_zip_apply_ps_body(
         log=log,
         parent_pid=parent_pid,
         pkg=pkg,
         target=target,
+        payload=payload,
         work=work,
         script=script,
         expected=expected,
     )
     _write_ps1(script, body)
     _spawn_hidden_powershell(script)
-    _ulog(f"spawned Windows zip updater script={script} pkg={pkg}")
+    _ulog(f"spawned Windows zip swap updater script={script} payload={payload}")
 
 
 

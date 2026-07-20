@@ -24,6 +24,7 @@ class UpdateState:
     checking: bool = False
     downloading: bool = False
     applying: bool = False
+    preparing: bool = False
     downloaded_bytes: int = 0
     total_bytes: int | None = None
     error: str = ""
@@ -47,6 +48,7 @@ class UpdateService:
                 checking=self._state.checking,
                 downloading=self._state.downloading,
                 applying=self._state.applying,
+                preparing=self._state.preparing,
                 downloaded_bytes=self._state.downloaded_bytes,
                 total_bytes=self._state.total_bytes,
                 error=self._state.error,
@@ -162,6 +164,7 @@ class UpdateService:
             self._set(
                 downloading=True,
                 applying=False,
+                preparing=False,
                 downloaded_bytes=0,
                 total_bytes=release.asset.size or None,
                 error="",
@@ -180,7 +183,6 @@ class UpdateService:
 
                 dest_dir = None
                 if normalize_os() == "windows":
-                    # Download straight into pending so apply can move instantly.
                     dest_dir = _windows_pending_dir()
 
                 package = download_asset_smart(
@@ -189,26 +191,32 @@ class UpdateService:
                     dest_dir=dest_dir,
                     on_progress=progress,
                     prefer_differential=True,
-                    # Never block quit on a 600MB+ cache copy / blockmap regen.
                     persist_cache=normalize_os() != "windows",
                 )
+                # Cursor-style: prepare (extract) while UI is still up, then quick swap after quit.
                 self._set(
                     package_path=package,
+                    downloading=False,
                     applying=True,
+                    preparing=True,
                     downloaded_bytes=release.asset.size or self._state.downloaded_bytes,
                     total_bytes=release.asset.size or self._state.total_bytes,
                 )
-                time.sleep(0.35)
+                time.sleep(0.2)
                 launch_updater(
                     package,
                     parent_pid,
                     expected_version=release.version,
                 )
-                # Give the detached cmd/powershell trampoline time to start
-                # before we tear down this process (and its job object).
-                time.sleep(1.5)
+                self._set(preparing=False)
+                time.sleep(0.8)
                 os._exit(0)
             except Exception as exc:
-                self._set(error=str(exc), downloading=False, applying=False)
+                self._set(
+                    error=str(exc),
+                    downloading=False,
+                    applying=False,
+                    preparing=False,
+                )
 
         threading.Thread(target=_run, daemon=True).start()

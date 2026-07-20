@@ -54,30 +54,29 @@ def test_windows_setup_args_no_embedded_quotes():
     assert "AURA" in dir_arg
 
 
-def test_windows_zip_apply_ps_balanced_and_finds_nested_payload():
-    """Regression: 1.0.31 PS had missing ')' and failed to parse on Windows."""
+def test_windows_zip_apply_ps_is_fast_swap_not_post_quit_extract():
+    """After quit we only swap a pre-extracted payload (Cursor-style)."""
     body = _windows_zip_apply_ps_body(
         log=Path(r"C:\Users\test\AppData\Local\AURA\logs\updater.log"),
         parent_pid=1234,
-        pkg=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\AURA-1.0.32-win-x64.zip"),
+        pkg=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\AURA-1.0.39-win-x64.zip"),
         target=Path(r"C:\Users\test\AppData\Local\Programs\AURA"),
-        work=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\work-1"),
+        payload=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\prepared-1\payload"),
+        work=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\prepared-1"),
         script=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\apply-zip-1.ps1"),
-        expected="1.0.32",
+        expected="1.0.39",
     )
     assert body.count("(") == body.count(")")
     assert body.count("{") == body.count("}")
-    assert "Find-AuraPayload" in body
     assert "Wait-AuraUnlocked" in body
-    assert "Invoke-AuraRobocopy" in body
-    assert "robocopy" in body
-    assert "Expand-Archive" in body
+    assert "Move-Item" in body
+    assert "fast swap" in body or "folder swap" in body.lower() or "swap:" in body
     assert "version.txt" in body
-    # Must not contain the broken 1.0.31 pattern (missing closing paren).
+    # Must NOT extract the zip after quit on the happy path.
+    assert "Expand-Archive" not in body
+    assert "pre-extract" not in body  # extract is in Python before quit
     assert "JARVIS.exe')) {{" not in body
-    # Robocopy exit 0 (nothing copied) must NOT be treated as success.
-    assert "need 1-7" in body or ("$rc -lt 1" in body)
-    assert "robocopy.exe" in body
+    assert "need 1-7" in body  # robocopy fallback still gated
 
 
 def test_windows_spawn_does_not_use_start_empty_title():
@@ -85,10 +84,8 @@ def test_windows_spawn_does_not_use_start_empty_title():
     from core.updater.installer import _spawn_hidden_powershell
 
     src = inspect.getsource(_spawn_hidden_powershell)
-    # Implementation must not call cmd start with empty title (causes \\ UNC error).
     assert "start \\\"\\\" /b" not in src
     assert '["cmd.exe", "/c", inner]' not in src
     assert '"powershell.exe"' in src or "'powershell.exe'" in src
     assert "-File" in src
-    assert "0x00000008" not in src  # DETACHED_PROCESS
-
+    assert "0x00000008" not in src
