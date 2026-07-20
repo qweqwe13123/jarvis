@@ -69,7 +69,11 @@ def test_windows_zip_apply_ps_balanced_and_finds_nested_payload():
     assert body.count("{") == body.count("}")
     assert "Find-AuraPayload" in body
     assert "Wait-AuraUnlocked" in body
+    assert "Invoke-AuraRobocopy" in body
     assert "robocopy" in body
     assert "Expand-Archive" in body
+    assert "version.txt" in body
     # Must not contain the broken 1.0.31 pattern (missing closing paren).
     assert "JARVIS.exe')) {{" not in body
+    # Robocopy exit 0 (nothing copied) must NOT be treated as success.
+    assert "need 1-7" in body or ("$rc -lt 1" in body)

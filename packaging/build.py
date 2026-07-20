@@ -516,6 +516,8 @@ def package_release(
             pass
     elif system == "Windows":
         onedir = build_pyinstaller(clean=True)
+        # Stamp plain version.txt so the Windows zip updater can verify apply.
+        (onedir / "version.txt").write_text(version.strip() + "\n", encoding="utf-8")
         update_name = "AURA-%s-win-x64.zip" % version
         update_path = DIST / update_name
         _zip_tree(onedir, update_path)

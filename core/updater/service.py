@@ -204,7 +204,9 @@ class UpdateService:
                     parent_pid,
                     expected_version=release.version,
                 )
-                time.sleep(0.6)
+                # Give the detached cmd/powershell trampoline time to start
+                # before we tear down this process (and its job object).
+                time.sleep(1.5)
                 os._exit(0)
             except Exception as exc:
                 self._set(error=str(exc), downloading=False, applying=False)

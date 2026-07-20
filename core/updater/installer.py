@@ -572,34 +572,40 @@ def _write_ps1(path: Path, body: str) -> None:
 
 
 def _spawn_hidden_powershell(script: Path) -> None:
-    """Detach updater so it survives AURA exit (job object + no console)."""
+    """Detach updater so it survives AURA exit.
+
+    CRITICAL: do NOT use DETACHED_PROCESS with powershell.exe.
+    PowerShell is a console subsystem binary; DETACHED_PROCESS often makes it
+    exit immediately without running -File — which matches \"download OK,
+    app quits, old version still installed\".
+    """
     from core.win_subprocess import merge_flags
 
-    # CREATE_BREAKAWAY_FROM_JOB is critical: otherwise the updater dies with the
-    # parent when Windows Job Objects are in play (common with packaged apps).
-    create_breakaway = 0x01000000
-    flags = merge_flags(
-        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-        | create_breakaway
+    create_breakaway = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+    create_new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    # CREATE_NO_WINDOW via merge_flags — hide console without detaching wrongly.
+    flags = merge_flags(create_new_group | create_breakaway)
+
+    # cmd `start /b` fully orphans the updater from the AURA process tree.
+    # Empty window title ("") is required so quoted paths are not eaten as title.
+    inner = (
+        "start \"\" /b powershell.exe -NoProfile -ExecutionPolicy Bypass "
+        f"-WindowStyle Hidden -File \"{script}\""
     )
     subprocess.Popen(
-        [
-            "powershell",
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-        ],
+        ["cmd.exe", "/c", inner],
         close_fds=True,
         creationflags=flags,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
     )
+    _ulog(f"spawned Windows updater via cmd start /b script={script}")
+
+
+def _spawn_windows_updater_script(script: Path) -> None:
+    """Public alias used by zip/exe updaters."""
+    _spawn_hidden_powershell(script)
 
 
 def _launch_windows_exe_updater(
@@ -767,21 +773,33 @@ function Wait-AuraUnlocked([string]$InstallDir) {{
   $probe = Join-Path $InstallDir 'AURA.exe'
   if (-not (Test-Path -LiteralPath $probe)) {{ $probe = Join-Path $InstallDir 'JARVIS.exe' }}
   if (-not (Test-Path -LiteralPath $probe)) {{ return }}
-  for ($i = 0; $i -lt 40; $i++) {{
+  for ($i = 0; $i -lt 60; $i++) {{
     try {{
       $fs = [IO.File]::Open($probe, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
       $fs.Close()
       return
     }} catch {{
-      Start-Sleep -Milliseconds 250
+      Start-Sleep -Milliseconds 300
     }}
   }}
 }}
-Write-AuraLog "Windows zip updater start pkg=$pkg dst=$dst expected=$expected"
+function Invoke-AuraRobocopy([string]$From, [string]$To) {{
+  # Capture exit code via cmd so PowerShell pipelines cannot wipe LASTEXITCODE.
+  # Robocopy: 0 = nothing copied, 1-7 = success, >=8 = failure.
+  $arg = '/c robocopy "' + $From + '" "' + $To + '" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np ^& exit /b %ERRORLEVEL%'
+  $p = Start-Process -FilePath 'cmd.exe' -ArgumentList $arg -Wait -PassThru -WindowStyle Hidden
+  return [int]$p.ExitCode
+}}
+Write-AuraLog "Windows zip updater start pkg=$pkg dst=$dst expected=$expected parent=$parent"
+if (-not (Test-Path -LiteralPath $pkg)) {{
+  Write-AuraLog "FATAL package missing: $pkg"
+  exit 1
+}}
 for ($i = 0; $i -lt 450; $i++) {{
   try {{ Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }}
   catch {{ break }}
 }}
+Write-AuraLog "parent exited; killing install processes"
 Start-Sleep -Seconds 2
 {_windows_kill_install_processes_ps("$dst")}
 Wait-AuraUnlocked $dst
@@ -794,8 +812,8 @@ try {{
   Write-AuraLog "extracting zip"
   $usedTar = $false
   if (Get-Command tar -ErrorAction SilentlyContinue) {{
-    & tar -xf $pkg -C $extract
-    if ($LASTEXITCODE -eq 0) {{ $usedTar = $true }}
+    $tp = Start-Process -FilePath 'tar' -ArgumentList @('-xf', $pkg, '-C', $extract) -Wait -PassThru -WindowStyle Hidden
+    if ($tp.ExitCode -eq 0) {{ $usedTar = $true }}
   }}
   if (-not $usedTar) {{
     Expand-Archive -LiteralPath $pkg -DestinationPath $extract -Force
@@ -803,12 +821,29 @@ try {{
   $src = Find-AuraPayload $extract
   if (-not $src) {{ throw "update zip missing AURA.exe under $extract" }}
   Write-AuraLog "payload src=$src"
+  $srcExe = Join-Path $src 'AURA.exe'
+  if (-not (Test-Path -LiteralPath $srcExe)) {{ $srcExe = Join-Path $src 'JARVIS.exe' }}
+  $srcLen = (Get-Item -LiteralPath $srcExe).Length
+  Write-AuraLog "src exe size=$srcLen"
   New-Item -ItemType Directory -Force -Path $dst | Out-Null
   Write-AuraLog "robocopy from $src to $dst"
-  & robocopy $src $dst /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
-  $rc = $LASTEXITCODE
+  $rc = Invoke-AuraRobocopy $src $dst
   Write-AuraLog "robocopy exit=$rc"
-  if ($rc -ge 8) {{ throw "robocopy failed exit=$rc" }}
+  if ($rc -lt 1 -or $rc -ge 8) {{ throw "robocopy did not copy files exit=$rc (need 1-7)" }}
+  $exe = Join-Path $dst 'AURA.exe'
+  if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
+  if (-not (Test-Path -LiteralPath $exe)) {{ throw "AURA.exe missing after robocopy" }}
+  $dstLen = (Get-Item -LiteralPath $exe).Length
+  Write-AuraLog "dst exe size=$dstLen"
+  if ($dstLen -ne $srcLen) {{ throw "exe size mismatch after copy src=$srcLen dst=$dstLen" }}
+  $verFile = Join-Path $dst 'version.txt'
+  if ($expected -and (Test-Path -LiteralPath $verFile)) {{
+    $got = ([string](Get-Content -LiteralPath $verFile -Raw)).Trim()
+    Write-AuraLog "version.txt=$got expected=$expected"
+    if ($got -ne $expected) {{ throw "version.txt mismatch got=$got expected=$expected" }}
+  }} else {{
+    Write-AuraLog "version.txt missing or no expected — size check only"
+  }}
   $ok = $true
 }} catch {{
   Write-AuraLog "zip apply failed, trying elevated copy: $_"
@@ -818,13 +853,14 @@ try {{
 `$pkg = '{pq(pkg)}'
 `$dst = '{pq(target)}'
 `$work = '{pq(work)}'
+`$expected = '{pq(expected)}'
 `$extract = Join-Path `$work 'extract'
 if (Test-Path -LiteralPath `$work) {{ Remove-Item -LiteralPath `$work -Recurse -Force -ErrorAction SilentlyContinue }}
 New-Item -ItemType Directory -Force -Path `$extract | Out-Null
 `$usedTar = `$false
 if (Get-Command tar -ErrorAction SilentlyContinue) {{
-  & tar -xf `$pkg -C `$extract
-  if (`$LASTEXITCODE -eq 0) {{ `$usedTar = `$true }}
+  `$tp = Start-Process -FilePath 'tar' -ArgumentList @('-xf', `$pkg, '-C', `$extract) -Wait -PassThru -WindowStyle Hidden
+  if (`$tp.ExitCode -eq 0) {{ `$usedTar = `$true }}
 }}
 if (-not `$usedTar) {{ Expand-Archive -LiteralPath `$pkg -DestinationPath `$extract -Force }}
 `$src = `$null
@@ -838,8 +874,17 @@ if (-not `$src) {{
 }}
 if (-not `$src) {{ exit 2 }}
 New-Item -ItemType Directory -Force -Path `$dst | Out-Null
-& robocopy `$src `$dst /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
-if (`$LASTEXITCODE -ge 8) {{ exit `$LASTEXITCODE }}
+`$arg = '/c robocopy "' + `$src + '" "' + `$dst + '" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np ^& exit /b %ERRORLEVEL%'
+`$p = Start-Process -FilePath 'cmd.exe' -ArgumentList `$arg -Wait -PassThru -WindowStyle Hidden
+`$rc = [int]`$p.ExitCode
+if (`$rc -lt 1 -or `$rc -ge 8) {{ exit `$rc }}
+if (`$expected) {{
+  `$vf = Join-Path `$dst 'version.txt'
+  if (Test-Path -LiteralPath `$vf) {{
+    `$got = ([string](Get-Content -LiteralPath `$vf -Raw)).Trim()
+    if (`$got -ne `$expected) {{ exit 3 }}
+  }}
+}}
 exit 0
 "@
     $tmp = Join-Path $env:TEMP ('aura-elevate-' + [guid]::NewGuid().ToString() + '.ps1')
@@ -862,22 +907,13 @@ exit 0
 $exe = Join-Path $dst 'AURA.exe'
 if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
 if ($ok -and (Test-Path -LiteralPath $exe)) {{
-  try {{
-    $ageMin = ((Get-Date) - (Get-Item -LiteralPath $exe).LastWriteTime).TotalMinutes
-    Write-AuraLog "exe mtime age_min=$ageMin"
-    if ($ageMin -gt 30) {{
-      Write-AuraLog "exe not freshly written — treating update as failed"
-      $ok = $false
-    }}
-  }} catch {{
-    Write-AuraLog "mtime check skipped: $_"
-  }}
-}}
-if ($ok -and (Test-Path -LiteralPath $exe)) {{
   Write-AuraLog "launching $exe"
   Start-Process -FilePath $exe -WorkingDirectory $dst
+  Remove-Item -Force $pkg -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+  Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
 }} else {{
-  Write-AuraLog "zip update aborted; not relaunching stale build"
+  Write-AuraLog "zip update aborted; not relaunching stale build (keeping work dir for debug)"
   try {{
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     [System.Windows.Forms.MessageBox]::Show(
@@ -888,9 +924,6 @@ if ($ok -and (Test-Path -LiteralPath $exe)) {{
     ) | Out-Null
   }} catch {{}}
 }}
-Remove-Item -Force $pkg -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
-Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
 """
 
 
