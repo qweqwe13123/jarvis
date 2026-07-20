@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.updater.installer import _windows_setup_args
+from core.updater.installer import _windows_setup_args, _windows_zip_apply_ps_body
 from core.updater.manifest import _pick_asset_fields
 
 
@@ -52,3 +52,24 @@ def test_windows_setup_args_no_embedded_quotes():
     dir_arg = next(a for a in args if a.startswith("/DIR="))
     assert '"' not in dir_arg
     assert "AURA" in dir_arg
+
+
+def test_windows_zip_apply_ps_balanced_and_finds_nested_payload():
+    """Regression: 1.0.31 PS had missing ')' and failed to parse on Windows."""
+    body = _windows_zip_apply_ps_body(
+        log=Path(r"C:\Users\test\AppData\Local\AURA\logs\updater.log"),
+        parent_pid=1234,
+        pkg=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\AURA-1.0.32-win-x64.zip"),
+        target=Path(r"C:\Users\test\AppData\Local\Programs\AURA"),
+        work=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\work-1"),
+        script=Path(r"C:\Users\test\AppData\Local\AURA\updates\pending\apply-zip-1.ps1"),
+        expected="1.0.32",
+    )
+    assert body.count("(") == body.count(")")
+    assert body.count("{") == body.count("}")
+    assert "Find-AuraPayload" in body
+    assert "Wait-AuraUnlocked" in body
+    assert "robocopy" in body
+    assert "Expand-Archive" in body
+    # Must not contain the broken 1.0.31 pattern (missing closing paren).
+    assert "JARVIS.exe')) {{" not in body

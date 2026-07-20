@@ -176,10 +176,17 @@ class UpdateService:
                     self._set(downloaded_bytes=done, total_bytes=total)
 
                 from core.platform_detect import normalize_os
+                from core.updater.installer import _windows_pending_dir
+
+                dest_dir = None
+                if normalize_os() == "windows":
+                    # Download straight into pending so apply can move instantly.
+                    dest_dir = _windows_pending_dir()
 
                 package = download_asset_smart(
                     release.asset,
                     version=release.version,
+                    dest_dir=dest_dir,
                     on_progress=progress,
                     prefer_differential=True,
                     # Never block quit on a 600MB+ cache copy / blockmap regen.

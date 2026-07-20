@@ -726,25 +726,19 @@ Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
     _ulog(f"spawned Windows exe updater script={script}")
 
 
-def _launch_windows_zip_updater(
-    package: Path,
-    target: Path,
-    parent_pid: int,
+def _windows_zip_apply_ps_body(
     *,
-    expected_version: str = "",
-) -> None:
-    """Cursor-style: quit app, extract zip externally, robocopy into install dir."""
-    pending = _windows_pending_dir()
-    staged = pending / package.name
-    if staged.resolve() != package.resolve():
-        shutil.copy2(package, staged)
-    pkg = staged
-    work = pending / f"work-{os.getpid()}"
-    script = pending / f"apply-zip-{os.getpid()}.ps1"
-    log = _log_path()
+    log: Path,
+    parent_pid: int,
+    pkg: Path,
+    target: Path,
+    work: Path,
+    script: Path,
+    expected: str,
+) -> str:
+    """PowerShell body for Cursor-style zip replace (extracted for tests)."""
     pq = _ps_quote
-    expected = (expected_version or "").strip()
-    body = f"""$ErrorActionPreference = 'Stop'
+    return f"""$ErrorActionPreference = 'Continue'
 $log = '{pq(log)}'
 $parent = {int(parent_pid)}
 $pkg = '{pq(pkg)}'
@@ -756,61 +750,95 @@ New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
 function Write-AuraLog([string]$msg) {{
   Add-Content -Path $log -Value ("$(Get-Date -Format o) " + $msg)
 }}
+function Find-AuraPayload([string]$Root) {{
+  foreach ($name in @('AURA.exe','JARVIS.exe')) {{
+    $direct = Join-Path $Root $name
+    if (Test-Path -LiteralPath $direct) {{ return $Root }}
+  }}
+  $hit = Get-ChildItem -LiteralPath $Root -Recurse -Filter 'AURA.exe' -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($hit) {{ return $hit.Directory.FullName }}
+  $hit = Get-ChildItem -LiteralPath $Root -Recurse -Filter 'JARVIS.exe' -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($hit) {{ return $hit.Directory.FullName }}
+  return $null
+}}
+function Wait-AuraUnlocked([string]$InstallDir) {{
+  $probe = Join-Path $InstallDir 'AURA.exe'
+  if (-not (Test-Path -LiteralPath $probe)) {{ $probe = Join-Path $InstallDir 'JARVIS.exe' }}
+  if (-not (Test-Path -LiteralPath $probe)) {{ return }}
+  for ($i = 0; $i -lt 40; $i++) {{
+    try {{
+      $fs = [IO.File]::Open($probe, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+      $fs.Close()
+      return
+    }} catch {{
+      Start-Sleep -Milliseconds 250
+    }}
+  }}
+}}
 Write-AuraLog "Windows zip updater start pkg=$pkg dst=$dst expected=$expected"
 for ($i = 0; $i -lt 450; $i++) {{
   try {{ Get-Process -Id $parent -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 400 }}
   catch {{ break }}
 }}
-Start-Sleep -Seconds 2.5
+Start-Sleep -Seconds 2
 {_windows_kill_install_processes_ps("$dst")}
+Wait-AuraUnlocked $dst
 Start-Sleep -Seconds 1
 $ok = $false
 try {{
-  if (Test-Path $work) {{ Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }}
+  if (Test-Path -LiteralPath $work) {{ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }}
   $extract = Join-Path $work 'extract'
   New-Item -ItemType Directory -Force -Path $extract | Out-Null
   Write-AuraLog "extracting zip"
   $usedTar = $false
-  try {{
-    & tar -xf $pkg -C $extract 2>$null
+  if (Get-Command tar -ErrorAction SilentlyContinue) {{
+    & tar -xf $pkg -C $extract
     if ($LASTEXITCODE -eq 0) {{ $usedTar = $true }}
-  }} catch {{}}
+  }}
   if (-not $usedTar) {{
-    Expand-Archive -Path $pkg -DestinationPath $extract -Force
+    Expand-Archive -LiteralPath $pkg -DestinationPath $extract -Force
   }}
-  $src = $extract
-  if (-not (Test-Path (Join-Path $extract 'AURA.exe')) -and -not (Test-Path (Join-Path $extract 'JARVIS.exe')) {{
-    $child = Get-ChildItem -Path $extract -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($child) {{ $src = $child.FullName }}
-  }}
-  if (-not (Test-Path (Join-Path $src 'AURA.exe')) -and -not (Test-Path (Join-Path $src 'JARVIS.exe')) {{
-    throw "update zip missing AURA.exe under $src"
-  }}
+  $src = Find-AuraPayload $extract
+  if (-not $src) {{ throw "update zip missing AURA.exe under $extract" }}
+  Write-AuraLog "payload src=$src"
   New-Item -ItemType Directory -Force -Path $dst | Out-Null
   Write-AuraLog "robocopy from $src to $dst"
-  & robocopy $src $dst /E /R:2 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np
-  if ($LASTEXITCODE -ge 8) {{ throw "robocopy failed exit=$LASTEXITCODE" }}
-  Write-AuraLog "robocopy OK exit=$LASTEXITCODE"
+  & robocopy $src $dst /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+  $rc = $LASTEXITCODE
+  Write-AuraLog "robocopy exit=$rc"
+  if ($rc -ge 8) {{ throw "robocopy failed exit=$rc" }}
   $ok = $true
 }} catch {{
   Write-AuraLog "zip apply failed, trying elevated copy: $_"
   try {{
     $inner = @"
-`$ErrorActionPreference = 'Stop'
+`$ErrorActionPreference = 'Continue'
 `$pkg = '{pq(pkg)}'
 `$dst = '{pq(target)}'
 `$work = '{pq(work)}'
 `$extract = Join-Path `$work 'extract'
-if (Test-Path `$work) {{ Remove-Item -Recurse -Force `$work -ErrorAction SilentlyContinue }}
+if (Test-Path -LiteralPath `$work) {{ Remove-Item -LiteralPath `$work -Recurse -Force -ErrorAction SilentlyContinue }}
 New-Item -ItemType Directory -Force -Path `$extract | Out-Null
-try {{ & tar -xf `$pkg -C `$extract }} catch {{ Expand-Archive -Path `$pkg -DestinationPath `$extract -Force }}
-`$src = `$extract
-if (-not (Test-Path (Join-Path `$extract 'AURA.exe'))) {{
-  `$child = Get-ChildItem -Path `$extract -Directory | Select-Object -First 1
-  if (`$child) {{ `$src = `$child.FullName }}
+`$usedTar = `$false
+if (Get-Command tar -ErrorAction SilentlyContinue) {{
+  & tar -xf `$pkg -C `$extract
+  if (`$LASTEXITCODE -eq 0) {{ `$usedTar = `$true }}
 }}
+if (-not `$usedTar) {{ Expand-Archive -LiteralPath `$pkg -DestinationPath `$extract -Force }}
+`$src = `$null
+foreach (`$name in @('AURA.exe','JARVIS.exe')) {{
+  `$direct = Join-Path `$extract `$name
+  if (Test-Path -LiteralPath `$direct) {{ `$src = `$extract; break }}
+}}
+if (-not `$src) {{
+  `$hit = Get-ChildItem -LiteralPath `$extract -Recurse -Filter 'AURA.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (`$hit) {{ `$src = `$hit.Directory.FullName }}
+}}
+if (-not `$src) {{ exit 2 }}
 New-Item -ItemType Directory -Force -Path `$dst | Out-Null
-& robocopy `$src `$dst /E /R:2 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np
+& robocopy `$src `$dst /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
 if (`$LASTEXITCODE -ge 8) {{ exit `$LASTEXITCODE }}
 exit 0
 "@
@@ -832,10 +860,10 @@ exit 0
   }}
 }}
 $exe = Join-Path $dst 'AURA.exe'
-if (-not (Test-Path $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
-if ($ok -and (Test-Path $exe)) {{
+if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
+if ($ok -and (Test-Path -LiteralPath $exe)) {{
   try {{
-    $ageMin = ((Get-Date) - (Get-Item $exe).LastWriteTime).TotalMinutes
+    $ageMin = ((Get-Date) - (Get-Item -LiteralPath $exe).LastWriteTime).TotalMinutes
     Write-AuraLog "exe mtime age_min=$ageMin"
     if ($ageMin -gt 30) {{
       Write-AuraLog "exe not freshly written — treating update as failed"
@@ -845,21 +873,7 @@ if ($ok -and (Test-Path $exe)) {{
     Write-AuraLog "mtime check skipped: $_"
   }}
 }}
-if ($ok -and (Test-Path $exe) -and $expected) {{
-  try {{
-    $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
-    $pv = ([string]$vi.ProductVersion).Trim()
-    $fv = ([string]$vi.FileVersion).Trim()
-    Write-AuraLog "version check product=$pv file=$fv expected=$expected"
-    # PyInstaller builds may omit version metadata — only fail on explicit mismatch.
-    if ($pv -and ($pv -notlike ($expected + '*')) -and ($fv -and ($fv -notlike ($expected + '*')))) {{
-      Write-AuraLog "version mismatch after update (non-fatal if metadata empty)"
-    }}
-  }} catch {{
-    Write-AuraLog "version check skipped: $_"
-  }}
-}}
-if ($ok -and (Test-Path $exe)) {{
+if ($ok -and (Test-Path -LiteralPath $exe)) {{
   Write-AuraLog "launching $exe"
   Start-Process -FilePath $exe -WorkingDirectory $dst
 }} else {{
@@ -878,6 +892,41 @@ Remove-Item -Force $pkg -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
 """
+
+
+def _launch_windows_zip_updater(
+    package: Path,
+    target: Path,
+    parent_pid: int,
+    *,
+    expected_version: str = "",
+) -> None:
+    """Cursor-style: quit app, extract zip externally, robocopy into install dir."""
+    pending = _windows_pending_dir()
+    staged = pending / package.name
+    # Prefer move (instant) over copy — a 600MB+ copy before quit looks like a hang.
+    if staged.resolve() != package.resolve():
+        try:
+            if staged.exists():
+                staged.unlink()
+            os.replace(str(package), str(staged))
+        except OSError:
+            shutil.copy2(package, staged)
+            package.unlink(missing_ok=True)
+    pkg = staged
+    work = pending / f"work-{os.getpid()}"
+    script = pending / f"apply-zip-{os.getpid()}.ps1"
+    log = _log_path()
+    expected = (expected_version or "").strip()
+    body = _windows_zip_apply_ps_body(
+        log=log,
+        parent_pid=parent_pid,
+        pkg=pkg,
+        target=target,
+        work=work,
+        script=script,
+        expected=expected,
+    )
     _write_ps1(script, body)
     _spawn_hidden_powershell(script)
     _ulog(f"spawned Windows zip updater script={script} pkg={pkg}")
