@@ -3338,6 +3338,9 @@ class _ChatBarIconButton(QPushButton):
             p.drawArc(int(cx - 6), int(cy - 8), 12, 12, 30 * 16, 300 * 16)
             p.drawLine(int(cx - 3), int(cy + 2), int(cx - 3), int(cy + 7))
             p.drawLine(int(cx + 3), int(cy + 2), int(cx + 3), int(cy + 7))
+        elif self._kind == "plus":
+            p.drawLine(int(cx - 6), int(cy), int(cx + 6), int(cy))
+            p.drawLine(int(cx), int(cy - 6), int(cx), int(cy + 6))
         elif self._kind == "mic":
             color = QColor(T.RED) if self._muted else QColor(T.CHAT_BAR_ICON)
             pen.setColor(color)
@@ -3379,17 +3382,84 @@ class _ChatSendButton(QPushButton):
         p.drawLine(int(cx + 4), int(cy - 5), int(cx + 4), int(cy - 2))
 
 
+class _AttachmentChip(QFrame):
+    """Small thumbnail chip for one attached image, with a remove button."""
+
+    removed = pyqtSignal(str)
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self.setFixedHeight(44)
+        self.setStyleSheet(
+            f"QFrame {{ background: {T.BG_CARD}; border: 1px solid {T.BORDER}; border-radius: 10px; }}"
+        )
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setSpacing(6)
+
+        thumb = QLabel()
+        thumb.setFixedSize(34, 34)
+        thumb.setStyleSheet("border: none; border-radius: 6px; background: transparent;")
+        try:
+            from PyQt6.QtGui import QPixmap
+
+            pix = QPixmap(path)
+            if not pix.isNull():
+                thumb.setPixmap(
+                    pix.scaled(
+                        34, 34,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+        except Exception:
+            pass
+        lay.addWidget(thumb)
+
+        name = QLabel(Path(path).name)
+        name.setFont(QFont(T.CHAT_FONT, 10))
+        name.setStyleSheet(f"color: {T.CHAT_TEXT}; border: none; background: transparent;")
+        name.setMaximumWidth(160)
+        lay.addWidget(name)
+
+        close = QPushButton("✕")
+        close.setFixedSize(18, 18)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #8b98a8; font-size: 11px; }"
+            "QPushButton:hover { color: #ffffff; }"
+        )
+        close.clicked.connect(lambda: self.removed.emit(self._path))
+        lay.addWidget(close)
+
+
 class CenterInputBar(QWidget):
     submitted = pyqtSignal(str)
+    files_submitted = pyqtSignal(str, list)
     plan_requested = pyqtSignal()
     mute_clicked = pyqtSignal()
+
+    _IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp)"
+    _MAX_ATTACHMENTS = 4
 
     def __init__(self, providers: list[str], parent=None):
         super().__init__(parent)
         self._providers = providers or ["Live Voice (Gemini)"]
+        self._attachments: list[str] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+
+        # Attachment chips strip (hidden until a photo is added).
+        self._chips_host = QWidget()
+        chips_lay = QHBoxLayout(self._chips_host)
+        chips_lay.setContentsMargins(T.CHAT_SIDE_PAD + 8, 0, T.CHAT_SIDE_PAD, 8)
+        chips_lay.setSpacing(8)
+        chips_lay.addStretch()
+        self._chips_lay = chips_lay
+        self._chips_host.hide()
+        root.addWidget(self._chips_host)
 
         host = QWidget()
         host_lay = QHBoxLayout(host)
@@ -3408,7 +3478,7 @@ class CenterInputBar(QWidget):
         row.setContentsMargins(18, 0, 10, 0)
         row.setSpacing(4)
 
-        self._attach = _ChatBarIconButton("attach", 32)
+        self._attach = _ChatBarIconButton("plus", 32)
         self._attach.clicked.connect(self._show_extras_menu)
         row.addWidget(self._attach)
 
@@ -3448,6 +3518,9 @@ class CenterInputBar(QWidget):
             "QMenu::item { padding: 8px 18px; }"
             "QMenu::item:selected { background: rgba(255,255,255,0.08); }"
         )
+        attach_action = menu.addAction("Attach photo…")
+        attach_action.triggered.connect(self._pick_photos)
+        menu.addSeparator()
         prov_menu = menu.addMenu("Model")
         for item in self._providers:
             action = prov_menu.addAction(item)
@@ -3457,10 +3530,56 @@ class CenterInputBar(QWidget):
         plan_action.triggered.connect(self.plan_requested.emit)
         menu.exec(self._attach.mapToGlobal(QPoint(0, -8)))
 
+    def _pick_photos(self):
+        from PyQt6.QtWidgets import QFileDialog
+
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Attach photos", str(Path.home()), self._IMAGE_FILTER
+        )
+        for p in paths:
+            self.add_attachment(p)
+
+    def add_attachment(self, path: str) -> bool:
+        """Add one image to the pending attachments strip. Returns True if added."""
+        path = str(path or "").strip()
+        if not path or path in self._attachments:
+            return False
+        if len(self._attachments) >= self._MAX_ATTACHMENTS:
+            return False
+        if not Path(path).is_file():
+            return False
+        self._attachments.append(path)
+        chip = _AttachmentChip(path)
+        chip.removed.connect(self._remove_attachment)
+        # Keep the trailing stretch last.
+        self._chips_lay.insertWidget(self._chips_lay.count() - 1, chip)
+        self._chips_host.show()
+        return True
+
+    def _remove_attachment(self, path: str) -> None:
+        self._attachments = [p for p in self._attachments if p != path]
+        for i in range(self._chips_lay.count() - 1, -1, -1):
+            w = self._chips_lay.itemAt(i).widget()
+            if isinstance(w, _AttachmentChip) and w._path == path:
+                w.setParent(None)
+                w.deleteLater()
+        if not self._attachments:
+            self._chips_host.hide()
+
+    def _clear_attachments(self) -> None:
+        for p in list(self._attachments):
+            self._remove_attachment(p)
+
     def _submit(self):
         text = self._input.text().strip()
-        if text:
-            self._input.clear()
+        files = list(self._attachments)
+        if not text and not files:
+            return
+        self._input.clear()
+        if files:
+            self._clear_attachments()
+            self.files_submitted.emit(text or "What is in this image?", files)
+        else:
             self.submitted.emit(text)
 
     def get_provider(self) -> str:
@@ -3478,6 +3597,7 @@ class ChatCenterPane(QWidget):
     """Screenshot-matched center workspace: header, HUD, chat feed, input bar."""
 
     submitted = pyqtSignal(str)
+    files_submitted = pyqtSignal(str, list)
     plan_requested = pyqtSignal()
     mute_clicked = pyqtSignal()
 
@@ -3551,6 +3671,7 @@ class ChatCenterPane(QWidget):
 
         self._input_bar = CenterInputBar(providers)
         self._input_bar.submitted.connect(self.submitted.emit)
+        self._input_bar.files_submitted.connect(self.files_submitted.emit)
         self._input_bar.plan_requested.connect(self.plan_requested.emit)
         self._input_bar.mute_clicked.connect(self.mute_clicked.emit)
         chat_lay.addWidget(self._input_bar)

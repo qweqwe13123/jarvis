@@ -1996,6 +1996,7 @@ class MainWindow(QMainWindow):
         self._conv = self._chat_center.conv
         self._input_bar = self._chat_center.input_bar
         self._chat_center.submitted.connect(self._send_from_bar)
+        self._chat_center.files_submitted.connect(self._send_from_bar_with_files)
         self._chat_center.plan_requested.connect(self._send_plan_mode)
         self._chat_center.mute_clicked.connect(self._toggle_mute)
 
@@ -2729,6 +2730,99 @@ class MainWindow(QMainWindow):
 
     def _send_plan_mode(self):
         self._send_from_bar("Help me plan a new idea step by step.")
+
+    def _send_from_bar_with_files(self, text: str, files: list):
+        """User attached photos via the plus button — answer with Gemini vision."""
+        files = [str(f) for f in (files or []) if f]
+        if not files:
+            self._send_from_bar(text)
+            return
+        if not self._require_subscription():
+            return
+        if getattr(self, "_center_view_mode", "chat") == "dashboard":
+            self._on_agent_selected("chat")
+        names = ", ".join(Path(f).name for f in files)
+        shown = f"{text}\n\n📎 {names}"
+        if not ws.get_active_chat():
+            ws.create_chat(text[:40])
+        if not self._on_user_message(shown):
+            return
+        self._conv.set_live_activity("Looking at the photo")
+        self._log.append_log(f"You: {shown}")
+        threading.Thread(
+            target=self._run_image_question, args=(text, files), daemon=True
+        ).start()
+
+    def _run_image_question(self, text: str, files: list[str]):
+        try:
+            import io
+            import json as _json
+
+            from google.genai import types as gtypes
+            from core.gemini_models import generate_content
+
+            try:
+                api_key = _json.loads(API_FILE.read_text(encoding="utf-8")).get(
+                    "gemini_api_key", ""
+                )
+            except Exception:
+                api_key = ""
+            if not api_key:
+                self._chat_ai_sig.emit(
+                    "I need a Gemini API key to look at photos — add one in Settings."
+                )
+                return
+
+            parts = []
+            for path in files[:4]:
+                data, mime = self._load_image_for_vision(path)
+                if data:
+                    parts.append(gtypes.Part.from_bytes(data=data, mime_type=mime))
+            if not parts:
+                self._chat_ai_sig.emit("I couldn't read those image files.")
+                return
+
+            prompt = (
+                "You are AURA. The user attached photo(s) to this chat message. "
+                "Answer their question about the image(s) directly and helpfully, "
+                "in the user's language. Describe what matters, don't pad.\n\n"
+                f"User message: {text}"
+            )
+            response = generate_content(
+                "vision",
+                contents=[*parts, prompt],
+                api_key=api_key,
+                retries_per_model=3,
+            )
+            answer = (response.text or "").strip()
+            self._chat_ai_sig.emit(answer or "I looked at the image but got no answer back.")
+        except Exception as e:
+            self._chat_ai_sig.emit(f"Photo analysis failed: {e}")
+
+    @staticmethod
+    def _load_image_for_vision(path: str) -> tuple[bytes, str]:
+        """Read + downscale one image so vision requests stay small."""
+        import io
+
+        suffix = Path(path).suffix.lower().lstrip(".") or "png"
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(
+            suffix, "image/png"
+        )
+        try:
+            raw = Path(path).read_bytes()
+        except Exception:
+            return b"", mime
+        try:
+            import PIL.Image
+
+            img = PIL.Image.open(io.BytesIO(raw)).convert("RGB")
+            img.thumbnail((1600, 1600), PIL.Image.BILINEAR)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=82)
+            return buf.getvalue(), "image/jpeg"
+        except Exception:
+            return raw, mime
 
     @staticmethod
     def _looks_like_image_request(text: str) -> bool:
