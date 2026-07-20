@@ -77,3 +77,18 @@ def test_windows_zip_apply_ps_balanced_and_finds_nested_payload():
     assert "JARVIS.exe')) {{" not in body
     # Robocopy exit 0 (nothing copied) must NOT be treated as success.
     assert "need 1-7" in body or ("$rc -lt 1" in body)
+    assert "robocopy.exe" in body
+
+
+def test_windows_spawn_does_not_use_start_empty_title():
+    import inspect
+    from core.updater.installer import _spawn_hidden_powershell
+
+    src = inspect.getsource(_spawn_hidden_powershell)
+    # Implementation must not call cmd start with empty title (causes \\ UNC error).
+    assert "start \\\"\\\" /b" not in src
+    assert '["cmd.exe", "/c", inner]' not in src
+    assert '"powershell.exe"' in src or "'powershell.exe'" in src
+    assert "-File" in src
+    assert "0x00000008" not in src  # DETACHED_PROCESS
+

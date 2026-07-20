@@ -574,33 +574,62 @@ def _write_ps1(path: Path, body: str) -> None:
 def _spawn_hidden_powershell(script: Path) -> None:
     """Detach updater so it survives AURA exit.
 
-    CRITICAL: do NOT use DETACHED_PROCESS with powershell.exe.
-    PowerShell is a console subsystem binary; DETACHED_PROCESS often makes it
-    exit immediately without running -File — which matches \"download OK,
-    app quits, old version still installed\".
+    Do NOT use:
+    - DETACHED_PROCESS with powershell (often exits before -File runs)
+    - ``cmd /c start "" /b ...`` (on Windows this frequently ShellExecute's
+      a bare ``\\\\`` and shows \"network path was not found\")
     """
     from core.win_subprocess import merge_flags
 
     create_breakaway = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
     create_new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-    # CREATE_NO_WINDOW via merge_flags — hide console without detaching wrongly.
     flags = merge_flags(create_new_group | create_breakaway)
 
-    # cmd `start /b` fully orphans the updater from the AURA process tree.
-    # Empty window title ("") is required so quoted paths are not eaten as title.
-    inner = (
-        "start \"\" /b powershell.exe -NoProfile -ExecutionPolicy Bypass "
-        f"-WindowStyle Hidden -File \"{script}\""
+    script = Path(script)
+    # Tiny .cmd trampoline — no `start`, no empty title quotes, no UNC.
+    cmd_path = script.with_suffix(".cmd")
+    cmd_body = (
+        "@echo off\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        f'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"\r\n'
     )
+    cmd_path.write_bytes(cmd_body.encode("utf-8"))
+
+    # Prefer launching powershell -File directly (most reliable).
+    try:
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(script),
+            ],
+            close_fds=True,
+            creationflags=flags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            cwd=str(script.parent),
+        )
+        _ulog(f"spawned Windows updater via powershell -File script={script}")
+        return
+    except OSError as exc:
+        _ulog(f"powershell -File spawn failed, falling back to .cmd: {exc}")
+
     subprocess.Popen(
-        ["cmd.exe", "/c", inner],
+        ["cmd.exe", "/c", str(cmd_path)],
         close_fds=True,
         creationflags=flags,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
+        cwd=str(script.parent),
     )
-    _ulog(f"spawned Windows updater via cmd start /b script={script}")
+    _ulog(f"spawned Windows updater via cmd /c script={cmd_path}")
 
 
 def _spawn_windows_updater_script(script: Path) -> None:
@@ -784,10 +813,11 @@ function Wait-AuraUnlocked([string]$InstallDir) {{
   }}
 }}
 function Invoke-AuraRobocopy([string]$From, [string]$To) {{
-  # Capture exit code via cmd so PowerShell pipelines cannot wipe LASTEXITCODE.
   # Robocopy: 0 = nothing copied, 1-7 = success, >=8 = failure.
-  $arg = '/c robocopy "' + $From + '" "' + $To + '" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np ^& exit /b %ERRORLEVEL%'
-  $p = Start-Process -FilePath 'cmd.exe' -ArgumentList $arg -Wait -PassThru -WindowStyle Hidden
+  # Pass args as an array — never via a fragile cmd /c string.
+  $p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
+    $From, $To, '/E', '/R:3', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np'
+  ) -Wait -PassThru -WindowStyle Hidden
   return [int]$p.ExitCode
 }}
 Write-AuraLog "Windows zip updater start pkg=$pkg dst=$dst expected=$expected parent=$parent"
@@ -874,8 +904,9 @@ if (-not `$src) {{
 }}
 if (-not `$src) {{ exit 2 }}
 New-Item -ItemType Directory -Force -Path `$dst | Out-Null
-`$arg = '/c robocopy "' + `$src + '" "' + `$dst + '" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np ^& exit /b %ERRORLEVEL%'
-`$p = Start-Process -FilePath 'cmd.exe' -ArgumentList `$arg -Wait -PassThru -WindowStyle Hidden
+`$p = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(
+  `$src, `$dst, '/E', '/R:3', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np'
+) -Wait -PassThru -WindowStyle Hidden
 `$rc = [int]`$p.ExitCode
 if (`$rc -lt 1 -or `$rc -ge 8) {{ exit `$rc }}
 if (`$expected) {{
@@ -907,11 +938,18 @@ exit 0
 $exe = Join-Path $dst 'AURA.exe'
 if (-not (Test-Path -LiteralPath $exe)) {{ $exe = Join-Path $dst 'JARVIS.exe' }}
 if ($ok -and (Test-Path -LiteralPath $exe)) {{
+  if ($exe -notmatch '^[A-Za-z]:\\') {{
+    Write-AuraLog "refusing to launch non-local path: $exe"
+    $ok = $false
+  }}
+}}
+if ($ok -and (Test-Path -LiteralPath $exe)) {{
   Write-AuraLog "launching $exe"
   Start-Process -FilePath $exe -WorkingDirectory $dst
   Remove-Item -Force $pkg -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
   Remove-Item -Force $scriptPath -ErrorAction SilentlyContinue
+  Remove-Item -Force ($scriptPath -replace '\\.ps1$','.cmd') -ErrorAction SilentlyContinue
 }} else {{
   Write-AuraLog "zip update aborted; not relaunching stale build (keeping work dir for debug)"
   try {{
