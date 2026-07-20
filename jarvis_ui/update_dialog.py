@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QFontMetrics
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
 )
@@ -52,6 +53,11 @@ def _fmt_mib(n: int) -> str:
     return f"{mib:.0f} MB"
 
 
+def _button_min_width(font: QFont, text: str, *, pad: int = 36) -> int:
+    """Minimum button width from label metrics (Windows DPI-safe)."""
+    return QFontMetrics(font).horizontalAdvance(text) + pad
+
+
 class UpdateDialog(QDialog):
     """Frameless, parent-centered update card — calm SaaS typography."""
 
@@ -69,8 +75,8 @@ class UpdateDialog(QDialog):
             | Qt.WindowType.WindowSystemMenuHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setFixedWidth(480)
-        self.setMinimumHeight(360)
+        self.setFixedWidth(520)
+        self.setMinimumHeight(380)
 
         shell = QFrame(self)
         shell.setObjectName("AuraUpdateShell")
@@ -156,21 +162,34 @@ class UpdateDialog(QDialog):
         layout.addWidget(self._status)
         layout.addSpacing(18)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
+        ghost_font = QFont(_FONT, 12)
+        primary_font = QFont(_FONT, 12, QFont.Weight.DemiBold)
 
-        self._later_btn = self._ghost_btn("Remind me later")
-        self._skip_btn = self._ghost_btn("Skip this version")
-        self._update_btn = self._primary_btn("Update now")
+        self._later_btn = self._ghost_btn("Remind me later", ghost_font)
+        self._skip_btn = self._ghost_btn("Skip this version", ghost_font)
+        self._update_btn = self._primary_btn("Update now", primary_font)
 
         self._later_btn.clicked.connect(self.reject)
         self._skip_btn.clicked.connect(self._skip)
         self._update_btn.clicked.connect(self._start_update)
 
-        actions.addWidget(self._later_btn)
-        actions.addWidget(self._skip_btn)
-        actions.addStretch(1)
-        actions.addWidget(self._update_btn)
+        actions = QVBoxLayout()
+        actions.setSpacing(10)
+
+        secondary = QHBoxLayout()
+        secondary.setSpacing(8)
+        secondary.addWidget(self._later_btn)
+        secondary.addWidget(self._skip_btn)
+        secondary.addStretch(1)
+
+        self._update_btn.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        primary = QHBoxLayout()
+        primary.addWidget(self._update_btn)
+
+        actions.addLayout(secondary)
+        actions.addLayout(primary)
         layout.addLayout(actions)
 
         self.setStyleSheet(f"QDialog#AuraUpdateCard {{ background: {_BG}; }}")
@@ -205,18 +224,21 @@ class UpdateDialog(QDialog):
         self.move(max(0, x), max(0, y))
 
     @staticmethod
-    def _ghost_btn(text: str) -> QPushButton:
+    def _ghost_btn(text: str, font: QFont) -> QPushButton:
         btn = QPushButton(text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFixedHeight(34)
-        btn.setFont(QFont(_FONT, 12))
+        btn.setFont(font)
+        btn.setMinimumWidth(_button_min_width(font, text))
+        btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(
             f"QPushButton {{"
             f"  background: {_BTN_BG};"
             f"  color: {_TEXT_MED};"
             f"  border: 1px solid {_BTN_BORDER};"
             f"  border-radius: 8px;"
-            f"  padding: 0 14px;"
+            f"  padding: 0 16px;"
+            f"  min-width: 0;"
             f"}}"
             f"QPushButton:hover {{"
             f"  background: #222b36;"
@@ -228,11 +250,13 @@ class UpdateDialog(QDialog):
         return btn
 
     @staticmethod
-    def _primary_btn(text: str) -> QPushButton:
+    def _primary_btn(text: str, font: QFont) -> QPushButton:
         btn = QPushButton(text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedHeight(34)
-        btn.setFont(QFont(_FONT, 12, QFont.Weight.DemiBold))
+        btn.setFixedHeight(36)
+        btn.setFont(font)
+        btn.setMinimumWidth(_button_min_width(font, text, pad=40))
+        btn.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
         btn.setStyleSheet(
             f"QPushButton {{"
             f"  background: {_PRIMARY_BG};"
@@ -240,6 +264,7 @@ class UpdateDialog(QDialog):
             f"  border: none;"
             f"  border-radius: 8px;"
             f"  padding: 0 18px;"
+            f"  min-width: 0;"
             f"}}"
             f"QPushButton:hover {{ background: #ffffff; }}"
             f"QPushButton:pressed {{ background: #d0d8e0; }}"
