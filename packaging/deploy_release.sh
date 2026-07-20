@@ -263,19 +263,13 @@ for key, entry in list(platforms.items()):
     if pname.lower().endswith(".appimage") and "blockmap_url" not in entry:
         attach_blockmap(entry, pname, prefix="blockmap")
 
-# Windows in-app updates must use the Inno .exe. ZIP replace fails under Program Files
-# ACLs and leaves users on the old build after the app has already quit. Also lets
-# older clients (that prefer update_url) download a package they can actually apply.
+# Windows in-app updates use the zip + blockmap (Cursor-style silent replace).
+# Site download keeps the Inno .exe primary asset from GitHub release mapping above.
 win = platforms.get("win-x64")
-if win and str(win.get("filename") or "").lower().endswith(".exe") and win.get("url"):
-    win["update_filename"] = win["filename"]
-    win["update_url"] = win["url"]
-    win["update_sha256"] = win["sha256"]
-    win["update_size"] = win["size"]
-    for k in list(win.keys()):
-        if k.startswith("update_blockmap"):
-            del win[k]
-    print("win-x64: in-app update_url -> Inno Setup .exe")
+if win:
+    zname = str(win.get("update_filename") or "")
+    if zname.lower().endswith(".zip") and win.get("update_url"):
+        print("win-x64: in-app update_url -> zip (site download stays .exe)")
 
 prev = json.loads(saas.read_text()) if saas.exists() else {}
 # Keep platforms missing from this GitHub tag (e.g. mac-only or win/linux-only deploys).

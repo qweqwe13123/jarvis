@@ -180,12 +180,18 @@ def _pick_asset_fields(entry: dict[str, Any]) -> tuple[str, str, str, int, str, 
     primary_is_exe = primary_name.lower().endswith(".exe") or primary_url.lower().endswith(".exe")
     update_is_exe = update_name.lower().endswith(".exe") or update_url.lower().endswith(".exe")
 
-    # Windows: prefer the Inno Setup .exe. ZIP replace often fails under Program Files
-    # ACLs / file locks after the app has already quit.
-    if primary_is_exe and primary_url and primary_sha:
-        return primary_url, primary_sha, primary_name, primary_size, "", ""
+    # Windows in-app: ZIP + blockmap (Cursor-style silent folder replace).
+    # Site download stays on the Inno .exe (primary url/filename).
+    if update_is_zip and update_url and update_sha:
+        if not blockmap_url and update_url.lower().endswith(".zip"):
+            blockmap_url = update_url + ".blockmap"
+        return update_url, update_sha, update_name, update_size, blockmap_url, blockmap_sha
+
+    # Legacy fallback when only an .exe update package exists (older releases).
     if update_is_exe and update_url and update_sha:
         return update_url, update_sha, update_name, update_size, "", ""
+    if primary_is_exe and primary_url and primary_sha:
+        return primary_url, primary_sha, primary_name, primary_size, "", ""
 
     # Packaged .app / Linux zip fallback: prefer zip update package.
     if update_url and update_sha and (update_is_zip or not primary_is_appimage):

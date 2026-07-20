@@ -270,10 +270,13 @@ class UpdateDialog(QDialog):
             if state.total_bytes:
                 pct = max(1, int(state.downloaded_bytes * 100 / state.total_bytes))
                 self._progress.setValue(min(pct, 100))
-                self._status.setText(
-                    "Downloading… "
-                    f"{_fmt_mib(state.downloaded_bytes)} / {_fmt_mib(state.total_bytes)}"
-                )
+                if state.downloaded_bytes >= state.total_bytes:
+                    self._status.setText("Restarting AURA to finish the update…")
+                else:
+                    self._status.setText(
+                        "Downloading… "
+                        f"{_fmt_mib(state.downloaded_bytes)} / {_fmt_mib(state.total_bytes)}"
+                    )
             else:
                 self._progress.setRange(0, 0)
                 self._status.setText("Downloading update…")

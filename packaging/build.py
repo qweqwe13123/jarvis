@@ -593,12 +593,12 @@ def package_release(
         "size": primary_path.stat().st_size,
         "filename": primary_name,
     }
-    # Windows: in-app updater must download the Inno .exe (ZIP replace is unreliable).
+    # Windows: site install = Inno .exe; in-app update = zip + blockmap (Cursor-style).
     if system == "Windows":
-        entry["update_filename"] = primary_name
-        entry["update_url"] = entry["url"]
-        entry["update_sha256"] = entry["sha256"]
-        entry["update_size"] = entry["size"]
+        entry["update_filename"] = update_name
+        entry["update_url"] = "%s/%s" % (base, update_name)
+        entry["update_sha256"] = _sha256(update_path)
+        entry["update_size"] = update_path.stat().st_size
     elif update_name != primary_name:
         entry["update_filename"] = update_name
         entry["update_url"] = "%s/%s" % (base, update_name)

@@ -290,13 +290,13 @@ def launch_updater(
     if os_name == "linux" and package.name.lower().endswith(".appimage"):
         _launch_linux_appimage_updater(package, target, parent_pid)
         return
-    if os_name == "windows" and package.suffix.lower() == ".exe":
-        _launch_windows_exe_updater(
+    if os_name == "windows" and package.suffix.lower() == ".zip":
+        _launch_windows_zip_updater(
             package, target, parent_pid, expected_version=expected_version
         )
         return
-    if os_name == "windows" and package.suffix.lower() == ".zip":
-        _launch_windows_zip_updater(
+    if os_name == "windows" and package.suffix.lower() == ".exe":
+        _launch_windows_exe_updater(
             package, target, parent_pid, expected_version=expected_version
         )
         return
@@ -472,6 +472,29 @@ def _launch_linux_appimage_updater(package: Path, target: Path, parent_pid: int)
     _ulog(f"spawned Linux AppImage updater script={script}")
 
 
+def _windows_kill_install_processes_ps(install_var: str = "$dst") -> str:
+    """PowerShell snippet: stop AURA + QtWebEngine processes under *install_var*."""
+    return f"""
+function Stop-AuraInstallProcesses {{
+  param([string]$InstallDir)
+  $prefix = $InstallDir.TrimEnd('\\')
+  if (-not $prefix) {{ return }}
+  for ($pass = 0; $pass -lt 3; $pass++) {{
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {{
+      $_.Path -and ($_.Path -like ($prefix + '*'))
+    }} | Stop-Process -Force -ErrorAction SilentlyContinue
+    foreach ($name in @('AURA','JARVIS','QtWebEngineProcess')) {{
+      Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object {{
+        -not $_.Path -or ($_.Path -like ($prefix + '*'))
+      }} | Stop-Process -Force -ErrorAction SilentlyContinue
+    }}
+    Start-Sleep -Milliseconds 600
+  }}
+}}
+Stop-AuraInstallProcesses -InstallDir {install_var}
+"""
+
+
 def _windows_setup_args(install_dir: Path, log_file: Path | None = None) -> list[str]:
     """Inno Setup silent flags; keep the existing install location."""
     # Do NOT embed extra quotes in /DIR= — cmd.exe quoting handles spaces.
@@ -619,10 +642,8 @@ for ($i = 0; $i -lt 450; $i++) {{
   catch {{ break }}
 }}
 Start-Sleep -Seconds 2.5
-Get-Process -Name 'AURA','JARVIS' -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.Path -and ($_.Path -like ($dst + '*')) }} |
-  Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1.5
+{_windows_kill_install_processes_ps("$dst")}
+Start-Sleep -Seconds 1
 function Test-AuraWritable([string]$dir) {{
   try {{
     $t = Join-Path $dir '.aura_write_test'
@@ -739,10 +760,8 @@ for ($i = 0; $i -lt 450; $i++) {{
   catch {{ break }}
 }}
 Start-Sleep -Seconds 2.5
-Get-Process -Name 'AURA','JARVIS' -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.Path -and ($_.Path -like ($dst + '*')) }} |
-  Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1.5
+{_windows_kill_install_processes_ps("$dst")}
+Start-Sleep -Seconds 1
 $ok = $false
 try {{
   New-Item -ItemType Directory -Force -Path $dst | Out-Null
