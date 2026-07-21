@@ -3511,23 +3511,102 @@ class CenterInputBar(QWidget):
         self._provider_combo.addItems(self._providers)
         self._provider_combo.hide()
 
+    _MENU_QSS = f"""
+        QMenu {{
+            background: {T.BG_ELEVATED};
+            color: {T.CHAT_TEXT};
+            border: 1px solid {T.BORDER_HI};
+            border-radius: 12px;
+            padding: 8px 6px;
+            font-size: 13px;
+        }}
+        QMenu::item {{
+            padding: 9px 26px 9px 12px;
+            border-radius: 8px;
+            margin: 1px 4px;
+        }}
+        QMenu::item:selected {{ background: rgba(64, 224, 208, 0.12); }}
+        QMenu::item:disabled {{ color: {T.TEXT_DIM}; }}
+        QMenu::separator {{
+            height: 1px;
+            background: {T.BORDER};
+            margin: 6px 10px;
+        }}
+        QMenu::icon {{ padding-left: 10px; }}
+        QMenu::right-arrow {{ width: 12px; height: 12px; }}
+    """
+
+    @staticmethod
+    def _menu_icon(kind: str, color: str = T.TEXT_MED) -> "QIcon":
+        """Small line icon for the plus-menu, painted in theme color."""
+        from PyQt6.QtGui import QIcon, QPixmap
+
+        logical = 18
+        pm = QPixmap(logical * 2, logical * 2)
+        pm.setDevicePixelRatio(2.0)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(color), 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        s = logical / 24.0
+
+        def P(x, y):
+            return QPointF(x * s, y * s)
+
+        def R(x, y, w, h):
+            return QRectF(x * s, y * s, w * s, h * s)
+
+        if kind == "image":
+            p.drawRoundedRect(R(3.5, 5, 17, 14), 3 * s, 3 * s)
+            p.drawEllipse(R(7, 8, 3.4, 3.4))
+            p.drawPolyline(QPolygonF([P(5, 17), P(11, 11.5), P(15, 15), P(17.5, 12.8), P(20, 15.4)]))
+        elif kind == "plan":
+            for y in (7, 12, 17):
+                p.drawEllipse(R(4.4, y - 0.9, 1.8, 1.8))
+                p.drawLine(P(9.5, y), P(20, y))
+        elif kind == "models":
+            p.drawPolygon(QPolygonF([P(12, 3.5), P(20, 8), P(20, 16), P(12, 20.5), P(4, 16), P(4, 8)]))
+            p.drawLine(P(4, 8), P(12, 12.4))
+            p.drawLine(P(20, 8), P(12, 12.4))
+            p.drawLine(P(12, 12.4), P(12, 20.5))
+        p.end()
+        return QIcon(pm)
+
+    def _style_cursor_menu(self, menu: QMenu) -> None:
+        menu.setStyleSheet(self._MENU_QSS)
+        menu.setWindowFlags(
+            menu.windowFlags()
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
     def _show_extras_menu(self):
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu {{ background: {T.BG_CARD}; color: {T.CHAT_TEXT}; border: 1px solid {T.BORDER}; padding: 6px 0; }}"
-            "QMenu::item { padding: 8px 18px; }"
-            "QMenu::item:selected { background: rgba(255,255,255,0.08); }"
-        )
-        attach_action = menu.addAction("Attach photo…")
-        attach_action.triggered.connect(self._pick_photos)
+        self._style_cursor_menu(menu)
+
+        header = menu.addAction("Add photos, models, tools…")
+        header.setEnabled(False)
         menu.addSeparator()
-        prov_menu = menu.addMenu("Model")
+
+        attach_action = menu.addAction(self._menu_icon("image"), "Image")
+        attach_action.triggered.connect(self._pick_photos)
+
+        plan_action = menu.addAction(self._menu_icon("plan"), "Plan mode")
+        plan_action.triggered.connect(self.plan_requested.emit)
+
+        menu.addSeparator()
+
+        prov_menu = menu.addMenu(self._menu_icon("models"), "Models")
+        self._style_cursor_menu(prov_menu)
         for item in self._providers:
             action = prov_menu.addAction(item)
             action.triggered.connect(lambda _, t=item: self._provider_combo.setCurrentText(t))
-        menu.addSeparator()
-        plan_action = menu.addAction("Plan mode")
-        plan_action.triggered.connect(self.plan_requested.emit)
+
         menu.exec(self._attach.mapToGlobal(QPoint(0, -8)))
 
     def _pick_photos(self):
