@@ -42,6 +42,7 @@ from jarvis_ui.connectors import ConnectorsView
 from jarvis_ui.computer_use import ComputerUseView
 from jarvis_ui.coming_soon import ComingSoonView
 from jarvis_ui.almost_ready import AlmostReadyView
+from jarvis_ui.devices_view import DevicesView
 from jarvis_ui.early_access import EarlyAccessView
 from jarvis_ui.floating_overlay import FloatingOverlay
 from jarvis_ui.global_hotkey import GlobalHotkeyService, default_hotkey, hotkey_display
@@ -1452,8 +1453,10 @@ class MainWindow(QMainWindow):
         self._workspace_stack.addWidget(self._coming_soon)
         self._almost_ready = AlmostReadyView()
         self._workspace_stack.addWidget(self._almost_ready)
+        self._devices_page = DevicesView()
+        self._devices_stack_index = self._workspace_stack.addWidget(self._devices_page)
         self._early_access = EarlyAccessView()
-        self._workspace_stack.addWidget(self._early_access)
+        self._early_access_stack_index = self._workspace_stack.addWidget(self._early_access)
 
         # Settings lives in the right pane only — main nav (profile) stays fixed.
         from jarvis_ui.settings_window import SettingsWindow
@@ -1571,6 +1574,18 @@ class MainWindow(QMainWindow):
         self._tray.start()
 
         self._start_cloud_entitlement_sync()
+        self._start_device_sync()
+
+    def _start_device_sync(self) -> None:
+        """Heartbeat + remote job poller for multi-device control."""
+        try:
+            from jarvis_ui import device_sync as DS
+
+            DS.start_device_sync(
+                on_log=lambda m: self._log.append_log(f"SYS: {m}")
+            )
+        except Exception:
+            pass
 
     def _start_cloud_entitlement_sync(self) -> None:
         """Refresh plan from AURA API periodically and on focus (never blocks UI)."""
@@ -1649,6 +1664,7 @@ class MainWindow(QMainWindow):
                     self._log.append_log(
                         f"SYS: Signed in as {UA.get_display_name()} · {UA.get_subtitle()}"
                     )
+                    self._start_device_sync()
                 else:
                     QMessageBox.warning(self, "Sign-in", "Sign-in did not complete.")
             except Exception as e:
@@ -2178,13 +2194,19 @@ class MainWindow(QMainWindow):
         if agent_key == "almost_ready":
             self._workspace_stack.setCurrentIndex(8)
             return
+        if agent_key == "devices":
+            ix = getattr(self, "_devices_stack_index", None)
+            if ix is not None:
+                self._workspace_stack.setCurrentIndex(ix)
+            return
         # Website Builder / Code Assistant gated until founding clients.
         if agent_key in ("website", "code"):
             feature = (
                 "Website Builder" if agent_key == "website" else "Code Assistant"
             )
             self._early_access.set_feature(feature)
-            self._workspace_stack.setCurrentIndex(9)
+            ix = getattr(self, "_early_access_stack_index", 10)
+            self._workspace_stack.setCurrentIndex(ix)
             self._active_agent = agent_key
             if hasattr(self, "_log"):
                 self._log.append_log(f"SYS: Early access — {feature}")

@@ -834,6 +834,12 @@ class _LineIcon(QWidget):
                 p.setBrush(QColor(self._color))
                 p.drawEllipse(R(cx - 1.5, 10.5, 3, 3))
             p.setBrush(Qt.BrushStyle.NoBrush)
+        elif n == "devices":
+            # Laptop + monitor — Linked Devices hub.
+            p.drawRoundedRect(R(3, 6, 11, 9), 1.5 * s, 1.5 * s)
+            p.drawLine(P(5, 16), P(12, 16))
+            p.drawRoundedRect(R(12, 4, 9, 12), 1.5 * s, 1.5 * s)
+            p.drawLine(P(14, 17), P(19, 17))
         elif n == "shield":
             # Premium security shield + check (sidebar Permissions).
             path = QPainterPath()
@@ -957,42 +963,43 @@ class _SidebarShieldBadge(QWidget):
         p.end()
 
 
+class _SidebarGiftBadge(QWidget):
+    """Soft cyan plate + gift mark for the referral sidebar row (matches Permissions badge)."""
+
+    def __init__(self, size: int = 22, parent=None):
+        super().__init__(parent)
+        self._d = int(size)
+        self._hot = False
+        self.setFixedSize(self._d, self._d)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self._icon = _LineIcon("gift", T.SB_TEXT, size=max(12, int(self._d * 0.64)))
+        lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignCenter)
+
+    def set_hot(self, hot: bool) -> None:
+        if self._hot != hot:
+            self._hot = hot
+            self._icon.set_color(T.SB_ACCENT if hot else T.SB_TEXT)
+            self.update()
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        d = float(self._d)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        alpha_fill = 48 if self._hot else 28
+        alpha_ring = 110 if self._hot else 70
+        p.setPen(QPen(QColor(0, 209, 255, alpha_ring), 1.1))
+        p.setBrush(QColor(0, 209, 255, alpha_fill))
+        p.drawRoundedRect(QRectF(0.5, 0.5, d - 1.0, d - 1.0), 6.0, 6.0)
+        p.end()
+
+
 _SUPPORT_EMAIL = "aura.companydev@gmail.com"
 _WELCOME_PREVIEW = (
     "Thank you for choosing AURA and becoming one of our first users. "
     "Tap to read a note from our team."
 )
-
-
-def _welcome_card_state_path() -> Path:
-    try:
-        from jarvis_ui.onboarding.persistence import _support_base
-
-        return _support_base() / "welcome_card.json"
-    except Exception:
-        return Path(__file__).resolve().parents[1] / "runtime" / "welcome_card.json"
-
-
-def is_welcome_card_dismissed() -> bool:
-    path = _welcome_card_state_path()
-    if not path.exists():
-        return False
-    try:
-        return bool(json.loads(path.read_text(encoding="utf-8")).get("dismissed"))
-    except Exception:
-        return False
-
-
-def mark_welcome_card_dismissed() -> None:
-    path = _welcome_card_state_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"dismissed": True}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
 
 
 class _ImportantMark(QWidget):
@@ -1202,7 +1209,7 @@ class _SidebarWelcomeCard(QFrame):
     def _on_close_press(self, e) -> None:  # noqa: ANN001
         if e.button() == Qt.MouseButton.LeftButton:
             e.accept()
-            mark_welcome_card_dismissed()
+            # Session-only: hide until next app launch (same as Refer friends).
             self.hide()
             self.dismissed.emit()
             return
@@ -1747,19 +1754,19 @@ class _SidebarReferralCard(QFrame):
         super().__init__(parent)
         self.setObjectName("SidebarReferralCard")
         self._hover = False
-        self.setFixedHeight(36)
+        self.setFixedHeight(T.SB_ROW_H + 2)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Open referral program")
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 6, 0)
-        lay.setSpacing(8)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(10)
 
-        self._gift = _LineIcon("gift", T.SB_TEXT_ACTIVE, size=16)
+        self._gift = _SidebarGiftBadge(22)
         lay.addWidget(self._gift, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._label = QLabel("Refer friends, earn up…")
-        self._label.setFont(QFont(T.SB_FONT, 12, QFont.Weight.Medium))
+        self._label.setFont(QFont(T.SB_FONT, T.SB_FONT_SIZE, QFont.Weight.Medium))
         self._label.setStyleSheet(
             f"color: {T.SB_TEXT_ACTIVE}; background: transparent; border: none;"
         )
@@ -1767,21 +1774,25 @@ class _SidebarReferralCard(QFrame):
 
         self._close = QFrame(self)
         self._close.setObjectName("SidebarReferralClose")
-        self._close.setFixedSize(22, 22)
+        self._close.setFixedSize(18, 18)
         self._close.setCursor(Qt.CursorShape.PointingHandCursor)
         self._close.setToolTip("Dismiss")
         close_lay = QHBoxLayout(self._close)
         close_lay.setContentsMargins(0, 0, 0, 0)
-        self._close_icon = _LineIcon("close", T.SB_TEXT_MUTED, size=12)
+        self._close_icon = _LineIcon("close", T.SB_TEXT_MUTED, size=11)
         close_lay.addWidget(self._close_icon, 0, Qt.AlignmentFlag.AlignCenter)
         self._close.mousePressEvent = self._on_close_press  # type: ignore[method-assign]
         lay.addWidget(self._close, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        self._chev = QLabel("›")
+        self._chev.setFont(QFont(T.SB_FONT, 16, QFont.Weight.Light))
+        lay.addWidget(self._chev, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self._apply()
 
     def _apply(self) -> None:
-        bg = "rgba(0, 209, 255, 0.12)" if self._hover else "rgba(0, 209, 255, 0.07)"
-        border = "rgba(0, 209, 255, 0.32)" if self._hover else "rgba(0, 209, 255, 0.18)"
+        bg = "rgba(0, 209, 255, 0.08)" if self._hover else "rgba(0, 209, 255, 0.04)"
+        border = "rgba(0, 209, 255, 0.28)" if self._hover else "rgba(0, 209, 255, 0.14)"
         self.setStyleSheet(
             f"""
             QFrame#SidebarReferralCard {{
@@ -1796,9 +1807,13 @@ class _SidebarReferralCard(QFrame):
             }}
             """
         )
-        self._gift.set_color(T.CYAN if self._hover else T.SB_TEXT)
+        self._gift.set_hot(self._hover)
         self._label.setStyleSheet(
             f"color: {T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT}; "
+            "background: transparent; border: none;"
+        )
+        self._chev.setStyleSheet(
+            f"color: {T.SB_ACCENT if self._hover else T.SB_TEXT_MUTED}; "
             "background: transparent; border: none;"
         )
         self._close_icon.set_color(T.SB_TEXT_ACTIVE if self._hover else T.SB_TEXT_MUTED)
@@ -2173,6 +2188,7 @@ class NavSidebar(QWidget):
         ("chat", "Chat", "chat", "chat"),
         ("connectors", "Connectors", "plug", "connectors"),
         ("computer_use", "Computer Use", "monitor", "computer_use"),
+        ("devices", "Devices", "devices", "devices"),
         ("skills", "Skills", "puzzle", "almost_ready"),
         ("voice", "Voice", "mic", "almost_ready"),
         ("automations", "Automations", "clock", "almost_ready"),
@@ -2272,12 +2288,6 @@ class NavSidebar(QWidget):
         foot_lay = QVBoxLayout(foot_wrap)
         foot_lay.setContentsMargins(0, 0, 10, 0)
         foot_lay.setSpacing(6)
-        # Early-user welcome note above Permissions (dismissible).
-        self._welcome_card = _SidebarWelcomeCard()
-        self._welcome_card.clicked.connect(self._open_welcome_note)
-        if is_welcome_card_dismissed():
-            self._welcome_card.hide()
-        foot_lay.addWidget(self._welcome_card)
         # Permissions sits above promo + profile chip.
         self._perm_btn = _SidebarPermissionsRow()
         self._perm_btn.clicked.connect(self._open_permissions)
@@ -2288,6 +2298,10 @@ class NavSidebar(QWidget):
             lambda: self.profile_menu_action.emit("referral")
         )
         foot_lay.addWidget(self._referral_card)
+        # Early-user welcome note at the bottom (same strip as Refer friends).
+        self._welcome_card = _SidebarWelcomeCard()
+        self._welcome_card.clicked.connect(self._open_welcome_note)
+        foot_lay.addWidget(self._welcome_card)
         self._footer = _SidebarProfileFooter()
         self._footer.menu_requested.connect(self._open_profile_menu)
         self._footer.settings_requested.connect(self.settings_requested.emit)
@@ -3690,7 +3704,8 @@ class CenterInputBar(QWidget):
         row.setSpacing(4)
 
         self._attach = _ChatBarIconButton("plus", 32)
-        self._attach.clicked.connect(self._show_extras_menu)
+        self._attach.setToolTip("Attach photo")
+        self._attach.clicked.connect(self._pick_photos)
         row.addWidget(self._attach)
 
         self._input = QLineEdit()
@@ -3721,104 +3736,6 @@ class CenterInputBar(QWidget):
         self._provider_combo = QComboBox(self)
         self._provider_combo.addItems(self._providers)
         self._provider_combo.hide()
-
-    _MENU_QSS = f"""
-        QMenu {{
-            background: {T.BG_ELEVATED};
-            color: {T.CHAT_TEXT};
-            border: 1px solid {T.BORDER_HI};
-            border-radius: 12px;
-            padding: 8px 6px;
-            font-size: 13px;
-        }}
-        QMenu::item {{
-            padding: 9px 26px 9px 12px;
-            border-radius: 8px;
-            margin: 1px 4px;
-        }}
-        QMenu::item:selected {{ background: rgba(64, 224, 208, 0.12); }}
-        QMenu::item:disabled {{ color: {T.TEXT_DIM}; }}
-        QMenu::separator {{
-            height: 1px;
-            background: {T.BORDER};
-            margin: 6px 10px;
-        }}
-        QMenu::icon {{ padding-left: 10px; }}
-        QMenu::right-arrow {{ width: 12px; height: 12px; }}
-    """
-
-    @staticmethod
-    def _menu_icon(kind: str, color: str = T.TEXT_MED) -> "QIcon":
-        """Small line icon for the plus-menu, painted in theme color."""
-        from PyQt6.QtGui import QIcon, QPixmap
-
-        logical = 18
-        pm = QPixmap(logical * 2, logical * 2)
-        pm.setDevicePixelRatio(2.0)
-        pm.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor(color), 1.5)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        s = logical / 24.0
-
-        def P(x, y):
-            return QPointF(x * s, y * s)
-
-        def R(x, y, w, h):
-            return QRectF(x * s, y * s, w * s, h * s)
-
-        if kind == "image":
-            p.drawRoundedRect(R(3.5, 5, 17, 14), 3 * s, 3 * s)
-            p.drawEllipse(R(7, 8, 3.4, 3.4))
-            p.drawPolyline(QPolygonF([P(5, 17), P(11, 11.5), P(15, 15), P(17.5, 12.8), P(20, 15.4)]))
-        elif kind == "plan":
-            for y in (7, 12, 17):
-                p.drawEllipse(R(4.4, y - 0.9, 1.8, 1.8))
-                p.drawLine(P(9.5, y), P(20, y))
-        elif kind == "models":
-            p.drawPolygon(QPolygonF([P(12, 3.5), P(20, 8), P(20, 16), P(12, 20.5), P(4, 16), P(4, 8)]))
-            p.drawLine(P(4, 8), P(12, 12.4))
-            p.drawLine(P(20, 8), P(12, 12.4))
-            p.drawLine(P(12, 12.4), P(12, 20.5))
-        p.end()
-        return QIcon(pm)
-
-    def _style_cursor_menu(self, menu: QMenu) -> None:
-        menu.setStyleSheet(self._MENU_QSS)
-        menu.setWindowFlags(
-            menu.windowFlags()
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
-        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-    def _show_extras_menu(self):
-        menu = QMenu(self)
-        self._style_cursor_menu(menu)
-
-        header = menu.addAction("Add photos, models, tools…")
-        header.setEnabled(False)
-        menu.addSeparator()
-
-        attach_action = menu.addAction(self._menu_icon("image"), "Image")
-        attach_action.triggered.connect(self._pick_photos)
-
-        plan_action = menu.addAction(self._menu_icon("plan"), "Plan mode")
-        plan_action.triggered.connect(self.plan_requested.emit)
-
-        menu.addSeparator()
-
-        prov_menu = menu.addMenu(self._menu_icon("models"), "Models")
-        self._style_cursor_menu(prov_menu)
-        for item in self._providers:
-            action = prov_menu.addAction(item)
-            action.triggered.connect(lambda _, t=item: self._provider_combo.setCurrentText(t))
-
-        menu.exec(self._attach.mapToGlobal(QPoint(0, -8)))
 
     def _pick_photos(self):
         from PyQt6.QtCore import QStandardPaths

@@ -42,6 +42,7 @@ TOOL ROUTING:
 - code_helper: Use for one file or one existing code task: write/edit/explain/run/fix a specific file.
 - browser_control: Use for web navigation, search, clicking, forms, screenshots, and browser tasks.
 - Opening exact websites: If the user says "open X", "открой сайт X", "зайди на X", or gives a domain/URL, call browser_control with action="go_to" and url set to exactly that site/domain. Never use web_search for exact-site opening requests. If the user says "open YouTube", use url="youtube.com"; "open GitHub" use url="github.com"; "открой сайт apple" use url="apple.com".
+- dispatch_to_device: When they want an action on another linked computer ("on Windows", "на маке", "на ПК", "на другом компе"), use this — not local browser_control. Prefer kind=open_url with url for opening sites remotely. Target with platform=windows|mac|linux or device_name. If they ask for two machines in one request (e.g. news on Windows + movie on Mac), call dispatch_to_device once per machine.
 - Deep research: If the user says "deep research", "глубокий поиск", "подробно изучи", "исследуй", or asks for a sourced investigation, call web_search with mode="deep_research". Return the sourced brief.
 - computer_control: Use for direct mouse/keyboard/screen coordinate actions.
 - computer_settings: Use for single OS actions like volume, brightness, closing windows, shortcuts, lock, WiFi, dark mode.

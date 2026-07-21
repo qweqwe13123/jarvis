@@ -187,10 +187,10 @@ manifest = {
     'released_at': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
     'notes': (
         f"## What's new in {VERSION}\n\n"
-        "- Automatic Gemini model fallback when a model is retired or rate-limited\n"
-        "- Screen vision fixed: hide AURA windows during capture so desktop answers are real\n"
-        "- Clearer permission / vision error messages (no vague “eyes are broken”)\n"
-        "- Floating overlay: removed the daily quota chip for a cleaner toggle UI\n"
+        "- Multi-device: link Mac + Windows under one account and send commands across machines\n"
+        "- Devices hub in the sidebar — online status, rename, remote open test\n"
+        "- Chat photo attachments with drag-and-drop and lightbox preview\n"
+        "- Windows updater reliability (Cursor-safe apply + relaunch)\n"
         "- Universal macOS build (Apple Silicon + Intel)"
     ),
     'release_index': int(RELEASE_INDEX),

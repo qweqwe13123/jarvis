@@ -72,6 +72,7 @@ from actions.code_helper       import code_helper
 from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
+from actions.dispatch_to_device import dispatch_to_device
 from actions.game_updater      import game_updater
 from actions.autonomous_mode   import autonomous_mode
 from actions.focus_guard       import focus_guard
@@ -748,6 +749,55 @@ TOOL_DECLARATIONS = [
             },
             "required": ["category", "key", "value"]
         }
+    },
+    {
+        "name": "dispatch_to_device",
+        "description": (
+            "Send a command to another linked AURA desktop on the same account "
+            "(Windows PC, Mac, or Linux). Use when the user wants something done on "
+            "a specific machine that is NOT this one — e.g. 'open US news on Windows', "
+            "'on my Mac open Netflix', 'run this on the PC'. "
+            "Prefer kind=open_url for opening websites. "
+            "Use browser_control / computer_control kinds with the same fields as those tools. "
+            "Do NOT use this for actions on the current machine — use browser_control locally instead. "
+            "Target with platform (windows|mac|linux), device_name, or device_id."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "platform": {
+                    "type": "STRING",
+                    "description": "Target OS hint: windows | mac | linux",
+                },
+                "device_name": {
+                    "type": "STRING",
+                    "description": "Display name of the linked device (partial match ok)",
+                },
+                "device_id": {
+                    "type": "STRING",
+                    "description": "Exact device UUID from Devices list (optional)",
+                },
+                "kind": {
+                    "type": "STRING",
+                    "description": "open_url | browser_control | computer_control (default open_url if url set)",
+                },
+                "url": {
+                    "type": "STRING",
+                    "description": "URL for open_url (e.g. https://news.google.com)",
+                },
+                "action": {
+                    "type": "STRING",
+                    "description": "For browser_control / computer_control — same as those tools",
+                },
+                "query": {"type": "STRING", "description": "Search query for browser_control search"},
+                "text": {"type": "STRING", "description": "Text for type/click actions"},
+                "description": {
+                    "type": "STRING",
+                    "description": "Natural-language element or task description",
+                },
+            },
+            "required": [],
+        },
     },
 ]
 
@@ -1499,6 +1549,12 @@ class JarvisLive:
 
             elif name == "computer_control":
                 r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "dispatch_to_device":
+                r = await loop.run_in_executor(
+                    None, lambda: dispatch_to_device(parameters=args, player=self.ui)
+                )
                 result = r or "Done."
 
             elif name == "game_updater":
