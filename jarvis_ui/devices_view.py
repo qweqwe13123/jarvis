@@ -8,6 +8,7 @@ import sys
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -40,10 +41,24 @@ def _platform_label(plat: str | None) -> str:
     return plat or "Unknown"
 
 
+def _perm_summary(device: dict) -> str:
+    raw = device.get("permissions") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    bits = []
+    if raw.get("allow_remote_control", True) is not False:
+        bits.append("control")
+    if raw.get("allow_remote_files") is True:
+        bits.append("files")
+    if raw.get("allow_remote_system") is True:
+        bits.append("system")
+    return " · allows: " + (", ".join(bits) if bits else "none")
+
+
 class _DeviceRow(QFrame):
-    rename_clicked = pyqtSignal(str, str)  # id, current_name
-    revoke_clicked = pyqtSignal(str, str)  # id, name
-    test_clicked = pyqtSignal(str, str)  # id, name
+    rename_clicked = pyqtSignal(str, str)
+    revoke_clicked = pyqtSignal(str, str)
+    test_clicked = pyqtSignal(str, str)
 
     def __init__(self, device: dict, parent=None):
         super().__init__(parent)
@@ -77,7 +92,11 @@ class _DeviceRow(QFrame):
         mid.setSpacing(4)
         name = str(device.get("name") or "Unnamed device")
         if is_this:
-            name = f"{name}  ·  This Mac" if sys.platform == "darwin" else f"{name}  ·  This PC"
+            name = (
+                f"{name}  ·  This Mac"
+                if sys.platform == "darwin"
+                else f"{name}  ·  This PC"
+            )
         title = QLabel(name)
         title.setFont(_sans(14, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {T.CHAT_TEXT}; background: transparent; border: none;")
@@ -85,10 +104,15 @@ class _DeviceRow(QFrame):
 
         meta = QLabel(
             f"{_platform_label(device.get('platform'))}"
-            + (f"  ·  v{device.get('appVersion') or device.get('app_version')}"
-               if (device.get("appVersion") or device.get("app_version")) else "")
+            + (
+                f"  ·  v{device.get('appVersion') or device.get('app_version')}"
+                if (device.get("appVersion") or device.get("app_version"))
+                else ""
+            )
             + (f"  ·  {'Online' if online else 'Offline'}")
+            + _perm_summary(device)
         )
+        meta.setWordWrap(True)
         meta.setFont(_sans(12))
         meta.setStyleSheet(f"color: {T.TEXT_DIM}; background: transparent; border: none;")
         mid.addWidget(meta)
@@ -123,7 +147,9 @@ class _DeviceRow(QFrame):
             btns.addWidget(test)
 
         rename = _btn("Rename")
-        rename.clicked.connect(lambda: self.rename_clicked.emit(did, str(device.get("name") or "")))
+        rename.clicked.connect(
+            lambda: self.rename_clicked.emit(did, str(device.get("name") or ""))
+        )
         btns.addWidget(rename)
 
         if not is_this:
@@ -135,18 +161,18 @@ class _DeviceRow(QFrame):
 
 
 class DevicesView(QWidget):
-    """Live linked-devices hub (heartbeat + remote open_url test)."""
+    """Live linked-devices hub with remote-control permissions."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("DevicesView")
         self.setStyleSheet(f"QWidget#DevicesView {{ background: {T.CHAT_BG}; }}")
+        self._this_device_id = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 28)
         root.setSpacing(0)
 
-        # Header
         head = QHBoxLayout()
         head.setSpacing(12)
         titles = QVBoxLayout()
@@ -156,7 +182,8 @@ class DevicesView(QWidget):
         title.setStyleSheet(f"color: {T.WHITE}; background: transparent; border: none;")
         titles.addWidget(title)
         self._subtitle = QLabel(
-            "Link your Windows PC and Mac. When both are online, AURA can run commands on each."
+            "Link your Windows PC and Mac. When both are online, ask AURA to open apps, "
+            "browse, click, type, or run tasks on the other machine — gated by the toggles below."
         )
         self._subtitle.setWordWrap(True)
         self._subtitle.setFont(_sans(13))
@@ -178,7 +205,36 @@ class DevicesView(QWidget):
         self._refresh_btn.clicked.connect(self.refresh)
         head.addWidget(self._refresh_btn, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(head)
-        root.addSpacing(22)
+        root.addSpacing(18)
+
+        # Permissions card (this machine)
+        self._perm_card = QFrame()
+        self._perm_card.setObjectName("DevicesPerms")
+        self._perm_card.setStyleSheet(
+            f"QFrame#DevicesPerms {{ background: {T.BG_CARD}; border: 1px solid {T.BORDER}; "
+            f"border-radius: 14px; }}"
+        )
+        pl = QVBoxLayout(self._perm_card)
+        pl.setContentsMargins(18, 14, 18, 14)
+        pl.setSpacing(8)
+        pt = QLabel("What other devices may do on this computer")
+        pt.setFont(_sans(13, QFont.Weight.DemiBold))
+        pt.setStyleSheet(f"color: {T.CHAT_TEXT}; background: transparent; border: none;")
+        pl.addWidget(pt)
+
+        self._cb_control = QCheckBox("Allow remote control (apps, browser, mouse/keyboard, agents)")
+        self._cb_files = QCheckBox("Allow remote files (read / write / delete)")
+        self._cb_system = QCheckBox("Allow remote system (shutdown, restart, lock)")
+        for cb in (self._cb_control, self._cb_files, self._cb_system):
+            cb.setFont(_sans(12))
+            cb.setStyleSheet(
+                f"QCheckBox {{ color: {T.TEXT_MED}; background: transparent; spacing: 8px; }}"
+                f"QCheckBox::indicator {{ width: 16px; height: 16px; }}"
+            )
+            cb.toggled.connect(self._on_perm_toggled)
+            pl.addWidget(cb)
+        root.addWidget(self._perm_card)
+        root.addSpacing(14)
 
         self._status = QLabel("")
         self._status.setFont(_sans(12))
@@ -204,6 +260,7 @@ class DevicesView(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(8000)
         self._timer.timeout.connect(self.refresh)
+        self._perm_busy = False
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
@@ -220,22 +277,65 @@ class DevicesView(QWidget):
 
         if not UA.is_authenticated():
             self._status.setText("Sign in from the profile menu to link this computer.")
+            self._perm_card.setEnabled(False)
             self._render_devices([])
             return
 
+        self._perm_card.setEnabled(True)
         try:
             snap = DS.start_device_sync().refresh_now()
             devices = list(snap.get("devices") or [])
             err = str(snap.get("error") or "")
             online_n = sum(1 for d in devices if d.get("online"))
+            last = str(snap.get("last_job") or "")
             self._status.setText(
                 err
-                or f"{len(devices)} linked · {online_n} online · this device: {snap.get('name')}"
+                or (
+                    f"{len(devices)} linked · {online_n} online · this device: {snap.get('name')}"
+                    + (f" · {last}" if last else "")
+                )
             )
+            self._load_perm_checks(snap.get("permissions") or DS.get_local_permissions())
+            for d in devices:
+                if d.get("isThisDevice") or d.get("is_this_device"):
+                    self._this_device_id = str(d.get("id") or "")
+                    break
             self._render_devices(devices)
         except Exception as e:
             self._status.setText(str(e))
             self._render_devices([])
+
+    def _load_perm_checks(self, perms: dict) -> None:
+        self._perm_busy = True
+        try:
+            self._cb_control.setChecked(bool(perms.get("allow_remote_control", True)))
+            self._cb_files.setChecked(bool(perms.get("allow_remote_files", False)))
+            self._cb_system.setChecked(bool(perms.get("allow_remote_system", False)))
+        finally:
+            self._perm_busy = False
+
+    def _on_perm_toggled(self, *_args) -> None:
+        if self._perm_busy:
+            return
+        try:
+            from jarvis_ui import device_sync as DS
+
+            perms = {
+                "allow_remote_control": self._cb_control.isChecked(),
+                "allow_remote_files": self._cb_files.isChecked(),
+                "allow_remote_system": self._cb_system.isChecked(),
+            }
+            DS.set_local_permissions(perms)
+            if self._this_device_id:
+                try:
+                    DS.patch_remote_permissions(self._this_device_id, perms)
+                except Exception:
+                    pass
+            # Push on next heartbeat immediately.
+            DS.start_device_sync().refresh_now()
+            self._status.setText("Permissions saved — other devices will see them on next sync.")
+        except Exception as e:
+            QMessageBox.warning(self, "Devices", str(e))
 
     def _clear_list(self) -> None:
         while self._list_lay.count():
@@ -328,7 +428,7 @@ class DevicesView(QWidget):
                 self,
                 "Test sent",
                 f"Asked “{name}” to open hiauraai.com.\n"
-                "Keep AURA running on that machine — it should open within ~30 seconds.",
+                "Keep AURA running on that machine — it should open within a few seconds.",
             )
         except Exception as e:
             QMessageBox.warning(self, "Devices", str(e))

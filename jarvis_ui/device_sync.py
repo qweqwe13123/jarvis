@@ -15,7 +15,36 @@ from jarvis_ui.paths import support_dir
 
 _DEVICE_PATH = support_dir() / "device_identity.json"
 _HEARTBEAT_INTERVAL = 25.0
+_JOB_POLL_INTERVAL = 5.0
 _ONLINE_HINT_S = 90.0
+
+DEFAULT_PERMISSIONS: dict[str, bool] = {
+    "allow_remote_control": True,
+    "allow_remote_files": False,
+    "allow_remote_system": False,
+}
+
+# Kinds that need allow_remote_control on the target (or this machine when executing).
+_CONTROL_KINDS = {
+    "open_url",
+    "open_app",
+    "browser_control",
+    "computer_control",
+    "agent_task",
+}
+_FILE_KINDS = {"file_controller"}
+_SYSTEM_KINDS = {"computer_settings"}
+_SYSTEM_DANGEROUS = {
+    "shutdown",
+    "restart",
+    "reboot",
+    "sleep",
+    "hibernate",
+    "lock",
+    "logout",
+    "log_out",
+    "sign_out",
+}
 
 
 def _load_identity() -> dict:
@@ -69,6 +98,29 @@ def set_device_display_name(name: str) -> None:
     _save_identity(data)
 
 
+def get_local_permissions() -> dict[str, bool]:
+    data = _load_identity()
+    raw = data.get("permissions")
+    out = dict(DEFAULT_PERMISSIONS)
+    if isinstance(raw, dict):
+        for k in DEFAULT_PERMISSIONS:
+            if k in raw:
+                out[k] = bool(raw[k])
+    return out
+
+
+def set_local_permissions(permissions: dict[str, bool]) -> dict[str, bool]:
+    data = _load_identity()
+    data["device_key"] = get_device_key()
+    merged = get_local_permissions()
+    for k in DEFAULT_PERMISSIONS:
+        if k in permissions:
+            merged[k] = bool(permissions[k])
+    data["permissions"] = merged
+    _save_identity(data)
+    return merged
+
+
 def _app_version() -> str:
     try:
         from core.version import VERSION
@@ -90,6 +142,7 @@ def heartbeat() -> dict[str, Any]:
         "name": default_device_name(),
         "platform": sys.platform,
         "app_version": _app_version(),
+        "permissions": get_local_permissions(),
     }
     return UA._http_json("POST", "/api/devices/heartbeat", body=body, token=token)
 
@@ -117,6 +170,20 @@ def rename_remote_device(device_id: str, name: str) -> dict[str, Any]:
         "PATCH",
         "/api/devices",
         body={"device_id": device_id, "name": name},
+        token=token,
+    )
+
+
+def patch_remote_permissions(device_id: str, permissions: dict[str, bool]) -> dict[str, Any]:
+    from jarvis_ui import user_account as UA
+
+    token = UA.get_access_token()
+    if not token:
+        raise RuntimeError("Sign in required")
+    return UA._http_json(
+        "PATCH",
+        "/api/devices",
+        body={"device_id": device_id, "permissions": permissions},
         token=token,
     )
 
@@ -155,6 +222,40 @@ def enqueue_job(
     )
 
 
+def get_job_status(job_id: str) -> dict[str, Any] | None:
+    from jarvis_ui import user_account as UA
+
+    token = UA.get_access_token()
+    if not token or not job_id:
+        return None
+    data = UA._http_json("GET", f"/api/devices/jobs/{job_id}", token=token)
+    job = data.get("job")
+    return job if isinstance(job, dict) else None
+
+
+def wait_for_job(
+    job_id: str,
+    *,
+    timeout_s: float = 45.0,
+    poll_s: float = 2.0,
+) -> dict[str, Any]:
+    """Block until job is done/failed or timeout. Returns last known job dict."""
+    deadline = time.time() + max(3.0, timeout_s)
+    last: dict[str, Any] = {"id": job_id, "status": "queued"}
+    while time.time() < deadline:
+        try:
+            cur = get_job_status(job_id)
+            if cur:
+                last = cur
+                st = str(cur.get("status") or "")
+                if st in {"done", "failed", "cancelled"}:
+                    return cur
+        except Exception:
+            pass
+        time.sleep(poll_s)
+    return last
+
+
 def poll_jobs() -> list[dict[str, Any]]:
     from jarvis_ui import user_account as UA
 
@@ -186,14 +287,36 @@ def finish_job(job_id: str, *, ok: bool, result: str = "", error: str = "") -> N
     )
 
 
+def _permission_denied(kind: str, need: str) -> tuple[bool, str]:
+    return (
+        False,
+        f"Remote '{kind}' blocked on this device — enable {need} in Devices settings.",
+    )
+
+
 def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
-    """Run one claimed remote job on this machine."""
-    kind = str(job.get("kind") or "")
+    """Run one claimed remote job on this machine (respects local permissions)."""
+    kind = str(job.get("kind") or "").strip().lower()
     payload = job.get("payload") or {}
     if not isinstance(payload, dict):
         payload = {}
+    perms = get_local_permissions()
 
     try:
+        if kind in _CONTROL_KINDS and not perms.get("allow_remote_control", True):
+            return _permission_denied(kind, "Allow remote control")
+
+        if kind in _FILE_KINDS and not perms.get("allow_remote_files", False):
+            return _permission_denied(kind, "Allow remote files")
+
+        if kind in _SYSTEM_KINDS:
+            action = str(payload.get("action") or "").strip().lower()
+            if action in _SYSTEM_DANGEROUS and not perms.get("allow_remote_system", False):
+                return _permission_denied(kind, "Allow remote system (shutdown/lock)")
+            if not perms.get("allow_remote_control", True) and action not in _SYSTEM_DANGEROUS:
+                # Soft settings (volume etc.) still need remote control.
+                return _permission_denied(kind, "Allow remote control")
+
         if kind == "open_url":
             url = str(payload.get("url") or "").strip()
             if not url:
@@ -203,20 +326,78 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
             webbrowser.open(url)
             return True, f"opened {url}"
 
+        if kind == "open_app":
+            from actions.open_app import open_app
+
+            app_name = str(payload.get("app_name") or payload.get("name") or "").strip()
+            if not app_name:
+                return False, "missing app_name"
+            out = open_app(parameters={"app_name": app_name})
+            return True, str(out)[:500]
+
         if kind == "browser_control":
             from actions.browser_control import browser_control
 
             action = str(payload.get("action") or "go_to")
             args = dict(payload)
             args["action"] = action
-            out = browser_control(args)
+            out = browser_control(parameters=args)
             return True, str(out)[:500]
 
         if kind == "computer_control":
             from actions.computer_control import computer_control
 
-            out = computer_control(dict(payload))
+            out = computer_control(parameters=dict(payload))
             return True, str(out)[:500]
+
+        if kind == "computer_settings":
+            from actions.computer_settings import computer_settings
+
+            out = computer_settings(parameters=dict(payload))
+            return True, str(out)[:500]
+
+        if kind == "file_controller":
+            from actions.file_controller import file_controller
+
+            action = str(payload.get("action") or "").strip().lower()
+            if action in {"delete", "remove", "rm"} and not perms.get(
+                "allow_remote_files", False
+            ):
+                return _permission_denied(kind, "Allow remote files")
+            out = file_controller(parameters=dict(payload))
+            return True, str(out)[:500]
+
+        if kind == "agent_task":
+            from agent.task_queue import TaskPriority, get_queue
+
+            goal = str(payload.get("goal") or payload.get("description") or "").strip()
+            if not goal:
+                return False, "missing goal"
+            # Soft constraints so a remote agent cannot outrun the Devices toggles.
+            constraints: list[str] = []
+            if not perms.get("allow_remote_files", False):
+                constraints.append(
+                    "Do not use file tools; do not read, write, move, or delete files."
+                )
+            if not perms.get("allow_remote_system", False):
+                constraints.append(
+                    "Do not shut down, restart, sleep, lock, or log out this computer."
+                )
+            if constraints:
+                goal = goal + "\n\nREMOTE PERMISSION CONSTRAINTS:\n- " + "\n- ".join(
+                    constraints
+                )
+            priority_map = {
+                "low": TaskPriority.LOW,
+                "normal": TaskPriority.NORMAL,
+                "high": TaskPriority.HIGH,
+            }
+            pri = priority_map.get(
+                str(payload.get("priority") or "normal").lower(),
+                TaskPriority.NORMAL,
+            )
+            task_id = get_queue().submit(goal=goal, priority=pri, speak=None)
+            return True, f"Remote agent task started (ID: {task_id}): {goal[:160]}"
 
         return False, f"unknown kind: {kind}"
     except Exception as e:
@@ -232,7 +413,9 @@ class DeviceSyncService:
         self._thread: threading.Thread | None = None
         self._last_devices: list[dict] = []
         self._last_error = ""
+        self._last_job_msg = ""
         self._lock = threading.Lock()
+        self._last_heartbeat_at = 0.0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -252,12 +435,14 @@ class DeviceSyncService:
                 "device_key": get_device_key(),
                 "name": default_device_name(),
                 "platform": sys.platform,
+                "permissions": get_local_permissions(),
                 "devices": list(self._last_devices),
                 "error": self._last_error,
+                "last_job": self._last_job_msg,
             }
 
     def refresh_now(self) -> dict[str, Any]:
-        self._tick()
+        self._tick(force_heartbeat=True)
         return self.snapshot()
 
     def _log(self, msg: str) -> None:
@@ -271,13 +456,13 @@ class DeviceSyncService:
         self._stop.wait(2.0)
         while not self._stop.is_set():
             try:
-                self._tick()
+                self._tick(force_heartbeat=False)
             except Exception as e:
                 with self._lock:
                     self._last_error = str(e)
-            self._stop.wait(_HEARTBEAT_INTERVAL)
+            self._stop.wait(_JOB_POLL_INTERVAL)
 
-    def _tick(self) -> None:
+    def _tick(self, *, force_heartbeat: bool) -> None:
         from jarvis_ui import user_account as UA
 
         if not UA.is_authenticated():
@@ -286,16 +471,20 @@ class DeviceSyncService:
                 self._last_error = "Sign in to link devices"
             return
 
-        try:
-            heartbeat()
-            devices = list_devices()
-            with self._lock:
-                self._last_devices = devices
-                self._last_error = ""
-        except Exception as e:
-            with self._lock:
-                self._last_error = str(e)
-            return
+        now = time.time()
+        need_hb = force_heartbeat or (now - self._last_heartbeat_at) >= _HEARTBEAT_INTERVAL
+        if need_hb:
+            try:
+                heartbeat()
+                devices = list_devices()
+                with self._lock:
+                    self._last_devices = devices
+                    self._last_error = ""
+                self._last_heartbeat_at = now
+            except Exception as e:
+                with self._lock:
+                    self._last_error = str(e)
+                return
 
         try:
             jobs = poll_jobs()
@@ -305,15 +494,20 @@ class DeviceSyncService:
 
         for job in jobs:
             jid = str(job.get("id") or "")
+            kind = str(job.get("kind") or "")
+            self._log(f"Devices: running remote job {kind}…")
             ok, detail = execute_job(job)
             try:
                 finish_job(jid, ok=ok, result=detail if ok else "", error="" if ok else detail)
             except Exception as e:
                 self._log(f"Devices: finish job failed — {e}")
-            self._log(
-                f"Devices: remote job {job.get('kind')} → "
+            msg = (
+                f"Devices: remote job {kind} → "
                 f"{'ok' if ok else 'fail'} ({detail[:80]})"
             )
+            with self._lock:
+                self._last_job_msg = msg
+            self._log(msg)
 
 
 _service: DeviceSyncService | None = None

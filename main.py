@@ -761,13 +761,14 @@ TOOL_DECLARATIONS = [
     {
         "name": "dispatch_to_device",
         "description": (
-            "Send a command to another linked AURA desktop on the same account "
+            "Full remote control of another linked AURA desktop on the same account "
             "(Windows PC, Mac, or Linux). Use when the user wants something done on "
-            "a specific machine that is NOT this one — e.g. 'open US news on Windows', "
-            "'on my Mac open Netflix', 'run this on the PC'. "
-            "Prefer kind=open_url for opening websites. "
-            "Use browser_control / computer_control kinds with the same fields as those tools. "
-            "Do NOT use this for actions on the current machine — use browser_control locally instead. "
+            "a machine that is NOT this one — open apps/sites, click, type, files, "
+            "settings, or a multi-step agent goal. "
+            "Kinds: open_url | open_app | browser_control | computer_control | "
+            "computer_settings | file_controller | agent_task. "
+            "For complex multi-step work on the other PC use kind=agent_task with goal. "
+            "Do NOT use this for the current machine — call local tools instead. "
             "Target with platform (windows|mac|linux), device_name, or device_id."
         ),
         "parameters": {
@@ -787,21 +788,37 @@ TOOL_DECLARATIONS = [
                 },
                 "kind": {
                     "type": "STRING",
-                    "description": "open_url | browser_control | computer_control (default open_url if url set)",
+                    "description": (
+                        "open_url | open_app | browser_control | computer_control | "
+                        "computer_settings | file_controller | agent_task"
+                    ),
                 },
                 "url": {
                     "type": "STRING",
-                    "description": "URL for open_url (e.g. https://news.google.com)",
+                    "description": "URL for open_url / browser go_to",
+                },
+                "app_name": {
+                    "type": "STRING",
+                    "description": "Application name for open_app",
+                },
+                "goal": {
+                    "type": "STRING",
+                    "description": "Natural-language goal for agent_task on the target",
                 },
                 "action": {
                     "type": "STRING",
-                    "description": "For browser_control / computer_control — same as those tools",
+                    "description": "For browser_control / computer_control / computer_settings / file_controller",
                 },
                 "query": {"type": "STRING", "description": "Search query for browser_control search"},
                 "text": {"type": "STRING", "description": "Text for type/click actions"},
+                "path": {"type": "STRING", "description": "Path for file_controller"},
                 "description": {
                     "type": "STRING",
                     "description": "Natural-language element or task description",
+                },
+                "wait": {
+                    "type": "BOOLEAN",
+                    "description": "Wait for remote result (default true)",
                 },
             },
             "required": [],
