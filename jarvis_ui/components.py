@@ -3550,10 +3550,16 @@ class CenterInputBar(QWidget):
     )
     _MAX_ATTACHMENTS = 4
 
+    _IMAGE_EXTS = {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+        ".heic", ".heif", ".tif", ".tiff",
+    }
+
     def __init__(self, providers: list[str], parent=None):
         super().__init__(parent)
         self._providers = providers or ["Live Voice (Gemini)"]
         self._attachments: list[str] = []
+        self.setAcceptDrops(True)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -3761,6 +3767,52 @@ class CenterInputBar(QWidget):
         for p in list(self._attachments):
             self._remove_attachment(p)
 
+    # ── Drag & drop photos straight into the chat ───────────────────────────
+
+    @classmethod
+    def _image_paths_from_mime(cls, mime) -> list[str]:
+        """Local image file paths from a drag/drop mime payload."""
+        paths: list[str] = []
+        try:
+            if not mime.hasUrls():
+                return paths
+            for url in mime.urls():
+                if not url.isLocalFile():
+                    continue
+                p = url.toLocalFile()
+                if Path(p).suffix.lower() in cls._IMAGE_EXTS and Path(p).is_file():
+                    paths.append(p)
+        except Exception:
+            pass
+        return paths
+
+    def _set_drop_highlight(self, on: bool) -> None:
+        border = f"1.5px solid {T.CHAT_ASSIST_ACCENT}" if on else "none"
+        self._pill.setStyleSheet(
+            f"QFrame#chatInputPill {{ background: {T.CHAT_BAR_BG}; "
+            f"border: {border}; border-radius: 26px; }}"
+        )
+
+    def dragEnterEvent(self, event):
+        if self._image_paths_from_mime(event.mimeData()):
+            self._set_drop_highlight(True)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_drop_highlight(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._set_drop_highlight(False)
+        added = False
+        for p in self._image_paths_from_mime(event.mimeData()):
+            added = self.add_attachment(p) or added
+        if added:
+            event.acceptProposedAction()
+            self._input.setFocus()
+
     def _submit(self):
         text = self._input.text().strip()
         files = list(self._attachments)
@@ -3795,6 +3847,7 @@ class ChatCenterPane(QWidget):
     def __init__(self, providers: list[str], dashboard_hud: QWidget | None = None, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"background: {T.CHAT_BG};")
+        self.setAcceptDrops(True)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -3886,6 +3939,23 @@ class ChatCenterPane(QWidget):
     @property
     def input_bar(self) -> CenterInputBar:
         return self._input_bar
+
+    # Dropping a photo anywhere on the chat attaches it to the input bar.
+    def dragEnterEvent(self, event):
+        if CenterInputBar._image_paths_from_mime(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        added = False
+        for p in CenterInputBar._image_paths_from_mime(event.mimeData()):
+            added = self._input_bar.add_attachment(p) or added
+        if added:
+            # Dropping means "I want to chat about this photo" — open chat view.
+            if self._stack.currentWidget() is not self._chat_page:
+                self.set_view_mode("chat")
+            event.acceptProposedAction()
 
     def set_hud_compact(self, compact: bool) -> None:
         self._hud_header.set_compact(compact)

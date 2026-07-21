@@ -93,3 +93,51 @@ def test_plain_text_still_uses_submitted(bar):
     bar._input.setText("hello")
     bar._submit()
     assert got == ["hello"]
+
+
+def test_image_paths_from_mime_filters_non_images(bar, tmp_path):
+    from PyQt6.QtCore import QMimeData, QUrl
+
+    img = _make_png(tmp_path, "drop.png")
+    doc = tmp_path / "notes.txt"
+    doc.write_text("x", encoding="utf-8")
+    missing = tmp_path / "ghost.jpg"
+
+    mime = QMimeData()
+    mime.setUrls([
+        QUrl.fromLocalFile(str(img)),
+        QUrl.fromLocalFile(str(doc)),
+        QUrl.fromLocalFile(str(missing)),
+        QUrl("https://example.com/photo.png"),
+    ])
+    assert bar._image_paths_from_mime(mime) == [str(img)]
+
+
+def test_image_paths_from_mime_accepts_heic(bar, tmp_path):
+    from PyQt6.QtCore import QMimeData, QUrl
+
+    p = tmp_path / "iphone.HEIC"
+    p.write_bytes(b"fake")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p))])
+    assert bar._image_paths_from_mime(mime) == [str(p)]
+
+
+def test_drop_event_attaches_images(bar, tmp_path):
+    from PyQt6.QtCore import QMimeData, QUrl
+
+    img = _make_png(tmp_path, "dropped.png")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(img))])
+
+    class FakeDrop:
+        def mimeData(self):
+            return mime
+
+        def acceptProposedAction(self):
+            self.accepted = True
+
+    ev = FakeDrop()
+    bar.dropEvent(ev)
+    assert bar._attachments == [str(img)]
+    assert getattr(ev, "accepted", False)
