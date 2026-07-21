@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 # Bump this for every public release. Keep in sync with packaging/build.py.
-VERSION = "1.0.46"
+VERSION = "1.0.47"
 
 # Monotonic release counter — bump +1 with every public VERSION bump.
 # Used with MAX_RELEASES_BEHIND to force-update clients that fall too far behind.
-RELEASE_INDEX = 46
+RELEASE_INDEX = 47
 
 # Allow current + this many prior releases (3 total). Older → update required.
 MAX_RELEASES_BEHIND = 2

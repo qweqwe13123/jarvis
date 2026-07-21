@@ -193,16 +193,18 @@ TOOL_DECLARATIONS = [
     {
         "name": "open_app",
         "description": (
-            "Opens any application on the computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
+            "Opens any application on THIS computer. "
+            "Use whenever the user asks to open, launch, or start an app "
+            "(Chrome, Yandex Browser / Яндекс, Spotify, Notepad, etc.). "
+            "For another linked PC use dispatch_to_device with kind=open_app. "
+            "Always call this tool — never just say you opened it."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "app_name": {
                     "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
+                    "description": "Application name (e.g. 'Yandex Browser', 'Chrome', 'Spotify')"
                 }
             },
             "required": ["app_name"]
@@ -451,18 +453,22 @@ TOOL_DECLARATIONS = [
     {
         "name": "computer_settings",
         "description": (
-            "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
+            "Controls THIS computer: volume, brightness, window management, keyboard shortcuts, "
+            "typing text on screen, closing a named app (action=close_app + app_name), "
+            "closing all user apps (action=close_all_apps, requires confirmed=yes), "
+            "fullscreen, dark mode, WiFi, restart, shutdown (requires confirmed=yes), "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page, "
-            "and safe diagnostics action wake_status for double-clap wake pipeline checks. "
-            "Use for ANY single computer control command. NEVER route to agent_task."
+            "and wake_status diagnostics. "
+            "For another linked PC use dispatch_to_device. NEVER route to agent_task."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
+                "action":      {"type": "STRING", "description": "Action e.g. close_app | close_all_apps | shutdown | volume_up"},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
+                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."},
+                "app_name":    {"type": "STRING", "description": "App to close when action=close_app (e.g. Yandex, Chrome)"},
+                "confirmed":   {"type": "STRING", "description": "Must be yes for shutdown/restart/close_all_apps"},
             },
             "required": []
         }
@@ -763,20 +769,23 @@ TOOL_DECLARATIONS = [
         "description": (
             "Full remote control of another linked AURA desktop on the same account "
             "(Windows PC, Mac, or Linux). Use when the user wants something done on "
-            "a machine that is NOT this one — open apps/sites, click, type, files, "
-            "settings, or a multi-step agent goal. "
-            "Kinds: open_url | open_app | browser_control | computer_control | "
-            "computer_settings | file_controller | agent_task. "
-            "For complex multi-step work on the other PC use kind=agent_task with goal. "
-            "Do NOT use this for the current machine — call local tools instead. "
-            "Target with platform (windows|mac|linux), device_name, or device_id."
+            "a machine that is NOT this one — open/close apps, browser, click, type, "
+            "files, settings, shutdown, or a multi-step agent goal. "
+            "Kinds: open_url | open_app | close_app | close_all_apps | browser_control | "
+            "computer_control | computer_settings | file_controller | agent_task. "
+            "Examples: open Yandex on Windows → kind=open_app, app_name=Yandex, platform=windows. "
+            "Close Chrome on Mac → kind=close_app, app_name=Chrome, platform=mac. "
+            "Shut down BOTH machines → platform=all, kind=computer_settings, action=shutdown; "
+            "first call without confirmed asks; after user agrees call again with confirmed=yes. "
+            "Do NOT use this for the current machine alone — call local tools instead. "
+            "Target with platform (windows|mac|linux|all), device_name, or device_id."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "platform": {
                     "type": "STRING",
-                    "description": "Target OS hint: windows | mac | linux",
+                    "description": "Target OS hint: windows | mac | linux | all (both devices)",
                 },
                 "device_name": {
                     "type": "STRING",
@@ -789,8 +798,8 @@ TOOL_DECLARATIONS = [
                 "kind": {
                     "type": "STRING",
                     "description": (
-                        "open_url | open_app | browser_control | computer_control | "
-                        "computer_settings | file_controller | agent_task"
+                        "open_url | open_app | close_app | close_all_apps | browser_control | "
+                        "computer_control | computer_settings | file_controller | agent_task"
                     ),
                 },
                 "url": {
@@ -799,7 +808,7 @@ TOOL_DECLARATIONS = [
                 },
                 "app_name": {
                     "type": "STRING",
-                    "description": "Application name for open_app",
+                    "description": "Application name for open_app / close_app",
                 },
                 "goal": {
                     "type": "STRING",
@@ -815,6 +824,14 @@ TOOL_DECLARATIONS = [
                 "description": {
                     "type": "STRING",
                     "description": "Natural-language element or task description",
+                },
+                "confirmed": {
+                    "type": "STRING",
+                    "description": "yes — required for shutdown/restart/close_all_apps after user agrees",
+                },
+                "all_devices": {
+                    "type": "BOOLEAN",
+                    "description": "If true (or platform=all), fan-out; shutdown includes this device too",
                 },
                 "wait": {
                     "type": "BOOLEAN",

@@ -545,6 +545,7 @@ ACTION_MAP: dict[str, callable] = {
     "pause_video":         pause_video,
     "play_pause":          pause_video,
     "close_app":           close_app,
+    "quit_app":            close_app,
     "close_window":        close_window,
     "full_screen":         full_screen,
     "fullscreen":          full_screen,
@@ -683,6 +684,38 @@ def computer_settings(
                 f"This will {action} the computer. "
                 f"Please confirm by calling again with confirmed=yes."
             )
+
+    # Named quit / close-all (before hotkey ACTION_MAP).
+    if action in {"close_app", "quit_app", "kill_app", "close_application"}:
+        app_name = str(
+            params.get("app_name")
+            or params.get("name")
+            or params.get("text")
+            or value
+            or ""
+        ).strip()
+        if app_name:
+            from actions.app_lifecycle import quit_named_app
+
+            return quit_named_app(app_name)
+        # No name → close focused app via hotkey.
+        try:
+            close_app()
+            return "Closed the focused application."
+        except Exception as e:
+            return f"Could not close focused app: {e}"
+
+    if action in {"close_all_apps", "quit_all_apps", "close_everything"}:
+        # Browser tab/session close_all stays in browser_control.
+        from actions.app_lifecycle import close_all_user_apps
+
+        confirmed = str(params.get("confirmed", "")).lower() in (
+            "yes",
+            "true",
+            "1",
+            "confirm",
+        )
+        return close_all_user_apps(confirmed=confirmed)
 
     if action == "volume_set":
         try:

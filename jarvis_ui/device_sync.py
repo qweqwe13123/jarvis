@@ -28,6 +28,8 @@ DEFAULT_PERMISSIONS: dict[str, bool] = {
 _CONTROL_KINDS = {
     "open_url",
     "open_app",
+    "close_app",
+    "close_all_apps",
     "browser_control",
     "computer_control",
     "agent_task",
@@ -294,6 +296,26 @@ def _permission_denied(kind: str, need: str) -> tuple[bool, str]:
     )
 
 
+def _result_is_failure(text: str) -> bool:
+    low = (text or "").lower()
+    needles = (
+        "please confirm",
+        "could not",
+        "failed",
+        "unknown action",
+        "missing ",
+        "blocked",
+        "not found",
+        "no application",
+        "sign in required",
+        "needs app_name",
+        "needs a url",
+        "needs a goal",
+        "unavailable",
+    )
+    return any(n in low for n in needles)
+
+
 def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
     """Run one claimed remote job on this machine (respects local permissions)."""
     kind = str(job.get("kind") or "").strip().lower()
@@ -333,7 +355,34 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
             if not app_name:
                 return False, "missing app_name"
             out = open_app(parameters={"app_name": app_name})
-            return True, str(out)[:500]
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
+
+        if kind == "close_app":
+            from actions.computer_settings import computer_settings
+
+            app_name = str(payload.get("app_name") or payload.get("name") or "").strip()
+            out = computer_settings(
+                parameters={
+                    "action": "close_app",
+                    "app_name": app_name,
+                    "confirmed": payload.get("confirmed"),
+                }
+            )
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
+
+        if kind == "close_all_apps":
+            from actions.computer_settings import computer_settings
+
+            out = computer_settings(
+                parameters={
+                    "action": "close_all_apps",
+                    "confirmed": payload.get("confirmed") or "yes",
+                }
+            )
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
 
         if kind == "browser_control":
             from actions.browser_control import browser_control
@@ -342,19 +391,22 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
             args = dict(payload)
             args["action"] = action
             out = browser_control(parameters=args)
-            return True, str(out)[:500]
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
 
         if kind == "computer_control":
             from actions.computer_control import computer_control
 
             out = computer_control(parameters=dict(payload))
-            return True, str(out)[:500]
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
 
         if kind == "computer_settings":
             from actions.computer_settings import computer_settings
 
             out = computer_settings(parameters=dict(payload))
-            return True, str(out)[:500]
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
 
         if kind == "file_controller":
             from actions.file_controller import file_controller
@@ -365,7 +417,8 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
             ):
                 return _permission_denied(kind, "Allow remote files")
             out = file_controller(parameters=dict(payload))
-            return True, str(out)[:500]
+            text = str(out)[:500]
+            return (not _result_is_failure(text), text)
 
         if kind == "agent_task":
             from agent.task_queue import TaskPriority, get_queue

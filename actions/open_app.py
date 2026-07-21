@@ -21,6 +21,12 @@ _APP_ALIASES: dict[str, dict[str, str]] = {
     "brave":              {"Windows": "brave",                   "Darwin": "Brave Browser",        "Linux": "brave-browser"},
     "safari":             {"Windows": "msedge",                  "Darwin": "Safari",               "Linux": "firefox"},
     "opera":              {"Windows": "opera",                   "Darwin": "Opera",                "Linux": "opera"},
+    # Yandex Browser — Windows binary is often browser.exe under LocalAppData.
+    "yandex":             {"Windows": "Yandex",                  "Darwin": "Yandex",               "Linux": "yandex-browser"},
+    "yandex browser":     {"Windows": "Yandex",                  "Darwin": "Yandex",               "Linux": "yandex-browser"},
+    "яндекс":             {"Windows": "Yandex",                  "Darwin": "Yandex",               "Linux": "yandex-browser"},
+    "яндекс браузер":     {"Windows": "Yandex",                  "Darwin": "Yandex",               "Linux": "yandex-browser"},
+    "yandexbrowser":      {"Windows": "Yandex",                  "Darwin": "Yandex",               "Linux": "yandex-browser"},
     "whatsapp":           {"Windows": "WhatsApp",                "Darwin": "WhatsApp",             "Linux": "whatsapp"},
     "telegram":           {"Windows": "Telegram",                "Darwin": "Telegram",             "Linux": "telegram"},
     "discord":            {"Windows": "Discord",                 "Darwin": "Discord",              "Linux": "discord"},
@@ -80,6 +86,27 @@ def _normalize(raw: str) -> str:
 
 def _launch_windows(app_name: str) -> bool:
     from core.win_subprocess import popen as _win_popen
+
+    # Direct path for Yandex Browser (Start Menu name alone is flaky).
+    low = app_name.lower()
+    if "yandex" in low or "яндекс" in low:
+        try:
+            from actions.app_lifecycle import windows_yandex_candidates
+
+            for exe in windows_yandex_candidates():
+                try:
+                    _win_popen(
+                        f'"{exe}"',
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    time.sleep(1.5)
+                    return True
+                except Exception as e:
+                    print(f"[open_app] Yandex path launch failed: {e}")
+        except Exception as e:
+            print(f"[open_app] Yandex candidates unavailable: {e}")
 
     if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
         try:

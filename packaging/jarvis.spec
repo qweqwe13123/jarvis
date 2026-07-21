@@ -88,6 +88,8 @@ hiddenimports = [
     "pynput.keyboard",
     "pynput.keyboard._win32",
     "pynput.keyboard._xorg",
+    "actions.app_lifecycle",
+    "psutil",
 ]
 
 excludes = []
