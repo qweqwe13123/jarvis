@@ -3934,6 +3934,85 @@ class CenterInputBar(QWidget):
         self._mic.set_muted(bool(muted))
 
 
+class _DropOverlay(QWidget):
+    """ChatGPT-style full-pane hint shown while dragging photos over the chat."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Never steal the drag — drops must land on the pane underneath.
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._remaining = 4
+        self.hide()
+
+    def set_remaining(self, n: int) -> None:
+        self._remaining = max(0, int(n))
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(5, 10, 20, 216))
+
+        cx = self.width() / 2
+        cy = self.height() / 2
+
+        # Scattered photo cards (back two tilted, front one with a "photo" glyph).
+        accent = QColor(T.CHAT_ASSIST_ACCENT)
+        card_w, card_h = 72, 56
+        for angle, dx, dy, alpha in ((-16, -34, -6, 150), (14, 34, -10, 150)):
+            p.save()
+            p.translate(cx + dx, cy - 96 + dy)
+            p.rotate(angle)
+            back = QColor(accent)
+            back.setAlpha(alpha)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(back)
+            p.drawRoundedRect(QRectF(-card_w / 2, -card_h / 2, card_w, card_h), 10, 10)
+            p.restore()
+
+        p.save()
+        p.translate(cx, cy - 88)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(accent)
+        p.drawRoundedRect(QRectF(-card_w / 2, -card_h / 2, card_w, card_h), 10, 10)
+        pen = QPen(QColor("#06121e"), 3.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(-20, -16, 10, 10))
+        p.drawPolyline(QPolygonF([
+            QPointF(-26, 18), QPointF(-6, -2), QPointF(6, 10),
+            QPointF(14, 2), QPointF(26, 14),
+        ]))
+        p.restore()
+
+        if self._remaining:
+            p.setPen(QColor(T.TEXT_MED))
+            p.setFont(QFont(T.CHAT_FONT, 13))
+            p.drawText(
+                QRectF(0, cy - 34, self.width(), 26),
+                Qt.AlignmentFlag.AlignHCenter,
+                f"{self._remaining} upload{'s' if self._remaining != 1 else ''} remaining",
+            )
+
+        p.setPen(QColor("#ffffff"))
+        p.setFont(QFont(T.CHAT_FONT, 26, QFont.Weight.Bold))
+        p.drawText(
+            QRectF(0, cy - 6, self.width(), 44),
+            Qt.AlignmentFlag.AlignHCenter,
+            "Add anything",
+        )
+
+        p.setPen(QColor(T.TEXT_MED))
+        p.setFont(QFont(T.CHAT_FONT, 14))
+        p.drawText(
+            QRectF(0, cy + 42, self.width(), 30),
+            Qt.AlignmentFlag.AlignHCenter,
+            "Drop your photo here to add it to the conversation",
+        )
+
+
 class ChatCenterPane(QWidget):
     """Screenshot-matched center workspace: header, HUD, chat feed, input bar."""
 
@@ -4025,6 +4104,8 @@ class ChatCenterPane(QWidget):
         self._hud_host = QWidget()
         self._hud_host.hide()
 
+        self._drop_overlay = _DropOverlay(self)
+
         self._on_messages_changed(self._conv.has_messages())
 
     def chat_orb(self) -> _JarvisChatOrb:
@@ -4039,13 +4120,35 @@ class ChatCenterPane(QWidget):
         return self._input_bar
 
     # Dropping a photo anywhere on the chat attaches it to the input bar.
+    def _show_drop_hint(self) -> None:
+        limit = getattr(self._input_bar, "_MAX_ATTACHMENTS", 4)
+        used = len(getattr(self._input_bar, "_attachments", []))
+        self._drop_overlay.set_remaining(limit - used)
+        self._drop_overlay.setGeometry(self.rect())
+        self._drop_overlay.raise_()
+        self._drop_overlay.show()
+
+    def _hide_drop_hint(self) -> None:
+        self._drop_overlay.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._drop_overlay.isVisible():
+            self._drop_overlay.setGeometry(self.rect())
+
     def dragEnterEvent(self, event):
         if CenterInputBar._image_paths_from_mime(event.mimeData()):
+            self._show_drop_hint()
             event.acceptProposedAction()
         else:
             event.ignore()
 
+    def dragLeaveEvent(self, event):
+        self._hide_drop_hint()
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event):
+        self._hide_drop_hint()
         added = False
         for p in CenterInputBar._image_paths_from_mime(event.mimeData()):
             added = self._input_bar.add_attachment(p) or added
