@@ -3440,7 +3440,12 @@ class CenterInputBar(QWidget):
     plan_requested = pyqtSignal()
     mute_clicked = pyqtSignal()
 
-    _IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp)"
+    # HEIC/HEIF are iPhone photos; keep an "All files" escape hatch so nothing
+    # useful is ever greyed out in the native picker.
+    _IMAGE_FILTER = (
+        "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.heic *.heif *.tif *.tiff);;"
+        "All files (*)"
+    )
     _MAX_ATTACHMENTS = 4
 
     def __init__(self, providers: list[str], parent=None):
@@ -3610,10 +3615,15 @@ class CenterInputBar(QWidget):
         menu.exec(self._attach.mapToGlobal(QPoint(0, -8)))
 
     def _pick_photos(self):
+        from PyQt6.QtCore import QStandardPaths
         from PyQt6.QtWidgets import QFileDialog
 
+        start_dir = (
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+            or str(Path.home())
+        )
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Attach photos", str(Path.home()), self._IMAGE_FILTER
+            self, "Attach photos", start_dir, self._IMAGE_FILTER
         )
         for p in paths:
             self.add_attachment(p)

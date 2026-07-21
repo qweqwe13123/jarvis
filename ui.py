@@ -2806,7 +2806,9 @@ class MainWindow(QMainWindow):
 
         suffix = Path(path).suffix.lower().lstrip(".") or "png"
         mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(
+                "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+                "heic": "image/heic", "heif": "image/heif",
+                "tif": "image/tiff", "tiff": "image/tiff"}.get(
             suffix, "image/png"
         )
         try:
