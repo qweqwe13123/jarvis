@@ -3189,6 +3189,58 @@ class ConversationView(QWidget):
     def add_user(self, text: str):
         self._bubble("user").setHtml(self._chat_html(text))
 
+    def add_user_with_images(self, text: str, images: list[str]):
+        """User bubble with clickable photo thumbnails above the text (ChatGPT-style)."""
+        images = [p for p in (images or []) if p]
+        if not images:
+            self.add_user(text)
+            return
+
+        ts = datetime.now().strftime("%H:%M")
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        outer = QHBoxLayout(wrap)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addStretch(1)
+
+        card = QFrame()
+        card.setObjectName("chatUserCard")
+        card.setMaximumWidth(T.CHAT_USER_MAX_W)
+        card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        card.setStyleSheet(
+            f"QFrame#chatUserCard {{ background: {T.CHAT_BUBBLE}; border: none; "
+            f"border-radius: {T.CHAT_BUBBLE_RADIUS}px; }}"
+        )
+        col = QVBoxLayout(card)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(10)
+
+        thumbs = QHBoxLayout()
+        thumbs.setContentsMargins(0, 0, 0, 0)
+        thumbs.setSpacing(8)
+        for path in images[:4]:
+            thumbs.addWidget(_ChatImageThumb(path))
+        thumbs.addStretch(1)
+        col.addLayout(thumbs)
+
+        if text:
+            body = _AutoText()
+            body.setFont(QFont(T.CHAT_FONT, 15))
+            body.setStyleSheet(f"color: {T.CHAT_TEXT}; background: transparent;")
+            body.setHtml(self._chat_html(text))
+            self._track_body_scroll(body)
+            col.addWidget(body)
+
+        time_lbl = QLabel(ts)
+        time_lbl.setFont(QFont(T.CHAT_FONT, 10))
+        time_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        time_lbl.setStyleSheet(f"color: {T.CHAT_TEXT_DIM}; background: transparent;")
+        col.addWidget(time_lbl)
+
+        outer.addWidget(card)
+        self._insert(wrap)
+
     def add_assistant(self, text: str):
         self._bubble("assistant").setHtml(self._chat_html(text))
 
@@ -3298,7 +3350,11 @@ class ConversationView(QWidget):
             content = msg.get("content", "")
             meta = msg.get("meta", {}) or {}
             if role == "user":
-                self.add_user(content)
+                imgs = meta.get("images") or []
+                if imgs:
+                    self.add_user_with_images(content, imgs)
+                else:
+                    self.add_user(content)
             elif role == "assistant":
                 self.add_assistant(content)
             elif role in ("activity", "tool"):
@@ -3312,6 +3368,52 @@ class ConversationView(QWidget):
                     art.get("path") or meta.get("path", ""),
                 )
         self._scroll_bottom(force=True)
+
+
+class _ChatImageThumb(QLabel):
+    """Rounded photo thumbnail in a chat bubble; click opens the original."""
+
+    _MAX_H = 180
+    _MAX_W = 260
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(Path(path).name)
+        self.setStyleSheet("background: transparent; border: none;")
+        try:
+            from PyQt6.QtGui import QPixmap
+
+            pix = QPixmap(path)
+            if pix.isNull():
+                raise ValueError("unreadable image")
+            pix = pix.scaled(
+                self._MAX_W, self._MAX_H,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            rounded = QPixmap(pix.size())
+            rounded.fill(Qt.GlobalColor.transparent)
+            p = QPainter(rounded)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            clip = QPainterPath()
+            clip.addRoundedRect(QRectF(0, 0, pix.width(), pix.height()), 12, 12)
+            p.setClipPath(clip)
+            p.drawPixmap(0, 0, pix)
+            p.end()
+            self.setPixmap(rounded)
+            self.setFixedSize(rounded.size())
+        except Exception:
+            self.setText(f"📎 {Path(path).name}")
+            self.setStyleSheet(
+                f"color: {T.CHAT_TEXT_DIM}; background: transparent; border: none;"
+            )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and Path(self._path).is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
+        super().mousePressEvent(event)
 
 
 class _ChatBarIconButton(QPushButton):

@@ -2525,7 +2525,7 @@ class MainWindow(QMainWindow):
             msg = text.split(":", 1)[1].strip()
             self._on_ai_chat_response(msg)
 
-    def _on_user_message(self, text: str) -> bool:
+    def _on_user_message(self, text: str, images: list | None = None) -> bool:
         try:
             from jarvis_ui.preview_access import note_user_turn
 
@@ -2537,8 +2537,12 @@ class MainWindow(QMainWindow):
             pass
         if not hasattr(self, "_conv"):
             return False
-        self._conv.add_user(text)
-        ws.add_message("user", text)
+        if images:
+            self._conv.add_user_with_images(text, list(images))
+            ws.add_message("user", text, meta={"images": list(images)})
+        else:
+            self._conv.add_user(text)
+            ws.add_message("user", text)
         self._refresh_sidebar()
         self._sync_hero_compact()
         # Mirror into floating overlay (voice or text) without opening main window.
@@ -2741,14 +2745,13 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "_center_view_mode", "chat") == "dashboard":
             self._on_agent_selected("chat")
-        names = ", ".join(Path(f).name for f in files)
-        shown = f"{text}\n\n📎 {names}"
         if not ws.get_active_chat():
             ws.create_chat(text[:40])
-        if not self._on_user_message(shown):
+        if not self._on_user_message(text, images=files):
             return
         self._conv.set_live_activity("Looking at the photo")
-        self._log.append_log(f"You: {shown}")
+        names = ", ".join(Path(f).name for f in files)
+        self._log.append_log(f"You: {text} [📎 {names}]")
         threading.Thread(
             target=self._run_image_question, args=(text, files), daemon=True
         ).start()
