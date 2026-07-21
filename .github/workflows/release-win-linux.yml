@@ -102,6 +102,23 @@ jobs:
           echo "ISCC=${WIN_ISCC}" >> "$GITHUB_ENV"
           set -e
 
+      - name: Warm pywinauto / comtypes (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # Pre-generate comtypes wrappers so PyInstaller's isolated import
+          # is less likely to access-violate on a cold runner image.
+          python - <<'PY'
+          import sys
+          print("python", sys.version)
+          try:
+              import pywinauto
+              import pywinauto.controls
+              print("pywinauto ok", getattr(pywinauto, "__version__", "?"))
+          except Exception as e:
+              print("warm import warning:", e)
+          PY
+
       - name: Build release artifacts
         env:
           AURA_UPDATE_MANIFEST_URL: https://www.hiauraai.com/api/releases/latest

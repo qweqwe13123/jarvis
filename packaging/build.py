@@ -298,7 +298,24 @@ def build_pyinstaller(
         f"--distpath={distpath}",
         f"--workpath={workpath}",
     ]
-    _run(cmd, check=True)
+    # Windows CI: pywinauto/comtypes can AV inside PyInstaller's isolated
+    # binary-deps child; a clean retry usually succeeds.
+    attempts = 3 if platform.system() == "Windows" else 1
+    last_err: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            if i > 1:
+                print(f"[PyInstaller] retry {i}/{attempts} after failure…")
+                shutil.rmtree(workpath, ignore_errors=True)
+                workpath.mkdir(parents=True, exist_ok=True)
+            _run(cmd, check=True)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[PyInstaller] attempt {i}/{attempts} failed: {e}")
+    if last_err is not None:
+        raise last_err
 
     if platform.system() == "Darwin":
         return distpath / f"{APP_NAME}.app"

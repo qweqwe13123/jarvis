@@ -80,14 +80,14 @@ hiddenimports = [
 
 excludes = []
 if platform.system() == "Windows":
-    # pywinauto.linux pulls X11 and can crash the isolated binary-deps child
-    # on Windows CI (access violation). Never needed for the Windows package.
+    # Avoid Linux/X11 paths that are never used on Windows packages.
     excludes += [
         "pywinauto.linux",
         "Xlib",
         "Xlib.display",
         "Xlib.X",
         "Xlib.protocol",
+        "mss.linux",
     ]
 
 a = Analysis(
