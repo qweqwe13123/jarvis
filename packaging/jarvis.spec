@@ -78,6 +78,18 @@ hiddenimports = [
     "pynput.keyboard._xorg",
 ]
 
+excludes = []
+if platform.system() == "Windows":
+    # pywinauto.linux pulls X11 and can crash the isolated binary-deps child
+    # on Windows CI (access violation). Never needed for the Windows package.
+    excludes += [
+        "pywinauto.linux",
+        "Xlib",
+        "Xlib.display",
+        "Xlib.X",
+        "Xlib.protocol",
+    ]
+
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
@@ -87,7 +99,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(ROOT / "packaging" / "rth_prefer_disk_jarvis_ui.py")],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
 )
 
