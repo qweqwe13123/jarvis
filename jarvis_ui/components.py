@@ -3370,6 +3370,97 @@ class ConversationView(QWidget):
         self._scroll_bottom(force=True)
 
 
+class _ImageLightbox(QDialog):
+    """ChatGPT-style photo preview: dark rounded lightbox, Esc/click closes."""
+
+    _MAX_RATIO = 0.78
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.FramelessWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setModal(True)
+
+        panel = QFrame(self)
+        panel.setObjectName("lightboxPanel")
+        panel.setStyleSheet(
+            f"QFrame#lightboxPanel {{ background: {T.BG_PANEL}; "
+            f"border: 1px solid {T.BORDER_HI}; border-radius: 16px; }}"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(panel)
+
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(14, 10, 14, 12)
+        lay.setSpacing(8)
+
+        head = QHBoxLayout()
+        name = QLabel(Path(path).name)
+        name.setFont(QFont(T.CHAT_FONT, 11))
+        name.setStyleSheet(f"color: {T.CHAT_TEXT_DIM}; background: transparent; border: none;")
+        head.addWidget(name)
+        head.addStretch()
+        close = QPushButton("✕")
+        close.setFixedSize(24, 24)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #8b98a8; font-size: 13px; }"
+            "QPushButton:hover { color: #ffffff; }"
+        )
+        close.clicked.connect(self.accept)
+        head.addWidget(close)
+        lay.addLayout(head)
+
+        img = QLabel()
+        img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img.setStyleSheet("background: transparent; border: none;")
+        try:
+            from PyQt6.QtGui import QPixmap
+
+            pix = QPixmap(path)
+            if pix.isNull():
+                raise ValueError("unreadable image")
+            screen = QApplication.primaryScreen()
+            geo = screen.availableGeometry() if screen else None
+            max_w = int(geo.width() * self._MAX_RATIO) if geo else 1100
+            max_h = int(geo.height() * self._MAX_RATIO) if geo else 750
+            if pix.width() > max_w or pix.height() > max_h:
+                pix = pix.scaled(
+                    max_w, max_h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            img.setPixmap(pix)
+        except Exception:
+            img.setText("Cannot preview this image")
+            img.setStyleSheet(f"color: {T.CHAT_TEXT_DIM}; background: transparent;")
+        lay.addWidget(img)
+
+    def mousePressEvent(self, event):
+        # Click anywhere (outside the ✕) also closes — lightbox behavior.
+        self.accept()
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Space):
+            self.accept()
+            return
+        super().keyPressEvent(event)
+
+
+def _show_image_lightbox(path: str, parent=None) -> None:
+    try:
+        dlg = _ImageLightbox(path, parent)
+        dlg.exec()
+    except Exception:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
 class _ChatImageThumb(QLabel):
     """Rounded photo thumbnail in a chat bubble; click opens the original."""
 
@@ -3412,7 +3503,7 @@ class _ChatImageThumb(QLabel):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and Path(self._path).is_file():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
+            _show_image_lightbox(self._path, self.window())
         super().mousePressEvent(event)
 
 
@@ -3485,7 +3576,7 @@ class _ChatSendButton(QPushButton):
 
 
 class _AttachmentChip(QFrame):
-    """Small thumbnail chip for one attached image, with a remove button."""
+    """Small thumbnail chip for one attached image: click previews, ✕ removes."""
 
     removed = pyqtSignal(str)
 
@@ -3493,6 +3584,8 @@ class _AttachmentChip(QFrame):
         super().__init__(parent)
         self._path = path
         self.setFixedHeight(44)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to preview")
         self.setStyleSheet(
             f"QFrame {{ background: {T.BG_CARD}; border: 1px solid {T.BORDER}; border-radius: 10px; }}"
         )
@@ -3534,6 +3627,11 @@ class _AttachmentChip(QFrame):
         )
         close.clicked.connect(lambda: self.removed.emit(self._path))
         lay.addWidget(close)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and Path(self._path).is_file():
+            _show_image_lightbox(self._path, self.window())
+        super().mousePressEvent(event)
 
 
 class CenterInputBar(QWidget):
