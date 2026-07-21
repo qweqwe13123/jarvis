@@ -3,7 +3,7 @@ import platform
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 ROOT = Path(SPECPATH).resolve().parent
 APP_NAME = "AURA"
@@ -45,12 +45,24 @@ datas += [
     if "/proxy/" not in Path(src).as_posix()
 ]
 
+# Force-collect numpy / OpenCV delvewheel DLLs (fixes _multiarray_umath on Windows).
+binaries = []
+try:
+    binaries += collect_dynamic_libs("numpy")
+except Exception:
+    pass
+try:
+    binaries += collect_dynamic_libs("cv2")
+except Exception:
+    pass
+
 hiddenimports = [
     "PyQt6.QtWebEngineWidgets",
     "PyQt6.QtWebEngineCore",
     "google.genai",
     "sounddevice",
     "cv2",
+    "numpy",
     "playwright",
     "duckduckgo_search",
     "launcher",
@@ -89,16 +101,29 @@ if platform.system() == "Windows":
         "Xlib.protocol",
         "mss.linux",
     ]
+    # pywinauto.controls can AV PyInstaller's isolated binary-deps child on
+    # windows-latest. Ship the package tree as data instead of analyzing it.
+    excludes.append("pywinauto")
+    try:
+        import pywinauto as _pwa
+
+        _pwa_dir = Path(_pwa.__file__).resolve().parent
+        datas.append((str(_pwa_dir), "pywinauto"))
+    except Exception as _exc:
+        print(f"[spec] pywinauto data collect skipped: {_exc}")
 
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[str(ROOT / "packaging" / "rth_prefer_disk_jarvis_ui.py")],
+    runtime_hooks=[
+        str(ROOT / "packaging" / "rth_numpy_dlls.py"),
+        str(ROOT / "packaging" / "rth_prefer_disk_jarvis_ui.py"),
+    ],
     excludes=excludes,
     noarchive=False,
 )

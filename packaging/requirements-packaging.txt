@@ -1,4 +1,5 @@
 # Build-time dependencies
-# <6.14: 6.14+ hard-fails when an isolated binary-deps import crashes
-# (pywinauto/comtypes access violation on windows-latest runners).
-pyinstaller>=6.10.0,<6.14
+# Prefer current PyInstaller (numpy.libs / delvewheel DLL paths).
+# Windows CI may AV while analyzing pywinauto — jarvis.spec excludes it from
+# Analysis and copies the package tree as data instead.
+pyinstaller>=6.14.0,<7

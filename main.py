@@ -31,6 +31,14 @@ def _early_special_mode() -> bool:
 
         wake_main()
         return True
+
+    if flag == "--aura-smoke":
+        # CI / packaging gate: prove numpy C-extensions load in the frozen app.
+        import numpy as np
+
+        print(f"SMOKE_OK numpy={np.__version__}", flush=True)
+        raise SystemExit(0)
+
     return False
 
 

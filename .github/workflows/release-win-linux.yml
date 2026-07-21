@@ -135,6 +135,21 @@ jobs:
           - In-app updates via ZIP + blockmap (same path as macOS)
           - Windows app icon + onboarding brand logos bundled"
 
+      - name: Smoke-test frozen Windows numpy
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x dist/AURA/AURA.exe || test -f dist/AURA/AURA.exe
+          # Must print SMOKE_OK — catches missing numpy.libs / OpenBLAS DLLs.
+          OUT=$(dist/AURA/AURA.exe --aura-smoke 2>&1) || {
+            echo "$OUT"
+            echo "Frozen smoke failed"
+            exit 1
+          }
+          echo "$OUT"
+          echo "$OUT" | grep -q 'SMOKE_OK'
+
       - name: Ensure blockmaps exist
         shell: bash
         run: |
