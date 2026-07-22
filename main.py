@@ -62,6 +62,7 @@ from ui import JarvisUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     append_conversation, format_recent_conversation_for_prompt,
+    load_recent_conversation,
 )
 
 from actions.file_processor import file_processor
@@ -92,6 +93,11 @@ from core.language import detect_and_save_language, language_instruction, DEFAUL
 from core.task_analyzer import analyze_task
 from core.usage_manager import usage_stats
 from core.model_router import generate_text, ModelRouterError
+from core.remote_intent import (
+    parse_remote_power_intent,
+    should_redirect_local_power,
+    tool_result_ok,
+)
 from memory.vector_memory import remember_vector
 
 
@@ -453,13 +459,15 @@ TOOL_DECLARATIONS = [
     {
         "name": "computer_settings",
         "description": (
-            "Controls THIS computer: volume, brightness, window management, keyboard shortcuts, "
+            "Controls THIS computer only: volume, brightness, window management, keyboard shortcuts, "
             "typing text on screen, closing a named app (action=close_app + app_name), "
             "closing all user apps (action=close_all_apps, requires confirmed=yes), "
             "fullscreen, dark mode, WiFi, restart, shutdown (requires confirmed=yes), "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page, "
             "and wake_status diagnostics. "
-            "For another linked PC use dispatch_to_device. NEVER route to agent_task."
+            "NEVER use this for another machine. If the user says Windows / Mac / Linux / "
+            "another PC / другое устройство / на ПК / на маке — call dispatch_to_device instead "
+            "(kind=computer_settings, action=shutdown|restart|…). NEVER route to agent_task."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -768,17 +776,20 @@ TOOL_DECLARATIONS = [
         "name": "dispatch_to_device",
         "description": (
             "Full remote control of another linked AURA desktop on the same account "
-            "(Windows PC, Mac, or Linux). Use when the user wants something done on "
-            "a machine that is NOT this one — open/close apps, browser, click, type, "
-            "files, settings, shutdown, or a multi-step agent goal. "
+            "(Windows PC, Mac, or Linux). REQUIRED when the user names another machine: "
+            "'выключи Windows', 'turn off the PC', 'на маке', 'shutdown Gaming PC', "
+            "'отключи ноутбук Windows', 'restart the Mac from here'. "
+            "Use for open/close apps, browser, click, type, files, settings, shutdown. "
             "Kinds: open_url | open_app | close_app | close_all_apps | browser_control | "
             "computer_control | computer_settings | file_controller | agent_task. "
             "Examples: open Yandex on Windows → kind=open_app, app_name=Yandex, platform=windows. "
             "Close Chrome on Mac → kind=close_app, app_name=Chrome, platform=mac. "
-            "Shut down BOTH machines → platform=all, kind=computer_settings, action=shutdown; "
-            "first call without confirmed asks; after user agrees call again with confirmed=yes. "
+            "Shut down Windows from Mac → platform=windows, kind=computer_settings, action=shutdown "
+            "(first call asks confirm; after user says yes, call again with confirmed=yes). "
+            "Shut down BOTH → platform=all, kind=computer_settings, action=shutdown. "
             "Do NOT use this for the current machine alone — call local tools instead. "
-            "Target with platform (windows|mac|linux|all), device_name, or device_id."
+            "Target with platform (windows|mac|linux|all), device_name, or device_id. "
+            "After the tool returns, tell the user that exact result — never invent success."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -862,6 +873,7 @@ class JarvisLive:
         self._last_output_audio_at = 0.0
         self._last_voice_log_at = 0.0
         self._playback_grace_seconds = 0.75
+        self._pending_user_text = ""
         self._reminder_engine = None
         self._focus_guard_engine = None
         self._start_reminder_engine()
@@ -941,6 +953,18 @@ class JarvisLive:
                 self.ui.write_log(f"AURA: {armed}")
         except Exception:
             pass
+
+        # Cross-device power (Mac→Windows / Windows→Mac) — never local shutdown by mistake.
+        try:
+            remote = self._maybe_handle_remote_power(text)
+            if remote:
+                self.ui.set_workflow_step("Finished")
+                self.ui.write_log(f"AURA: {remote}")
+                self.ui.set_state("LISTENING")
+                append_conversation("jarvis", remote)
+                return
+        except Exception as e:
+            print(f"[JARVIS] remote power intercept: {e}")
 
         if mode == "auto":
             self._fallback_local_response(text, self._preferred_provider, self._preferred_model)
@@ -1085,12 +1109,45 @@ class JarvisLive:
             return focus_guard({"action": "stop", "language": "ru"}, player=self.ui)
         return focus_guard(self._parse_focus_guard_args(raw, low), player=self.ui)
 
+    def _maybe_handle_remote_power(self, text: str) -> str | None:
+        """Deterministic Mac↔Windows power routing (bypass Live model guesswork)."""
+        intent = parse_remote_power_intent(text)
+        if not intent:
+            return None
+        args = intent.to_dispatch_args()
+        print(f"[JARVIS] 📡 remote power intercept → {args}")
+        try:
+            self.ui.set_workflow_step(
+                f"Remote {intent.action} → {intent.platform or intent.device_name or 'device'}"
+            )
+        except Exception:
+            pass
+        return dispatch_to_device(parameters=args, player=self.ui)
+
+    def _recent_user_utterance(self, limit: int = 6) -> str:
+        pending = str(getattr(self, "_pending_user_text", "") or "").strip()
+        if pending:
+            return pending
+        try:
+            entries = load_recent_conversation(limit)
+        except Exception:
+            return ""
+        for item in reversed(entries):
+            if str(item.get("role") or "").lower() in {"user", "human"}:
+                return str(item.get("text") or "")
+        return ""
+
     def _try_direct_local_actions(self, text: str) -> str | None:
         """Deterministic tool shortcuts when Live session is unavailable.
 
         Keeps critical OS actions (open site / camera / open app) working even
         if Gemini Live is reconnecting — plain chat models have no tools.
         """
+        # Remote power first — same as Live text path.
+        remote = self._maybe_handle_remote_power(text)
+        if remote:
+            return remote
+
         raw = (text or "").strip()
         if not raw:
             return None
@@ -1373,6 +1430,50 @@ class JarvisLive:
             self._loop,
         )
 
+    def _device_context_for_prompt(self) -> str:
+        """Tell Live which OS this is + which linked devices exist (remote routing)."""
+        try:
+            from core.platform_detect import normalize_os, platform_label
+            from jarvis_ui.device_sync import default_device_name, start_device_sync
+
+            os_key = normalize_os()
+            os_label = platform_label()
+            this_name = default_device_name()
+            lines = [
+                "[THIS DEVICE]",
+                f"You are running on: {os_label} (platform={os_key}), name “{this_name}”.",
+                "Local tools (computer_settings, open_app, …) act ONLY on this machine.",
+                "If the user names a different OS or another device, use dispatch_to_device.",
+            ]
+            try:
+                snap = start_device_sync().refresh_now()
+                devices = list(snap.get("devices") or [])
+            except Exception:
+                devices = []
+            others = [
+                d
+                for d in devices
+                if not d.get("isThisDevice") and not d.get("is_this_device")
+            ]
+            if others:
+                lines.append("[LINKED DEVICES]")
+                for d in others[:8]:
+                    name = d.get("name") or "device"
+                    plat = d.get("platform") or "?"
+                    online = "online" if d.get("online") else "offline"
+                    lines.append(f"- {name} ({plat}, {online})")
+                lines.append(
+                    "Remote shutdown/restart needs Devices → Allow remote system on the target."
+                )
+            else:
+                lines.append(
+                    "[LINKED DEVICES]\nNone linked yet — remote control unavailable until another AURA signs in."
+                )
+            return "\n".join(lines) + "\n\n"
+        except Exception as e:
+            print(f"[JARVIS] device context: {e}")
+            return ""
+
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
@@ -1400,8 +1501,11 @@ class JarvisLive:
             "Keep replies tight and human, the way a buddy would actually talk.\n\n"
         )
         lang_ctx = language_instruction()
+        device_ctx = self._device_context_for_prompt()
 
         parts = [time_ctx, lang_ctx, speech_ctx]
+        if device_ctx:
+            parts.append(device_ctx)
         if mem_str:
             parts.append(mem_str)
         if recent_str:
@@ -1555,8 +1659,35 @@ class JarvisLive:
                 result = r or "Vision finished, but no result was returned."
 
             elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
+                # If Live guessed local shutdown but the user named another device,
+                # redirect to dispatch_to_device (Mac↔Windows / etc.).
+                action = str(args.get("action") or "").strip().lower()
+                if not action and args.get("description"):
+                    action = str(args.get("description") or "").strip().lower()
+                recent = self._recent_user_utterance()
+                redirect = should_redirect_local_power(action, recent)
+                if redirect is None and args.get("description"):
+                    redirect = should_redirect_local_power(
+                        action, str(args.get("description") or "")
+                    )
+                if redirect is not None:
+                    print(f"[JARVIS] 📡 redirect local {action} → remote {redirect}")
+                    r = await loop.run_in_executor(
+                        None,
+                        lambda: dispatch_to_device(
+                            parameters=redirect.to_dispatch_args(),
+                            player=self.ui,
+                        ),
+                    )
+                    result = r or "Remote power request finished with no details."
+                else:
+                    r = await loop.run_in_executor(
+                        None,
+                        lambda: computer_settings(
+                            parameters=args, response=None, player=self.ui
+                        ),
+                    )
+                    result = r or "Done."
 
             elif name == "desktop_control":
                 r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
@@ -1638,9 +1769,22 @@ class JarvisLive:
             self._emit_preview(name, args, result)
         except Exception as e:
             print(f"[JARVIS] ⚠️ preview: {e}")
+
+        ok = tool_result_ok(result) if name != "save_memory" else True
+        # Give the Live model an explicit success/failure signal so it cannot
+        # invent "готово" when the tool failed or only asked for confirmation.
+        payload: dict = {"result": result, "ok": ok}
+        if not ok:
+            payload["result"] = (
+                f"NOT DONE. Tell the user this exact outcome, do not claim success: {result}"
+            )
+        else:
+            payload["result"] = (
+                f"DONE. Tell the user this exact outcome (do not invent extras): {result}"
+            )
         return types.FunctionResponse(
             id=fc.id, name=name,
-            response={"result": result}
+            response=payload,
         )
 
     _PATH_RE = re.compile(r"(~?/[^\s'\"]+?\.[A-Za-z0-9]{1,6})")
@@ -1839,6 +1983,7 @@ class JarvisLive:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
                                 in_buf.append(txt)
+                                self._pending_user_text = " ".join(in_buf).strip()
 
                         if sc.turn_complete:
                             if self._turn_done_event:
@@ -1848,6 +1993,7 @@ class JarvisLive:
                                 self._emit_user_turn(in_buf)
                             in_buf = []
                             user_emitted = False
+                            self._pending_user_text = ""
 
                             full_out = " ".join(out_buf).strip()
                             self.ui.stream_end(full_out)
@@ -1869,6 +2015,10 @@ class JarvisLive:
                             out_buf = []
 
                     if response.tool_call:
+                        # Persist the voice utterance before tools so remote-power
+                        # redirect can read what the user actually said.
+                        if not user_emitted and in_buf:
+                            user_emitted = self._emit_user_turn(in_buf)
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[JARVIS] 📞 {fc.name}")
