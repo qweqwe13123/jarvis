@@ -22,6 +22,8 @@ DEFAULT_PERMISSIONS: dict[str, bool] = {
     "allow_remote_control": True,
     "allow_remote_files": False,
     "allow_remote_system": False,
+    # Software KVM (built into AURA) — LAN shared keyboard & mouse.
+    "allow_kvm_input": False,
 }
 
 # Kinds that need allow_remote_control on the target (or this machine when executing).
@@ -146,6 +148,15 @@ def heartbeat() -> dict[str, Any]:
         "app_version": _app_version(),
         "permissions": get_local_permissions(),
     }
+    # Best-effort LAN hint for KVM peers (backend may ignore unknown fields).
+    try:
+        from jarvis_ui.kvm.net import local_lan_ip
+
+        lan = local_lan_ip()
+        if lan:
+            body["lan_ip"] = lan
+    except Exception:
+        pass
     return UA._http_json("POST", "/api/devices/heartbeat", body=body, token=token)
 
 
@@ -325,6 +336,24 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
     perms = get_local_permissions()
 
     try:
+        if kind == "kvm_invite":
+            if not perms.get("allow_kvm_input", False):
+                return _permission_denied(kind, "Allow shared keyboard & mouse (KVM)")
+            from jarvis_ui.kvm import get_kvm_manager
+
+            snap = get_kvm_manager().accept_invite(payload)
+            if snap.status.value == "running":
+                return True, f"KVM client connected to {snap.peer_host}:{snap.port}"
+            return False, snap.message or "KVM invite failed"
+
+        if kind == "kvm_stop":
+            if not perms.get("allow_kvm_input", False):
+                return _permission_denied(kind, "Allow shared keyboard & mouse (KVM)")
+            from jarvis_ui.kvm import get_kvm_manager
+
+            get_kvm_manager().stop()
+            return True, "KVM stopped"
+
         if kind in _CONTROL_KINDS and not perms.get("allow_remote_control", True):
             return _permission_denied(kind, "Allow remote control")
 

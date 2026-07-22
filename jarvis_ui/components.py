@@ -3722,6 +3722,12 @@ class CenterInputBar(QWidget):
         self._input.returnPressed.connect(self._submit)
         row.addWidget(self._input, stretch=1)
 
+        from jarvis_ui.model_picker import AutoModelButton
+
+        self._model_btn = AutoModelButton()
+        self._model_btn.setToolTip("Choose AI model")
+        row.addWidget(self._model_btn)
+
         self._mic = _ChatBarIconButton("mic", 32)
         self._mic.clicked.connect(self.mute_clicked.emit)
         row.addWidget(self._mic)
@@ -3841,11 +3847,29 @@ class CenterInputBar(QWidget):
             self.submitted.emit(text)
 
     def get_provider(self) -> str:
+        if hasattr(self, "_model_btn"):
+            opt = self._model_btn.current_option()
+            return (opt.provider or "auto").lower()
         text = self._provider_combo.currentText().strip()
         low = text.lower()
         if "live voice" in low or "claude" in low or "opus" in low:
             return "auto"
         return text.split(" — ")[0].strip().lower()
+
+    def get_model_selection(self) -> tuple[str, str, str]:
+        """Return (provider, model, mode) from the Auto picker."""
+        if hasattr(self, "_model_btn"):
+            opt = self._model_btn.current_option()
+            return (
+                (opt.provider or "auto").lower(),
+                (opt.model or "").strip(),
+                (opt.mode or "auto").lower(),
+            )
+        return self.get_provider(), "", "live"
+
+    def refresh_model_picker(self) -> None:
+        if hasattr(self, "_model_btn"):
+            self._model_btn.refresh()
 
     def set_muted(self, muted: bool) -> None:
         self._mic.set_muted(bool(muted))
@@ -3958,24 +3982,12 @@ class ChatCenterPane(QWidget):
         tl.addWidget(self._online_label)
         tl.addStretch()
 
+        # Model picker lives in the chat bar (Cursor-style Auto ▾).
+        # Keep a hidden combo for backward compatibility with older callers.
         self.model_combo = QComboBox()
         model_items = providers or ["Live Voice (Gemini)", "Auto Router"]
         self.model_combo.addItems(model_items)
-        self.model_combo.setFixedHeight(30)
-        self.model_combo.setMinimumWidth(140)
-        self.model_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.model_combo.setStyleSheet(f"""
-            QComboBox {{
-                background: {T.BG_CARD}; color: {T.CHAT_TEXT};
-                border: 1px solid {T.BORDER}; border-radius: 15px; padding: 0 14px;
-            }}
-            QComboBox::drop-down {{ border: none; width: 18px; }}
-            QComboBox QAbstractItemView {{
-                background: {T.BG_ELEVATED}; color: {T.CHAT_TEXT};
-                selection-background-color: rgba(64,224,208,0.15);
-            }}
-        """)
-        tl.addWidget(self.model_combo)
+        self.model_combo.hide()
         lay.addWidget(self._top)
 
         self._stack = QStackedWidget()

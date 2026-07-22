@@ -2435,7 +2435,14 @@ class MainWindow(QMainWindow):
         )
 
     def _subscription_allows_use(self) -> bool:
-        """True if Pro or free preview still available."""
+        """True if Pro, free preview still available, or local Ollama chat is on."""
+        try:
+            from jarvis_ui.local_ai import is_ollama_chat_enabled
+
+            if is_ollama_chat_enabled():
+                return True
+        except Exception:
+            pass
         try:
             from jarvis_ui.preview_access import can_start_turn, is_pro
 
@@ -2687,15 +2694,32 @@ class MainWindow(QMainWindow):
             pass
 
     def _current_provider(self) -> str:
-        if hasattr(self, "_chat_center"):
-            text = self._chat_center.model_combo.currentText().strip()
-            low = text.lower()
-            if "live voice" in low or "claude" in low or "opus" in low:
-                return "auto"
-            return text.split(" — ")[0].strip().lower()
+        # Explicit picker selection wins (including Ollama from the menu).
+        if hasattr(self, "_chat_center") and hasattr(self._chat_center, "input_bar"):
+            bar = self._chat_center.input_bar
+            if hasattr(bar, "get_model_selection"):
+                provider, _model, _mode = bar.get_model_selection()
+                if provider:
+                    return provider
+        # Settings → Models "Free AI on this computer" as fallback.
+        try:
+            from jarvis_ui.local_ai import get_ollama_model, is_ollama_chat_enabled
+
+            if is_ollama_chat_enabled() and get_ollama_model():
+                return "ollama"
+        except Exception:
+            pass
         if hasattr(self, "_input_bar"):
             return self._input_bar.get_provider()
         return "auto"
+
+    def _current_model_route(self) -> tuple[str, str, str]:
+        """(provider, model, mode) for JCFG routing."""
+        if hasattr(self, "_chat_center") and hasattr(self._chat_center, "input_bar"):
+            bar = self._chat_center.input_bar
+            if hasattr(bar, "get_model_selection"):
+                return bar.get_model_selection()
+        return self._current_provider(), "", "live"
 
     def _send_from_bar(self, text: str):
         if not text:
@@ -2716,12 +2740,19 @@ class MainWindow(QMainWindow):
             return
 
         self._conv.set_live_activity("Thinking")
-        provider = self._current_provider()
-        model = ""
-        # Specialized sidebar agents run through the local agent runtime:
-        # own system prompt + toolset (web search, deep research, files) +
-        # persistent per-agent session memory. General chat keeps the
-        # live-voice pipeline below (Gemini Live + real tool calls).
+        provider, model, mode = self._current_model_route()
+
+        # Settings local-AI toggle can still force ollama when picker is Auto.
+        try:
+            from jarvis_ui.local_ai import get_ollama_model, is_ollama_chat_enabled
+
+            if provider in ("auto", "") and is_ollama_chat_enabled() and get_ollama_model():
+                provider, model, mode = "ollama", get_ollama_model(), "auto"
+            elif provider == "ollama" and not model:
+                model = get_ollama_model()
+        except Exception:
+            pass
+
         if self._active_agent in ("writer", "researcher", "designer", "automation"):
             self._log.append_log(f"You: {text}")
             threading.Thread(
@@ -2730,11 +2761,27 @@ class MainWindow(QMainWindow):
                 daemon=True,
             ).start()
             return
-        # General Chat MUST go through Live session so camera/browser/OS tools work.
-        # mode=auto previously forced a plain Ollama reply with NO tools — that is
-        # why "open site" / "turn on camera" got chatbot refusals instead of actions.
-        mode = "live"
-        payload = f"[JCFG mode={mode} provider={provider} model={model}] {text}"
+
+        # Non-Gemini providers (and explicit Ollama) use text router — no live tools.
+        if provider == "ollama" or (
+            provider not in ("auto", "gemini", "") and mode != "live"
+        ):
+            route_mode = "auto"
+            payload = (
+                f"[JCFG mode={route_mode} provider={provider} model={model}] {text}"
+            )
+            self._log.append_log(f"You: {text}")
+            if self.on_text_command:
+                threading.Thread(
+                    target=self.on_text_command, args=(payload,), daemon=True
+                ).start()
+            return
+
+        # Gemini / Auto → Live session so camera/browser/OS tools work.
+        route_mode = "live" if mode == "live" or provider in ("auto", "gemini", "") else mode
+        if provider in ("auto", ""):
+            provider = "auto"
+        payload = f"[JCFG mode={route_mode} provider={provider} model={model}] {text}"
         self._log.append_log(f"You: {text}")
         if self.on_text_command:
             threading.Thread(target=self.on_text_command, args=(payload,), daemon=True).start()

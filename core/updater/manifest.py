@@ -113,10 +113,20 @@ def force_update_required(
 
 def fetch_manifest(url: str | None = None, timeout: int = 20) -> dict[str, Any]:
     target = url or manifest_url()
-    req = urllib.request.Request(
-        target,
-        headers={"User-Agent": f"AURA-Updater/{VERSION}", "Accept": "application/json"},
-    )
+    headers = {
+        "User-Agent": f"AURA-Updater/{VERSION}",
+        "Accept": "application/json",
+    }
+    # Pro-gated releases: send desktop session JWT when available.
+    try:
+        from jarvis_ui.user_account import get_access_token
+
+        token = (get_access_token() or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    except Exception:
+        pass
+    req = urllib.request.Request(target, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

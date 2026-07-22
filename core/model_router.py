@@ -251,6 +251,8 @@ def _generate_gemini(
 
 def _generate_ollama(model: str, prompt: str, timeout_sec: int) -> tuple[str, int]:
     url = os.getenv("OLLAMA_BASE_URL", _config_value("ollama_base_url", "http://localhost:11434/api/generate"))
+    if not (model or "").strip() or (model or "").strip().lower() in ("auto", "latest"):
+        model = _config_value("ollama_model", "") or "llama3.2:3b"
     start = time.time()
     try:
         resp = requests.post(url, json={"model": model, "prompt": prompt, "stream": False}, timeout=timeout_sec)
@@ -295,6 +297,10 @@ def generate_text(
     if preferred_provider:
         pref_provider = preferred_provider.strip().lower()
         pref_model = (preferred_model or "").strip()
+        if pref_provider == "ollama" and (
+            not pref_model or pref_model.lower() in ("auto", "latest")
+        ):
+            pref_model = _config_value("ollama_model", "") or "llama3.2:3b"
         preferred_route = (pref_provider, pref_model or "auto")
         filtered = []
         if pref_provider == "auto":

@@ -11,6 +11,8 @@
     "together_api_key": "",
     "lmstudio_base_url": "http://localhost:1234/v1",
     "ollama_base_url": "http://localhost:11434/api/generate",
+    "ollama_model": "",
+    "primary_chat_provider": "gemini",
     "default_tier": "free",
     "router_policy": "hybrid_free",
     "free_limits": {
