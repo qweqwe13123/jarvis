@@ -237,28 +237,6 @@ AGENTS: dict[str, AgentDef] = {
             "website projects. When asked, draft an outreach email or generate a pitch."
         ),
     ),
-    "manager": AgentDef(
-        id="manager",
-        name="Manager",
-        tagline="Plans, priorities, decisions",
-        icon="manager",
-        produces_html=False,
-        placeholder="What should we plan, prioritize, or decide…",
-        suggestions=[
-            "Weekly plan for a product launch",
-            "Prioritize this backlog for next sprint",
-            "Decision memo: build vs buy",
-            "Stakeholder update in 5 bullets",
-        ],
-        system_prompt=(
-            "You are a sharp product and project manager. Help with plans, "
-            "priorities, decisions, status updates, and clear next steps. Always:\n"
-            "- Be concrete and actionable — owners, deadlines, risks when relevant.\n"
-            "- Use short structure: goal → options → recommendation → next steps.\n"
-            "- Ask only for missing facts that block a good answer.\n"
-            "- Match the user's language. No fluff."
-        ),
-    ),
 }
 
 

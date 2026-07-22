@@ -711,12 +711,6 @@ class _LineIcon(QWidget):
             p.drawEllipse(R(4.5, 10.5, 5.5, 5.5))
             p.drawLine(P(5, 20), P(19, 20))
             p.drawLine(P(12, 16), P(16, 20))
-        elif n == "manager":
-            # Briefcase
-            p.drawRoundedRect(R(3, 9, 18, 11), 2 * s, 2 * s)
-            p.drawLine(P(3, 13), P(21, 13))
-            p.drawRoundedRect(R(9, 5, 6, 4), 1.2 * s, 1.2 * s)
-            p.drawLine(P(12, 12), P(12, 15))
         elif n == "designer":
             p.drawEllipse(R(3, 3, 18, 18))
             p.drawEllipse(R(13, 13, 5, 5))
@@ -2203,7 +2197,6 @@ class NavSidebar(QWidget):
         ("website", "Website Builder", "globe"),
         ("code", "Code Assistant", "code"),
         ("researcher", "Researcher", "researcher"),
-        ("manager", "Manager", "manager"),
     )
 
     new_chat = pyqtSignal()
