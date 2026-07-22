@@ -3,7 +3,7 @@ from core.agents import AGENTS, get_agent
 
 SIDEBAR_KEYS = [
     "general", "website", "code", "automation",
-    "writer", "researcher", "designer", "maps_prospector",
+    "writer", "researcher", "designer", "maps_prospector", "manager",
 ]
 
 

@@ -334,22 +334,17 @@ def _dispatch_all_power(
     *,
     devices: list[dict[str, Any]],
     action: str,
-    confirmed: bool,
     wait: bool,
     player=None,
 ) -> str:
-    """Shutdown/restart every linked device (this one locally + remotes)."""
+    """Shutdown/restart every linked device (this one locally + remotes).
+
+    No chat confirm round-trip: consent is Devices → Allow remote system on
+    each remote, and local power is intentional when the user said "both/all".
+    """
     from actions.computer_settings import computer_settings
 
     targets = resolve_all_targets(devices)
-    names = [str(d.get("name") or "device") for d in targets]
-    if not confirmed:
-        return (
-            f"This will {action} these devices: {', '.join(names)}. "
-            "Call again with confirmed=yes. "
-            "Each remote PC needs Devices → Allow remote system."
-        )
-
     lines: list[str] = []
     for d in targets:
         is_this = bool(d.get("isThisDevice") or d.get("is_this_device"))
@@ -377,7 +372,7 @@ def _dispatch_all_power(
                 player=player,
             )
         )
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "No linked devices to power-control."
 
 
 def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -> str:
@@ -390,7 +385,9 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
       kind — open_url | open_app | close_app | close_all_apps |
               browser_control | computer_control | computer_settings |
               file_controller | agent_task
-      confirmed — required for shutdown/restart and close_all_apps
+      confirmed — required for close_all_apps only.
+        Remote shutdown/restart runs immediately (consent = Allow remote system
+        on the target). Local computer_settings still has its own confirm.
       wait — if false, return immediately after queue (default true)
     """
     from jarvis_ui import device_sync as DS
@@ -440,27 +437,15 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
         if action == "reboot":
             payload["action"] = "restart"
             action = "restart"
+        # Execute immediately — bare "yes" confirm round-trips fail with Live.
+        # Safety gate: target Devices → Allow remote system (checked on enqueue).
+        payload["confirmed"] = "yes"
         if _wants_all_devices(args):
             return _dispatch_all_power(
                 devices=devices,
                 action=action,
-                confirmed=confirmed,
                 wait=wait,
                 player=player,
-            )
-        if not confirmed:
-            # Still allow queueing the ask-confirm round-trip? Better ask here.
-            target_preview = resolve_target_device(
-                devices,
-                device_id=str(args.get("device_id") or ""),
-                device_name=str(args.get("device_name") or args.get("device") or ""),
-                platform=str(args.get("platform") or ""),
-            )
-            label = (target_preview or {}).get("name") or "that device"
-            return (
-                f"This will {action} “{label}”. "
-                "Call again with confirmed=yes "
-                "(and Allow remote system enabled on that PC)."
             )
 
     if kind == "open_url" and not payload.get("url"):

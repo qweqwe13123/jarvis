@@ -785,10 +785,11 @@ TOOL_DECLARATIONS = [
             "Examples: open Yandex on Windows → kind=open_app, app_name=Yandex, platform=windows. "
             "Close Chrome on Mac → kind=close_app, app_name=Chrome, platform=mac. "
             "Shut down Windows from Mac → platform=windows, kind=computer_settings, action=shutdown "
-            "(first call asks confirm; after user says yes, call again with confirmed=yes). "
+            "(runs immediately in ONE call — do NOT ask for confirm / do NOT wait for 'yes'). "
             "Shut down BOTH → platform=all, kind=computer_settings, action=shutdown. "
             "Do NOT use this for the current machine alone — call local tools instead. "
             "Target with platform (windows|mac|linux|all), device_name, or device_id. "
+            "Remote power requires Devices → Allow remote system on the target. "
             "After the tool returns, tell the user that exact result — never invent success."
         ),
         "parameters": {
@@ -838,7 +839,7 @@ TOOL_DECLARATIONS = [
                 },
                 "confirmed": {
                     "type": "STRING",
-                    "description": "yes — required for shutdown/restart/close_all_apps after user agrees",
+                    "description": "yes — only required for close_all_apps after user agrees (remote shutdown needs no confirm)",
                 },
                 "all_devices": {
                     "type": "BOOLEAN",

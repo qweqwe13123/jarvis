@@ -1,10 +1,13 @@
 """Unit tests for multi-device target resolution, kind inference, app lifecycle."""
 
+from unittest.mock import MagicMock, patch
+
 from actions.app_lifecycle import process_hints_for_app
 from actions.dispatch_to_device import (
     _infer_kind,
     _kind_allowed,
     _wants_all_devices,
+    dispatch_to_device,
     resolve_all_targets,
     resolve_target_device,
 )
@@ -39,6 +42,32 @@ DEVICES = [
         "online": False,
         "isThisDevice": False,
         "permissions": {"allow_remote_control": False},
+    },
+]
+
+DEVICES_SYSTEM_OK = [
+    {
+        "id": "mac",
+        "name": "MacBook",
+        "platform": "darwin",
+        "online": True,
+        "isThisDevice": True,
+        "permissions": {
+            "allow_remote_control": True,
+            "allow_remote_system": True,
+        },
+    },
+    {
+        "id": "win",
+        "name": "DESKTOP-3N4H07I",
+        "platform": "win32",
+        "online": True,
+        "isThisDevice": False,
+        "permissions": {
+            "allow_remote_control": True,
+            "allow_remote_files": False,
+            "allow_remote_system": True,
+        },
     },
 ]
 
@@ -112,3 +141,76 @@ def test_yandex_aliases_present():
     assert "yandex" in process_hints_for_app("Yandex Browser")
     # Normalization should resolve to an OS-specific launch name.
     assert _normalize("яндекс")
+
+
+def _mock_auth_and_devices(devices):
+    ua = patch("jarvis_ui.user_account.is_authenticated", return_value=True)
+    sync = MagicMock()
+    sync.refresh_now.return_value = {"devices": devices}
+    ds = patch("jarvis_ui.device_sync.start_device_sync", return_value=sync)
+    return ua, ds, sync
+
+
+def test_remote_shutdown_no_confirm_roundtrip():
+    """Mac→Windows shutdown must enqueue immediately (no 'call again with confirmed')."""
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_SYSTEM_OK)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-1"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "Shutting down…"},
+            ):
+                out = dispatch_to_device(
+                    parameters={
+                        "platform": "windows",
+                        "kind": "computer_settings",
+                        "action": "shutdown",
+                    }
+                )
+    assert "call again" not in out.lower()
+    assert "confirmed=yes" not in out.lower()
+    assert "DESKTOP-3N4H07I" in out or "Done" in out
+    enq.assert_called_once()
+    _device_id, kind, payload = enq.call_args[0]
+    assert _device_id == "win"
+    assert kind == "computer_settings"
+    assert payload.get("action") == "shutdown"
+    assert str(payload.get("confirmed")).lower() in {"yes", "true", "1"}
+
+
+def test_remote_shutdown_blocked_without_allow_system():
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES)
+    with ua, ds:
+        out = dispatch_to_device(
+            parameters={
+                "platform": "windows",
+                "kind": "computer_settings",
+                "action": "shutdown",
+            }
+        )
+    assert "Allow remote system" in out
+    assert "call again" not in out.lower()
+
+
+def test_remote_shutdown_from_intent_args():
+    from core.remote_intent import parse_remote_power_intent
+
+    intent = parse_remote_power_intent("выключи windows компьютер")
+    assert intent is not None
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_SYSTEM_OK)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-2"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "ok"},
+            ):
+                out = dispatch_to_device(parameters=intent.to_dispatch_args())
+    assert "call again" not in out.lower()
+    enq.assert_called_once()
+    assert enq.call_args[0][2].get("confirmed") == "yes"

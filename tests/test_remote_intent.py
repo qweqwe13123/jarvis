@@ -15,11 +15,20 @@ def test_shutdown_windows_from_mac_phrase():
     assert intent is not None
     assert intent.action == "shutdown"
     assert intent.platform == "windows"
-    assert intent.confirmed is False
     args = intent.to_dispatch_args()
     assert args["platform"] == "windows"
     assert args["kind"] == "computer_settings"
     assert args["action"] == "shutdown"
+    # One-shot remote power — confirmed stamped for the target gate.
+    assert args.get("confirmed") == "yes"
+
+
+def test_shutdown_windows_computer_phrase():
+    intent = parse_remote_power_intent("выключи windows компьютер")
+    assert intent is not None
+    assert intent.action == "shutdown"
+    assert intent.platform == "windows"
+    assert intent.to_dispatch_args()["confirmed"] == "yes"
 
 
 def test_turn_off_pc_english():
@@ -66,6 +75,7 @@ def test_redirect_when_live_picked_local():
     assert redir is not None
     assert redir.platform == "windows"
     assert redir.action == "shutdown"
+    assert redir.to_dispatch_args().get("confirmed") == "yes"
 
 
 def test_no_redirect_for_local_phrase():

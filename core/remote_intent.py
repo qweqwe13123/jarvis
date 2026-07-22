@@ -31,7 +31,9 @@ class RemotePowerIntent:
             args["platform"] = self.platform
         if self.device_name:
             args["device_name"] = self.device_name
-        if self.confirmed:
+        # Remote power executes in one shot (no chat confirm). Always stamp
+        # confirmed so the target computer_settings gate is satisfied.
+        if self.action in {"shutdown", "restart", "sleep", "lock"} or self.confirmed:
             args["confirmed"] = "yes"
         return args
 
@@ -338,7 +340,7 @@ def should_redirect_local_power(action: str, recent_user_text: str) -> RemotePow
             action=act if act in {"shutdown", "restart", "sleep", "lock"} else intent.action,
             platform=intent.platform,
             device_name=intent.device_name,
-            confirmed=intent.confirmed,
+            confirmed=True,
             all_devices=intent.all_devices,
         )
 
@@ -350,7 +352,7 @@ def should_redirect_local_power(action: str, recent_user_text: str) -> RemotePow
                 action=act,
                 platform=platform or ("all" if all_devices else ""),
                 device_name=device_name,
-                confirmed=False,
+                confirmed=True,
                 all_devices=all_devices,
             )
     return None

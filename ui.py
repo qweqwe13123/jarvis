@@ -2164,6 +2164,7 @@ class MainWindow(QMainWindow):
             "maps_prospector",
             "website",
             "code",
+            "manager",
         }
         if agent_key in _paid_surfaces and not self._require_subscription():
             return
