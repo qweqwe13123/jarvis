@@ -294,6 +294,33 @@ for _k, _entry in list(platforms.items()):
     if stamped:
         _entry["version"] = stamped
 
+# AURA Companion (Android) — public side-load APK synced from the release.
+android: dict = {}
+for name, asset in assets.items():
+    if not name.lower().endswith(".apk"):
+        continue
+    url = f"{base}/{name}"
+    digest = (asset.get("digest") or "").removeprefix("sha256:")
+    size = int(asset.get("size") or 0)
+    if not digest:
+        print(f"hashing {name} ({size} bytes)...")
+        digest = sha_of_url(asset["url"], size)
+    _mv = _re_ver.search(r"(\d+\.\d+\.\d+)", name)
+    prev_android = prev.get("android") if isinstance(prev.get("android"), dict) else {}
+    android = {
+        "url": url,
+        "filename": name,
+        "sha256": digest,
+        "size": size,
+        "version": _mv.group(1) if _mv else version,
+        "min_android": str(prev_android.get("min_android") or "8.0"),
+    }
+    break
+# Keep a previously published APK if this tag has none.
+if not android and isinstance(prev.get("android"), dict) and prev["android"].get("url"):
+    android = prev["android"]
+    print("preserved android from previous site manifest")
+
 # Monotonic release index + force-update window (current + 2 prior = 3 releases).
 release_index = int(prev.get("release_index") or 0) + 1
 max_behind = 2
@@ -332,6 +359,8 @@ manifest = {
         "docs": "https://www.hiauraai.com/download",
     },
 }
+if android:
+    manifest["android"] = android
 saas.parent.mkdir(parents=True, exist_ok=True)
 text = json.dumps(manifest, indent=2) + "\n"
 saas.write_text(text)
@@ -341,11 +370,20 @@ print("Updated", saas)
 print("platforms:", ", ".join(sorted(platforms)) or "(none)")
 for k, v in sorted(platforms.items()):
     print(f"  {k}: {v.get('filename')} ({v.get('size')} bytes)")
+if android:
+    print(f"  android: {android.get('filename')} ({android.get('size')} bytes)")
 PY
 
 echo "=== Push jarvis-saas (triggers Vercel) ==="
 cd "$SAAS"
-git add public/releases/manifest.json src/components/download-client.tsx src/lib/platform.ts 2>/dev/null || git add public/releases/manifest.json
+git add \
+  public/releases/manifest.json \
+  src/components/download-client.tsx \
+  src/components/platform-icons.tsx \
+  src/lib/platform.ts \
+  src/app/api/releases/latest/route.ts \
+  src/app/download/page.tsx \
+  2>/dev/null || git add public/releases/manifest.json
 if git diff --cached --quiet; then
   echo "No site changes to commit"
 else
