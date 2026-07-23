@@ -14,6 +14,10 @@ SUPPORTED_KINDS = {
     "computer_settings",
     "file_controller",
     "agent_task",
+    # Android companion kinds (only ever targeted at platform=android).
+    "lock",
+    "open_last",
+    "media_control",
 }
 
 _SYSTEM_DANGEROUS = {
@@ -81,9 +85,9 @@ def _platform_aliases(hint: str) -> set[str]:
     return {h} if h else set()
 
 
-# Android companion (MVP) can only receive open_url jobs — no OS control,
-# power, files or agent tasks. Keep this list tiny and explicit.
-_ANDROID_KINDS = {"open_url"}
+# Kinds the Android companion can execute. Everything else is refused with a
+# clear message. These are only ever produced for platform=android.
+_ANDROID_KINDS = {"open_url", "open_last", "lock", "media_control"}
 
 
 def _youtube_url_from_query(query: str) -> str:
@@ -93,29 +97,93 @@ def _youtube_url_from_query(query: str) -> str:
     return f"https://www.youtube.com/results?search_query={quote_plus((query or '').strip())}"
 
 
-def _androidize(kind: str, payload: dict[str, Any], args: dict[str, Any]) -> tuple[str, dict[str, Any] | None, str]:
-    """Coerce any phone-directed request into a single open_url job.
+def _google_url_from_query(query: str) -> str:
+    """Build a Google search URL for 'find X in Google on my phone'."""
+    from urllib.parse import quote_plus
 
-    Returns (kind, payload, error). On success error is "". On failure payload
-    is None and error holds a user-facing message.
+    return f"https://www.google.com/search?q={quote_plus((query or '').strip())}"
+
+
+def _detect_search_engine(text: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
+    """google | youtube — from an explicit engine arg or the utterance."""
+    explicit = _norm(str(args.get("engine") or payload.get("engine") or ""))
+    if explicit in {"google", "гугл", "гугле"}:
+        return "google"
+    if explicit in {"youtube", "ютуб", "yt"}:
+        return "youtube"
+    low = _norm(text)
+    if "google" in low or "гугл" in low:
+        return "google"
+    if "youtube" in low or "ютуб" in low or "ютьюб" in low:
+        return "youtube"
+    return "youtube"  # sensible default for movie/video requests
+
+
+def _android_query_text(args: dict[str, Any], payload: dict[str, Any]) -> str:
+    for src in (payload, args):
+        for key in ("query", "text", "description", "goal"):
+            v = str(src.get(key) or "").strip()
+            if v:
+                return v
+    return ""
+
+
+def _detect_android_action(args: dict[str, Any], payload: dict[str, Any], text: str) -> str:
+    """lock | play | pause | open_last | open_url."""
+    a = _norm(str(payload.get("action") or args.get("action") or ""))
+    low = _norm(text)
+
+    def has(*words: str) -> bool:
+        return any(w in low for w in words)
+
+    if a in {"lock", "lock_screen", "screen_off"} or has(
+        "заблокир", "залочь", "заблокируй", "погаси экран", "lock"
+    ):
+        return "lock"
+    if a in {"pause"} or has("пауз", "pause", "останови воспроизвед", "поставь на паузу"):
+        return "pause"
+    if a in {"play", "resume_media", "воспроизведи"} or has(
+        "нажми play", "нажми плей", "поставь play", "воспроизведи", "включи воспроизвед"
+    ):
+        return "play"
+    if a in {"open_last", "last", "resume", "continue"} or has(
+        "продолж", "последн", "continue", "resume", "с того места", "где остановил",
+        "тот фильм", "то видео", "открой последн"
+    ):
+        return "open_last"
+    return "open_url"
+
+
+def _androidize(
+    kind: str, payload: dict[str, Any], args: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None, str]:
+    """Coerce a phone-directed request into an allowed Android companion job.
+
+    Supported: open_url (google/youtube/direct), open_last (reopen + best-effort
+    play), lock (screen), media_control (play/pause). Returns (kind, payload,
+    error); on failure payload is None and error holds a user-facing message.
     """
+    text = _android_query_text(args, payload)
+    action = _detect_android_action(args, payload, text)
+
+    if action == "lock":
+        return "lock", {}, ""
+    if action in {"play", "pause"}:
+        return "media_control", {"action": action}, ""
+    if action == "open_last":
+        # Reopen the last thing AURA opened; companion best-effort taps play.
+        return "open_last", {"autoplay": "yes"}, ""
+
+    # Default: open a URL. Direct URL wins; otherwise search google/youtube.
     url = str(payload.get("url") or args.get("url") or "").strip()
-    if not url:
-        query = str(
-            payload.get("query")
-            or args.get("query")
-            or payload.get("text")
-            or args.get("text")
-            or payload.get("description")
-            or args.get("description")
-            or ""
-        ).strip()
-        if query:
-            url = _youtube_url_from_query(query)
+    if not url and text:
+        engine = _detect_search_engine(text, args, payload)
+        url = _google_url_from_query(text) if engine == "google" else _youtube_url_from_query(text)
     if not url:
         return kind, None, (
-            "For your phone I can open a link or a video. Try “find Inception "
-            "on my phone” or give a URL."
+            "For your phone I can open a link or a video, continue the last one, "
+            "or lock the screen. Try “find Inception on my phone”, “open it in "
+            "Google”, “continue the movie”, or “lock my phone”."
         )
     return "open_url", {"url": url}, ""
 

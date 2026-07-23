@@ -500,3 +500,80 @@ def test_android_by_name_coerces_to_open_url():
     assert device_id == "phone"
     assert kind == "open_url"
     assert payload.get("url") == "https://example.org"
+
+
+def _run_android(parameters):
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_WITH_ANDROID)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-x"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "ok"},
+            ):
+                out = dispatch_to_device(parameters=parameters)
+    return enq, out
+
+
+def test_android_google_engine():
+    enq, _ = _run_android(
+        {"platform": "android", "kind": "open_url", "engine": "google", "query": "cat"}
+    )
+    device_id, kind, payload = enq.call_args[0]
+    assert device_id == "phone"
+    assert kind == "open_url"
+    url = payload.get("url", "")
+    assert "google.com/search" in url and "cat" in url
+
+
+def test_android_google_from_phrase():
+    enq, _ = _run_android(
+        {"platform": "android", "query": "найти в гугле собаку"}
+    )
+    _device_id, kind, payload = enq.call_args[0]
+    assert kind == "open_url"
+    assert "google.com/search" in payload.get("url", "")
+
+
+def test_android_lock():
+    enq, _ = _run_android({"platform": "android", "action": "lock"})
+    device_id, kind, payload = enq.call_args[0]
+    assert device_id == "phone"
+    assert kind == "lock"
+    assert "url" not in payload
+
+
+def test_android_lock_from_phrase():
+    enq, _ = _run_android({"platform": "android", "text": "заблокируй телефон"})
+    _device_id, kind, _payload = enq.call_args[0]
+    assert kind == "lock"
+
+
+def test_android_open_last():
+    enq, _ = _run_android({"platform": "android", "action": "open_last"})
+    device_id, kind, payload = enq.call_args[0]
+    assert device_id == "phone"
+    assert kind == "open_last"
+    assert payload.get("autoplay") == "yes"
+
+
+def test_android_continue_from_phrase():
+    enq, _ = _run_android({"platform": "android", "text": "продолжи фильм"})
+    _device_id, kind, _payload = enq.call_args[0]
+    assert kind == "open_last"
+
+
+def test_android_media_play():
+    enq, _ = _run_android({"platform": "android", "action": "play"})
+    _device_id, kind, payload = enq.call_args[0]
+    assert kind == "media_control"
+    assert payload.get("action") == "play"
+
+
+def test_android_media_pause():
+    enq, _ = _run_android({"platform": "android", "action": "pause"})
+    _device_id, kind, payload = enq.call_args[0]
+    assert kind == "media_control"
+    assert payload.get("action") == "pause"
