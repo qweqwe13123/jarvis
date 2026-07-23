@@ -300,3 +300,75 @@ def test_execute_job_restart_normalizes_reboot():
     assert ok is True
     assert cs.call_args.kwargs["parameters"]["action"] == "restart"
     assert cs.call_args.kwargs["parameters"]["confirmed"] == "yes"
+
+
+def test_execute_job_sleep_runs_without_confirm():
+    from jarvis_ui.device_sync import execute_job
+
+    job = {"kind": "computer_settings", "payload": {"action": "sleep", "source_device_name": "MacBook"}}
+    with patch("jarvis_ui.device_sync.get_local_permissions", return_value=_PERMS_SYSTEM_OFF):
+        with patch("actions.computer_settings.computer_settings", return_value="Done: sleep.") as cs:
+            ok, _text = execute_job(job)
+    assert ok is True
+    assert cs.call_args.kwargs["parameters"]["action"] == "sleep"
+
+
+def test_execute_job_hibernate_normalizes_to_sleep():
+    from jarvis_ui.device_sync import execute_job
+
+    job = {"kind": "computer_settings", "payload": {"action": "hibernate"}}
+    with patch("jarvis_ui.device_sync.get_local_permissions", return_value=_PERMS_SYSTEM_OFF):
+        with patch("actions.computer_settings.computer_settings", return_value="Done: sleep.") as cs:
+            ok, _text = execute_job(job)
+    assert ok is True
+    assert cs.call_args.kwargs["parameters"]["action"] == "sleep"
+
+
+def test_both_devices_sleep_fans_out_local_and_remote():
+    """platform=all + sleep suspends this device locally and enqueues each remote."""
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_SYSTEM_OK)
+    with ua, ds:
+        with patch("actions.computer_settings.computer_settings", return_value="Done: sleep.") as local_cs:
+            with patch(
+                "jarvis_ui.device_sync.enqueue_job",
+                return_value={"job": {"id": "job-sleep-all"}},
+            ) as enq:
+                with patch(
+                    "jarvis_ui.device_sync.wait_for_job",
+                    return_value={"status": "done", "result": "Done: sleep."},
+                ):
+                    out = dispatch_to_device(
+                        parameters={
+                            "platform": "all",
+                            "kind": "computer_settings",
+                            "action": "sleep",
+                        }
+                    )
+    local_cs.assert_called_once()
+    assert local_cs.call_args.kwargs["parameters"]["action"] == "sleep"
+    enq.assert_called_once()
+    assert enq.call_args[0][2]["action"] == "sleep"
+    assert "MacBook" in out and "DESKTOP-3N4H07I" in out
+
+
+def test_remote_sleep_single_device():
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_SYSTEM_OK)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-sleep"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "Done: sleep."},
+            ):
+                out = dispatch_to_device(
+                    parameters={
+                        "platform": "windows",
+                        "kind": "computer_settings",
+                        "action": "sleep",
+                    }
+                )
+    enq.assert_called_once()
+    assert enq.call_args[0][2]["action"] == "sleep"
+    assert "call again" not in out.lower()

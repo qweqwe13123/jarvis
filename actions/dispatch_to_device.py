@@ -28,6 +28,23 @@ _SYSTEM_DANGEROUS = {
     "sign out",
 }
 
+# Power-style actions that run in one shot and, for platform=all, include THIS
+# device too (shutting down / sleeping / locking everything at once).
+_POWER_ALL_ACTIONS = {"shutdown", "restart", "sleep", "lock"}
+
+
+def _normalize_power_action(action: str) -> str:
+    a = (action or "").strip().lower().replace("-", "_")
+    if a in {"reboot", "restart_computer"}:
+        return "restart"
+    if a in {"hibernate", "suspend", "sleep_computer"}:
+        return "sleep"
+    if a in {"lock_screen", "lockscreen"}:
+        return "lock"
+    if a in {"power_off", "poweroff", "turn_off", "shut_down"}:
+        return "shutdown"
+    return a
+
 
 def _norm(s: str) -> str:
     return " ".join((s or "").lower().split())
@@ -458,14 +475,13 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
             )
 
     action = _norm(str(payload.get("action") or args.get("action") or ""))
-    if kind == "computer_settings" and action in {"shutdown", "restart", "reboot"}:
-        if action == "reboot":
-            payload["action"] = "restart"
-            action = "restart"
-        # One-shot from the sender. Consent = existing Allow remote system OR
-        # a JIT prompt on the target (Allow once / Always / Deny).
+    if kind == "computer_settings" and action in _SYSTEM_DANGEROUS:
+        action = _normalize_power_action(action)
+        payload["action"] = action
+        # One-shot from the sender. Same-account devices trust each other, so no
+        # chat confirm — the target just runs it.
         payload["confirmed"] = "yes"
-        if _wants_all_devices(args):
+        if action in _POWER_ALL_ACTIONS and _wants_all_devices(args):
             return _dispatch_all_power(
                 devices=devices,
                 action=action,
@@ -497,7 +513,7 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
             f"Unsupported kind '{kind}'. Use: " + ", ".join(sorted(SUPPORTED_KINDS))
         )
 
-    if _wants_all_devices(args) and action not in {"shutdown", "restart"}:
+    if _wants_all_devices(args) and action not in _POWER_ALL_ACTIONS:
         # Fan-out non-power actions to every *other* online device (not this one).
         others = [
             d

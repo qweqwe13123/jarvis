@@ -59,6 +59,36 @@ def test_both_devices():
     assert intent.to_dispatch_args()["platform"] == "all"
 
 
+def test_sleep_windows_phrase():
+    intent = parse_remote_power_intent("отправь windows в спящий режим")
+    assert intent is not None
+    assert intent.action == "sleep"
+    assert intent.platform == "windows"
+    assert intent.to_dispatch_args()["action"] == "sleep"
+
+
+def test_sleep_both_devices():
+    intent = parse_remote_power_intent("отправь оба устройства в спящий режим")
+    assert intent is not None
+    assert intent.action == "sleep"
+    assert intent.all_devices or intent.platform == "all"
+
+
+def test_sleep_beats_shutdown_when_both_words():
+    # "переведи мак в спящий режим" must be sleep, never shutdown.
+    intent = parse_remote_power_intent("переведи мак в спящий режим")
+    assert intent is not None
+    assert intent.action == "sleep"
+    assert intent.platform == "mac"
+
+
+def test_lock_windows_phrase():
+    intent = parse_remote_power_intent("заблокируй виндовс")
+    assert intent is not None
+    assert intent.action == "lock"
+    assert intent.platform == "windows"
+
+
 def test_local_only_not_remote():
     assert parse_remote_power_intent("выключи этот компьютер") is None
     assert parse_remote_power_intent("shutdown this mac") is None

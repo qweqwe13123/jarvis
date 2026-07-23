@@ -463,7 +463,8 @@ TOOL_DECLARATIONS = [
             "typing text on screen, closing a named app (action=close_app + app_name), "
             "closing all user apps (action=close_all_apps, requires confirmed=yes), "
             "fullscreen, dark mode, WiFi, restart, shutdown (requires confirmed=yes), "
-            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page, "
+            "sleep (action=sleep suspends this machine; screen_off only turns the display off), lock screen, "
+            "scrolling, tab management, zoom, screenshots, refresh/reload page, "
             "and wake_status diagnostics. "
             "NEVER use this for another machine. If the user says Windows / Mac / Linux / "
             "another PC / другое устройство / на ПК / на маке — call dispatch_to_device instead "
@@ -472,7 +473,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "Action e.g. close_app | close_all_apps | shutdown | volume_up"},
+                "action":      {"type": "STRING", "description": "Action e.g. close_app | close_all_apps | shutdown | restart | sleep | lock | screen_off | volume_up"},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
                 "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."},
                 "app_name":    {"type": "STRING", "description": "App to close when action=close_app (e.g. Yandex, Chrome)"},
@@ -786,7 +787,8 @@ TOOL_DECLARATIONS = [
             "Close Chrome on Mac → kind=close_app, app_name=Chrome, platform=mac. "
             "Shut down Windows from Mac → platform=windows, kind=computer_settings, action=shutdown "
             "(ONE call; same-account devices trust each other, so never ask the user to confirm or enable a setting). "
-            "Shut down BOTH at once → platform=all, kind=computer_settings, action=shutdown (includes THIS device). "
+            "action can also be restart | sleep (в спящий режим / suspend) | lock. "
+            "Sleep/lock/shut down BOTH at once → platform=all, kind=computer_settings, action=sleep|lock|shutdown (includes THIS device). "
             "Do NOT use this for the current machine alone — call local tools instead. "
             "Target with platform (windows|mac|linux|all), device_name, or device_id. "
             "After the tool returns, tell the user that exact result — never invent success."

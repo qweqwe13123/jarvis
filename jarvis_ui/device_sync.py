@@ -464,11 +464,22 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
 
             # Remote jobs may omit confirmed; power actions still need it locally.
             exec_payload = dict(payload)
-            action = str(exec_payload.get("action") or "").strip().lower()
-            if action in {"shutdown", "restart", "reboot"}:
+            action = str(exec_payload.get("action") or "").strip().lower().replace("-", "_")
+            _aliases = {
+                "reboot": "restart",
+                "hibernate": "sleep",
+                "suspend": "sleep",
+                "sleep_computer": "sleep",
+                "lock_screen": "lock",
+                "power_off": "shutdown",
+                "poweroff": "shutdown",
+                "turn_off": "shutdown",
+            }
+            action = _aliases.get(action, action)
+            exec_payload["action"] = action or exec_payload.get("action")
+            # shutdown/restart require confirm locally; sleep/lock do not.
+            if action in {"shutdown", "restart"}:
                 exec_payload["confirmed"] = "yes"
-                if action == "reboot":
-                    exec_payload["action"] = "restart"
             out = computer_settings(parameters=exec_payload)
             text = str(out)[:500]
             return (not _result_is_failure(text), text)

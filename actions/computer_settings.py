@@ -438,6 +438,19 @@ def sleep_display():
     else:
         subprocess.run(["xset", "dpms", "force", "off"], capture_output=True)
 
+def sleep_computer():
+    """Put the whole machine to sleep (suspend), not just the display."""
+    if _OS == "Windows":
+        # SetSuspendState(Hibernate=0, ForceCritical=1, DisableWakeEvent=0) → sleep.
+        subprocess.run(
+            ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
+            capture_output=True,
+        )
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"], capture_output=True)
+    else:
+        subprocess.run(["systemctl", "suspend"], capture_output=True)
+
 def open_run():
     if _OS == "Windows":
         pyautogui.hotkey("win", "r")
@@ -542,6 +555,11 @@ ACTION_MAP: dict[str, callable] = {
     "brightness_down":     brightness_down,
     "sleep_display":       sleep_display,
     "screen_off":          sleep_display,
+    "sleep":               sleep_computer,
+    "suspend":             sleep_computer,
+    "sleep_computer":      sleep_computer,
+    "hibernate":           sleep_computer,
+    "lock":                lock_screen,
     "pause_video":         pause_video,
     "play_pause":          pause_video,
     "close_app":           close_app,

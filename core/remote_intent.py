@@ -66,10 +66,20 @@ _POWER_ACTIONS: dict[str, tuple[str, ...]] = {
     ),
     "sleep": (
         "усыпи",
+        "усып",
         "в сон",
+        "в спящий",
+        "спящий режим",
+        "спящем режим",
+        "режим сна",
+        "в режим сна",
+        "спящ",
+        "засни",
+        "усни",
+        "поспи",
         "sleep",
         "hibernate",
-        "спящий",
+        "suspend",
     ),
     "lock": (
         "заблокируй",
@@ -159,9 +169,10 @@ def _has_any(low: str, needles: tuple[str, ...]) -> bool:
 
 
 def _detect_action(low: str) -> str | None:
-    # Prefer longer / more specific first via ordered scan.
-    for action, phrases in _POWER_ACTIONS.items():
-        if _has_any(low, phrases):
+    # Sleep/lock verbs are unambiguous, so check them before shutdown/restart —
+    # e.g. "переведи в спящий режим" must not be read as "выключи".
+    for action in ("sleep", "lock", "restart", "shutdown"):
+        if _has_any(low, _POWER_ACTIONS[action]):
             return action
     return None
 
