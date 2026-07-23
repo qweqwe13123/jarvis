@@ -175,25 +175,54 @@ def _load_system_prompt() -> str:
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 _JCFG_RE = re.compile(r"^\[JCFG\s+mode=(?P<mode>\w+)\s+provider=(?P<provider>[\w\-]+)\s+model=(?P<model>[^\]]*)\]\s*", re.IGNORECASE)
 
-def _clean_transcript(text: str) -> str:    
+# Case-insensitive transcript corrections that PRESERVE the original casing of
+# the surrounding text (we no longer lowercase the whole reply).
+_TRANSCRIPT_FIXES = [
+    (re.compile(r"джар\s*вис", re.IGNORECASE), "джарвис"),
+    (re.compile(r"джарвиз", re.IGNORECASE), "джарвис"),
+    (re.compile(r"jar\s*viss", re.IGNORECASE), "jarvis"),
+    (re.compile(r"тайм[аи]р", re.IGNORECASE), "таймер"),
+    (re.compile(r"випить", re.IGNORECASE), "выпить"),
+    (re.compile(r"напомнить меня", re.IGNORECASE), "напомни мне"),
+]
+
+
+def _clean_transcript(text: str) -> str:
+    """Per-delta cleanup for streamed transcription.
+
+    IMPORTANT: never strip() here — deltas arrive as fragments and trimming their
+    leading/trailing spaces is exactly what glued words together ("сейчас"+" сделаю"
+    → "сейчассделаю"). We only remove control junk and fix known mishearings, and
+    keep the original casing so the chat reads naturally.
+    """
     text = _CTRL_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
-    replacements = {
-        "джар вис": "джарвис",
-        "джарвиз": "джарвис",
-        "jar viss": "jarvis",
-        "таймар": "таймер",
-        "таймир": "таймер",
-        "випить": "выпить",
-        "выпит": "выпить",
-        "воды": "воды",
-        "напомнить меня": "напомни мне",
-    }
-    low = text.lower()
-    for bad, good in replacements.items():
-        low = low.replace(bad, good)
-    text = low
-    return text.strip()
+    for pattern, repl in _TRANSCRIPT_FIXES:
+        text = pattern.sub(repl, text)
+    return text
+
+
+# Chat display normalizer: repairs the most common transcription glitches without
+# touching the assistant's slang/casual voice — a space after sentence punctuation
+# glued to a word, and script-change boundaries (Cyrillic↔Latin) that mean a word
+# break. Applied only to the FINAL assembled message, never mid-word.
+_NORM_PUNCT_CYR = re.compile(r"([.,!?;:])([А-Яа-яЁё])")
+_NORM_CYR_LAT = re.compile(r"([А-Яа-яЁё])([A-Za-z])")
+_NORM_LAT_CYR = re.compile(r"([A-Za-z])([А-Яа-яЁё])")
+_NORM_MULTISPACE = re.compile(r"[ \t]{2,}")
+_NORM_SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.!?;:])")
+
+
+def _normalize_chat_text(text: str) -> str:
+    if not text:
+        return text
+    t = text
+    t = _NORM_PUNCT_CYR.sub(r"\1 \2", t)      # "сделаю.сначала" → "сделаю. сначала"
+    t = _NORM_CYR_LAT.sub(r"\1 \2", t)        # "текстEnglish"   → "текст English"
+    t = _NORM_LAT_CYR.sub(r"\1 \2", t)        # "Googleтекст"    → "Google текст"
+    t = _NORM_SPACE_BEFORE_PUNCT.sub(r"\1", t)  # "слово ," → "слово,"
+    t = _NORM_MULTISPACE.sub(" ", t)
+    return t.strip()
 
 TOOL_DECLARATIONS = [
     {
@@ -1510,7 +1539,9 @@ class JarvisLive:
             "[TONE]\n"
             "Talk back like a close friend on a call — short, casual, warm, a little funny. "
             "Answer identity questions directly and warmly — never brush off with 'какая разница'. "
-            "Keep replies tight and human, the way a buddy would actually talk.\n\n"
+            "Keep replies tight and human, the way a buddy would actually talk. "
+            "Keep the slang, but write cleanly: normal spaces between words, proper punctuation, "
+            "and don't glue words together or run sentences into each other.\n\n"
         )
         lang_ctx = language_instruction()
         device_ctx = self._device_context_for_prompt()
@@ -1554,12 +1585,13 @@ class JarvisLive:
         if self._startup_greeting_done:
             return
         self._startup_greeting_done = True
-        self.ui.write_log(f"AURA: {DEFAULT_GREETING_HINT}")
+        self.ui.write_log("AURA: online")
         await self.session.send_client_content(
             turns={"parts": [{"text": (
-                "Give a warm, brief startup greeting in the user's language — "
-                f"casual buddy tone like: \"{DEFAULT_GREETING_HINT}\" "
-                "Keep it to one short sentence."
+                "Greet the user with ONE short, casual sentence in THEIR language only "
+                "(match their last language; default to Russian if unknown). Keep your "
+                "friendly style, but write it cleanly with normal spaces and punctuation. "
+                "Do NOT repeat the greeting in English or any other language."
             )}]},
             turn_complete=True,
         )
@@ -1925,7 +1957,7 @@ class JarvisLive:
 
     def _emit_user_turn(self, in_buf: list) -> bool:
         """Persist + display the user's transcribed turn. Returns True if emitted."""
-        full_in = " ".join(in_buf).strip()
+        full_in = _normalize_chat_text("".join(in_buf))
         if not full_in:
             return False
         try:
@@ -1995,7 +2027,7 @@ class JarvisLive:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
                                 in_buf.append(txt)
-                                self._pending_user_text = " ".join(in_buf).strip()
+                                self._pending_user_text = _normalize_chat_text("".join(in_buf))
 
                         if sc.turn_complete:
                             if self._turn_done_event:
@@ -2007,7 +2039,7 @@ class JarvisLive:
                             user_emitted = False
                             self._pending_user_text = ""
 
-                            full_out = " ".join(out_buf).strip()
+                            full_out = _normalize_chat_text("".join(out_buf))
                             self.ui.stream_end(full_out)
                             if full_out:
                                 append_conversation("jarvis", full_out)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import sys
+import threading
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -174,6 +175,10 @@ class _DeviceRow(QFrame):
 class DevicesView(QWidget):
     """Live linked-devices hub with remote-control permissions."""
 
+    # Emitted from a background thread with a fresh device-sync snapshot so the
+    # network fetch never blocks (and never lags) the UI thread.
+    _snapshot_ready = pyqtSignal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("DevicesView")
@@ -283,10 +288,12 @@ class DevicesView(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._perm_busy = False
         self._kvm_busy = False
+        self._net_busy = False
         self._peer_devices: list[dict] = []
         self._kvm_timer = QTimer(self)
         self._kvm_timer.setInterval(2000)
         self._kvm_timer.timeout.connect(self._refresh_kvm_status)
+        self._snapshot_ready.connect(self._apply_snapshot)
 
 
     def showEvent(self, event):  # noqa: N802
@@ -480,35 +487,71 @@ class DevicesView(QWidget):
 
         self._perm_card.setEnabled(True)
         self._kvm_card.setEnabled(True)
+
+        # Paint instantly from the cached snapshot (no network → no lag), then
+        # fetch fresh data off the UI thread and update when it arrives.
         try:
-            snap = DS.start_device_sync().refresh_now()
-            devices = list(snap.get("devices") or [])
-            err = str(snap.get("error") or "")
-            online_n = sum(1 for d in devices if d.get("online"))
-            last = str(snap.get("last_job") or "")
-            self._status.setText(
-                err
-                or (
-                    f"{len(devices)} linked · {online_n} online · this device: {snap.get('name')}"
-                    + (f" · {last}" if last else "")
-                )
-            )
-            self._load_perm_checks(snap.get("permissions") or DS.get_local_permissions())
-            for d in devices:
-                if d.get("isThisDevice") or d.get("is_this_device"):
-                    self._this_device_id = str(d.get("id") or "")
-                    break
-            self._peer_devices = [
-                d
-                for d in devices
-                if not (d.get("isThisDevice") or d.get("is_this_device"))
-            ]
-            self._populate_kvm_peers()
-            self._render_devices(devices)
+            cached = DS.start_device_sync().snapshot()
+            self._apply_snapshot(cached)
+        except Exception:
+            pass
+        self._kick_network_refresh()
+
+    def _kick_network_refresh(self) -> None:
+        """Fetch a fresh snapshot on a background thread (never blocks the UI)."""
+        if self._net_busy:
+            return
+        self._net_busy = True
+
+        def _work() -> None:
+            from jarvis_ui import device_sync as DS
+
+            try:
+                snap = DS.start_device_sync().refresh_now()
+            except Exception as e:
+                snap = {"error": str(e)}
+            finally:
+                self._net_busy = False
+            try:
+                self._snapshot_ready.emit(snap)
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True, name="DevicesRefresh").start()
+
+    def _apply_snapshot(self, snap: object) -> None:
+        """Render a snapshot on the UI thread (from cache or the network worker)."""
+        if not isinstance(snap, dict):
+            return
+        from jarvis_ui import device_sync as DS
+
+        devices = list(snap.get("devices") or [])
+        err = str(snap.get("error") or "")
+        if err and not devices:
+            # Keep whatever is already on screen; just surface the error.
+            self._status.setText(err)
             self._refresh_kvm_status()
-        except Exception as e:
-            self._status.setText(str(e))
-            self._render_devices([])
+            return
+
+        online_n = sum(1 for d in devices if d.get("online"))
+        last = str(snap.get("last_job") or "")
+        self._status.setText(
+            f"{len(devices)} linked · {online_n} online · this device: {snap.get('name')}"
+            + (f" · {last}" if last else "")
+        )
+        self._load_perm_checks(snap.get("permissions") or DS.get_local_permissions())
+        for d in devices:
+            if d.get("isThisDevice") or d.get("is_this_device"):
+                self._this_device_id = str(d.get("id") or "")
+                break
+        self._peer_devices = [
+            d
+            for d in devices
+            if not (d.get("isThisDevice") or d.get("is_this_device"))
+        ]
+        self._populate_kvm_peers()
+        self._render_devices(devices)
+        self._refresh_kvm_status()
 
     def _load_perm_checks(self, perms: dict) -> None:
         self._perm_busy = True
@@ -538,8 +581,8 @@ class DevicesView(QWidget):
                     DS.patch_remote_permissions(self._this_device_id, perms)
                 except Exception:
                     pass
-            # Push on next heartbeat immediately.
-            DS.start_device_sync().refresh_now()
+            # Push on next heartbeat — off the UI thread so toggling is snappy.
+            self._kick_network_refresh()
             self._status.setText("Permissions saved — other devices will see them on next sync.")
             self._refresh_kvm_status()
         except Exception as e:
