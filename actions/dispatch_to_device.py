@@ -75,8 +75,18 @@ def _target_permissions(device: dict[str, Any]) -> dict[str, bool]:
     }
 
 
-def _kind_allowed(kind: str, perms: dict[str, bool], payload: dict) -> str | None:
-    """Return error string if blocked, else None."""
+def _kind_allowed(
+    kind: str,
+    perms: dict[str, bool],
+    payload: dict,
+    *,
+    jit_system: bool = True,
+) -> str | None:
+    """Return error string if blocked, else None.
+
+    When jit_system=True, missing allow_remote_system does not block enqueue —
+    the target device prompts Allow once / Always / Deny.
+    """
     if kind in {
         "open_url",
         "open_app",
@@ -93,14 +103,22 @@ def _kind_allowed(kind: str, perms: dict[str, bool], payload: dict) -> str | Non
             return "Target device blocks remote files (enable Allow remote files on that PC)."
     if kind == "computer_settings":
         action = _norm(str(payload.get("action") or ""))
-        if action in _SYSTEM_DANGEROUS and not perms.get("allow_remote_system", False):
-            return (
-                "Target blocks remote system power actions "
-                "(enable Allow remote system on that PC)."
-            )
-        if not perms.get("allow_remote_control", True):
+        if action in _SYSTEM_DANGEROUS:
+            if not jit_system and not perms.get("allow_remote_system", False):
+                return (
+                    "Target blocks remote system power actions "
+                    "(enable Allow remote system on that PC)."
+                )
+        elif not perms.get("allow_remote_control", True):
             return "Target device has remote control disabled."
     return None
+
+
+def _this_device_label(devices: list[dict[str, Any]]) -> str:
+    for d in devices:
+        if d.get("isThisDevice") or d.get("is_this_device"):
+            return str(d.get("name") or "AURA").strip() or "AURA"
+    return "AURA"
 
 
 def resolve_target_device(
@@ -282,15 +300,26 @@ def _enqueue_and_wait(
     payload: dict[str, Any],
     wait: bool,
     player=None,
+    source_name: str = "",
 ) -> str:
     from jarvis_ui import device_sync as DS
 
-    blocked = _kind_allowed(kind, _target_permissions(target), payload)
+    blocked = _kind_allowed(kind, _target_permissions(target), payload, jit_system=True)
     if blocked:
         return blocked
 
+    action = _norm(str(payload.get("action") or ""))
+    needs_approval = (
+        kind == "computer_settings"
+        and action in _SYSTEM_DANGEROUS
+        and not _target_permissions(target).get("allow_remote_system", False)
+    )
+    exec_payload = dict(payload)
+    if source_name and "source_device_name" not in exec_payload:
+        exec_payload["source_device_name"] = source_name
+
     try:
-        job = DS.enqueue_job(str(target["id"]), kind, payload)
+        job = DS.enqueue_job(str(target["id"]), kind, exec_payload)
     except Exception as e:
         return f"Failed to send job: {e}"
 
@@ -312,18 +341,37 @@ def _enqueue_and_wait(
 
     try:
         if player is not None and hasattr(player, "write_log"):
-            player.write_log(f"SYS: Waiting for “{name}” to run {kind}…")
+            if needs_approval:
+                player.write_log(
+                    f"SYS: Waiting for approval on “{name}” "
+                    "(Allow once / Always / Deny)…"
+                )
+            else:
+                player.write_log(f"SYS: Waiting for “{name}” to run {kind}…")
     except Exception:
         pass
 
-    done = DS.wait_for_job(jid, timeout_s=50.0, poll_s=2.0)
+    timeout_s = 120.0 if needs_approval else 50.0
+    done = DS.wait_for_job(jid, timeout_s=timeout_s, poll_s=2.0)
     status = str(done.get("status") or "")
     if status == "done":
         result = str(done.get("result") or "ok")
         return f"Done on “{name}”: {result}"
     if status == "failed":
         err = str(done.get("error") or "failed")
+        low = err.lower()
+        if "denied" in low:
+            return (
+                f"“{name}” denied the remote {action or kind} request. "
+                "Ask them to tap Allow once / Always allow on that screen, "
+                "or enable Devices → Allow remote system."
+            )
         return f"Failed on “{name}”: {err}"
+    if needs_approval:
+        return (
+            f"Still waiting for approval on “{name}”. "
+            "Keep AURA open there and accept the permission prompt."
+        )
     return (
         f"Queued {kind} for “{name}” (still {status or 'pending'}). "
         "Keep AURA running there — it should finish shortly."
@@ -339,11 +387,11 @@ def _dispatch_all_power(
 ) -> str:
     """Shutdown/restart every linked device (this one locally + remotes).
 
-    No chat confirm round-trip: consent is Devices → Allow remote system on
-    each remote, and local power is intentional when the user said "both/all".
+    Remotes without Allow remote system get a JIT prompt on that machine.
     """
     from actions.computer_settings import computer_settings
 
+    source_name = _this_device_label(devices)
     targets = resolve_all_targets(devices)
     lines: list[str] = []
     for d in targets:
@@ -355,14 +403,6 @@ def _dispatch_all_power(
             )
             lines.append(f"This device (“{name}”): {out}")
             continue
-        blocked = _kind_allowed(
-            "computer_settings",
-            _target_permissions(d),
-            {"action": action},
-        )
-        if blocked:
-            lines.append(f"“{name}”: {blocked}")
-            continue
         lines.append(
             _enqueue_and_wait(
                 target=d,
@@ -370,6 +410,7 @@ def _dispatch_all_power(
                 payload={"action": action, "confirmed": "yes"},
                 wait=wait,
                 player=player,
+                source_name=source_name,
             )
         )
     return "\n".join(lines) if lines else "No linked devices to power-control."
@@ -386,8 +427,7 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
               browser_control | computer_control | computer_settings |
               file_controller | agent_task
       confirmed — required for close_all_apps only.
-        Remote shutdown/restart runs immediately (consent = Allow remote system
-        on the target). Local computer_settings still has its own confirm.
+        Remote shutdown/restart: target prompts Allow once / Always if needed.
       wait — if false, return immediately after queue (default true)
     """
     from jarvis_ui import device_sync as DS
@@ -409,6 +449,7 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
             "sign in with the same account, and open Devices in the sidebar."
         )
 
+    source_name = _this_device_label(devices)
     url = str(args.get("url") or "").strip()
     kind = _infer_kind(args, url)
     payload = _build_payload(args, url)
@@ -437,8 +478,8 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
         if action == "reboot":
             payload["action"] = "restart"
             action = "restart"
-        # Execute immediately — bare "yes" confirm round-trips fail with Live.
-        # Safety gate: target Devices → Allow remote system (checked on enqueue).
+        # One-shot from the sender. Consent = existing Allow remote system OR
+        # a JIT prompt on the target (Allow once / Always / Deny).
         payload["confirmed"] = "yes"
         if _wants_all_devices(args):
             return _dispatch_all_power(
@@ -488,6 +529,7 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
                 payload=dict(payload),
                 wait=wait,
                 player=player,
+                source_name=source_name,
             )
             for d in others
         ]
@@ -513,4 +555,5 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
         payload=payload,
         wait=wait,
         player=player,
+        source_name=source_name,
     )

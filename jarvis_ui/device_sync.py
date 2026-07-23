@@ -307,6 +307,41 @@ def _permission_denied(kind: str, need: str) -> tuple[bool, str]:
     )
 
 
+def _ensure_remote_system_consent(payload: dict[str, Any], action: str) -> tuple[bool, str]:
+    """If Allow remote system is off, ask the local user (JIT). Returns (ok, detail)."""
+    if get_local_permissions().get("allow_remote_system", False):
+        return True, "already_allowed"
+    source = str(
+        payload.get("source_device_name")
+        or payload.get("source_name")
+        or "Another AURA device"
+    ).strip()
+    try:
+        from jarvis_ui.remote_permission_dialog import (
+            persist_allow_remote_system,
+            prompt_remote_system_permission,
+        )
+
+        choice = prompt_remote_system_permission(
+            source_name=source,
+            action=action,
+            timeout_s=90.0,
+        )
+    except Exception as e:
+        return False, f"Permission prompt failed: {e}"
+
+    if choice == "deny":
+        return False, "User denied the remote system request on this device."
+    if choice == "always":
+        try:
+            persist_allow_remote_system()
+        except Exception:
+            # Still honor this one request even if persist fails.
+            pass
+        return True, "allowed_always"
+    return True, "allowed_once"
+
+
 def _result_is_failure(text: str) -> bool:
     low = (text or "").lower()
     needles = (
@@ -362,9 +397,11 @@ def execute_job(job: dict[str, Any]) -> tuple[bool, str]:
 
         if kind in _SYSTEM_KINDS:
             action = str(payload.get("action") or "").strip().lower()
-            if action in _SYSTEM_DANGEROUS and not perms.get("allow_remote_system", False):
-                return _permission_denied(kind, "Allow remote system (shutdown/lock)")
-            if not perms.get("allow_remote_control", True) and action not in _SYSTEM_DANGEROUS:
+            if action in _SYSTEM_DANGEROUS:
+                ok, detail = _ensure_remote_system_consent(payload, action)
+                if not ok:
+                    return False, detail
+            elif not perms.get("allow_remote_control", True):
                 # Soft settings (volume etc.) still need remote control.
                 return _permission_denied(kind, "Allow remote control")
 

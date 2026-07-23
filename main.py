@@ -785,11 +785,10 @@ TOOL_DECLARATIONS = [
             "Examples: open Yandex on Windows → kind=open_app, app_name=Yandex, platform=windows. "
             "Close Chrome on Mac → kind=close_app, app_name=Chrome, platform=mac. "
             "Shut down Windows from Mac → platform=windows, kind=computer_settings, action=shutdown "
-            "(runs immediately in ONE call — do NOT ask for confirm / do NOT wait for 'yes'). "
+            "(ONE call; if needed the other PC shows Allow once / Always / Deny — do NOT ask chat 'yes'). "
             "Shut down BOTH → platform=all, kind=computer_settings, action=shutdown. "
             "Do NOT use this for the current machine alone — call local tools instead. "
             "Target with platform (windows|mac|linux|all), device_name, or device_id. "
-            "Remote power requires Devices → Allow remote system on the target. "
             "After the tool returns, tell the user that exact result — never invent success."
         ),
         "parameters": {

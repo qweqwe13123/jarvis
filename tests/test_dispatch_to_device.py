@@ -131,7 +131,17 @@ def test_kind_allowed_blocks_files_and_system():
     assert _kind_allowed("open_url", perms, {}) is None
     assert _kind_allowed("close_app", perms, {"app_name": "Chrome"}) is None
     assert _kind_allowed("file_controller", perms, {"action": "list"}) is not None
-    assert _kind_allowed("computer_settings", perms, {"action": "shutdown"}) is not None
+    # System power is allowed to enqueue — target shows JIT prompt.
+    assert _kind_allowed("computer_settings", perms, {"action": "shutdown"}) is None
+    assert (
+        _kind_allowed(
+            "computer_settings",
+            perms,
+            {"action": "shutdown"},
+            jit_system=False,
+        )
+        is not None
+    )
     assert _kind_allowed("computer_settings", perms, {"action": "volume"}) is None
 
 
@@ -179,20 +189,34 @@ def test_remote_shutdown_no_confirm_roundtrip():
     assert kind == "computer_settings"
     assert payload.get("action") == "shutdown"
     assert str(payload.get("confirmed")).lower() in {"yes", "true", "1"}
+    assert payload.get("source_device_name") == "MacBook"
 
 
-def test_remote_shutdown_blocked_without_allow_system():
+def test_remote_shutdown_enqueues_when_system_permission_off():
+    """Missing Allow remote system → still enqueue; target shows JIT prompt."""
     ua, ds, _sync = _mock_auth_and_devices(DEVICES)
     with ua, ds:
-        out = dispatch_to_device(
-            parameters={
-                "platform": "windows",
-                "kind": "computer_settings",
-                "action": "shutdown",
-            }
-        )
-    assert "Allow remote system" in out
-    assert "call again" not in out.lower()
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-jit"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={
+                    "status": "failed",
+                    "error": "User denied the remote system request on this device.",
+                },
+            ):
+                out = dispatch_to_device(
+                    parameters={
+                        "platform": "windows",
+                        "kind": "computer_settings",
+                        "action": "shutdown",
+                    }
+                )
+    enq.assert_called_once()
+    assert "denied" in out.lower()
+    assert "Allow remote system" not in out or "enable" in out.lower() or "Allow once" in out
 
 
 def test_remote_shutdown_from_intent_args():
