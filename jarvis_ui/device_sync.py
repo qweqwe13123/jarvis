@@ -545,6 +545,7 @@ class DeviceSyncService:
         self._last_job_msg = ""
         self._lock = threading.Lock()
         self._last_heartbeat_at = 0.0
+        self._keys_synced = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -599,6 +600,15 @@ class DeviceSyncService:
                 self._last_devices = []
                 self._last_error = "Sign in to link devices"
             return
+
+        # Once per session, push local AI keys to the account so the Android
+        # companion (and any other device) chats with the SAME key.
+        if not self._keys_synced:
+            self._keys_synced = True
+            try:
+                UA.sync_provider_keys_to_cloud_async()
+            except Exception:
+                pass
 
         now = time.time()
         need_hb = force_heartbeat or (now - self._last_heartbeat_at) >= _HEARTBEAT_INTERVAL

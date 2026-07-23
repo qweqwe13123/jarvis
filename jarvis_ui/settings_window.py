@@ -1852,6 +1852,12 @@ class SettingsWindow(QWidget):
         try:
             path.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
             QMessageBox.information(self, "API Keys", "API keys saved.")
+            try:
+                from jarvis_ui import user_account as UA
+
+                UA.sync_provider_keys_to_cloud_async()
+            except Exception:
+                pass
         except Exception as e:
             QMessageBox.warning(self, "API Keys", f"Could not save keys: {e}")
 

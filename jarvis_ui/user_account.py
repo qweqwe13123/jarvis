@@ -8,6 +8,7 @@ import hashlib
 import json
 import secrets
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -809,6 +810,80 @@ def fetch_referral_stats() -> dict[str, Any]:
     if not link:
         raise RuntimeError("No referral link returned. Try again in a moment.")
     return data
+
+
+# Local api_keys.json name  →  server BYOK provider id (/api/v1/keys).
+# `together` has no server provider, so it is intentionally not synced.
+_CLOUD_KEY_PROVIDERS = {
+    "gemini_api_key": "gemini",
+    "openai_api_key": "openai",
+    "openrouter_api_key": "openrouter",
+    "groq_api_key": "groq",
+    "deepseek_api_key": "deepseek",
+    "anthropic_api_key": "anthropic",
+    "xai_api_key": "xai",
+    "mistral_api_key": "mistral",
+}
+
+
+def _local_api_keys_config() -> dict[str, Any]:
+    try:
+        from core.app_paths import api_keys_path
+
+        return json.loads(api_keys_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def sync_provider_keys_to_cloud(*, timeout: float = 15.0) -> int:
+    """Upsert this account's local AI keys to the server (BYOK, encrypted at rest).
+
+    This is what lets the Android companion's chat use the SAME key the user
+    configured on desktop: keys live on the account, not just this machine.
+    Best-effort and idempotent — returns how many providers were synced.
+    """
+    if not is_authenticated():
+        return 0
+    token = get_access_token()
+    if not token:
+        return 0
+
+    cfg = _local_api_keys_config()
+    synced = 0
+    for local_name, provider in _CLOUD_KEY_PROVIDERS.items():
+        value = str(cfg.get(local_name) or "").strip()
+        if not value:
+            try:
+                from core.key_vault import get_provider_key
+
+                value = get_provider_key(local_name).strip()
+            except Exception:
+                value = ""
+        if len(value) < 8:
+            continue
+        body: dict[str, Any] = {"provider": provider, "key": value}
+        if provider == "openai":
+            base = str(cfg.get("openai_base_url") or "").strip()
+            if base:
+                body["baseUrl"] = base
+        try:
+            _http_json("POST", "/api/v1/keys", body=body, token=token, timeout=timeout)
+            synced += 1
+        except Exception:
+            # One bad key must not stop the rest; stay silent (best-effort).
+            continue
+    return synced
+
+
+def sync_provider_keys_to_cloud_async() -> None:
+    """Fire-and-forget cloud key sync on a daemon thread (never blocks UI)."""
+    def _run() -> None:
+        try:
+            sync_provider_keys_to_cloud()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True, name="AuraKeySync").start()
 
 
 def open_referral() -> None:
