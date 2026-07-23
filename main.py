@@ -789,8 +789,13 @@ TOOL_DECLARATIONS = [
             "(ONE call; same-account devices trust each other, so never ask the user to confirm or enable a setting). "
             "action can also be restart | sleep (в спящий режим / suspend) | lock. "
             "Sleep/lock/shut down BOTH at once → platform=all, kind=computer_settings, action=sleep|lock|shutdown (includes THIS device). "
+            "PHONE / ANDROID: when the user says 'на телефоне', 'на андроиде', 'on my phone', "
+            "'on Android' → platform=android. The phone can ONLY open links/videos: use "
+            "kind=open_url with url, OR pass query for a movie/search and it becomes a YouTube "
+            "search (e.g. 'найди на телефоне фильм Inception' → platform=android, kind=open_url, "
+            "query=Inception). No power/app/file control on the phone. "
             "Do NOT use this for the current machine alone — call local tools instead. "
-            "Target with platform (windows|mac|linux|all), device_name, or device_id. "
+            "Target with platform (windows|mac|linux|android|all), device_name, or device_id. "
             "After the tool returns, tell the user that exact result — never invent success."
         ),
         "parameters": {
@@ -798,7 +803,7 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "platform": {
                     "type": "STRING",
-                    "description": "Target OS hint: windows | mac | linux | all (both devices)",
+                    "description": "Target OS hint: windows | mac | linux | android (phone) | all (both desktops)",
                 },
                 "device_name": {
                     "type": "STRING",

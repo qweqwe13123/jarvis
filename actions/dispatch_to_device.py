@@ -64,9 +64,60 @@ def _platform_aliases(hint: str) -> set[str]:
         return {"win32"}
     if h in {"linux"}:
         return {"linux"}
+    if h in {
+        "android",
+        "phone",
+        "телефон",
+        "телефоне",
+        "телефона",
+        "андроид",
+        "смартфон",
+        "mobile",
+        "мобильный",
+    }:
+        return {"android"}
     if h in {"all", "both", "все", "оба", "всех", "everyone", "every"}:
         return {"__all__"}
     return {h} if h else set()
+
+
+# Android companion (MVP) can only receive open_url jobs — no OS control,
+# power, files or agent tasks. Keep this list tiny and explicit.
+_ANDROID_KINDS = {"open_url"}
+
+
+def _youtube_url_from_query(query: str) -> str:
+    """Build a YouTube search URL so 'find a movie on my phone' just works."""
+    from urllib.parse import quote_plus
+
+    return f"https://www.youtube.com/results?search_query={quote_plus((query or '').strip())}"
+
+
+def _androidize(kind: str, payload: dict[str, Any], args: dict[str, Any]) -> tuple[str, dict[str, Any] | None, str]:
+    """Coerce any phone-directed request into a single open_url job.
+
+    Returns (kind, payload, error). On success error is "". On failure payload
+    is None and error holds a user-facing message.
+    """
+    url = str(payload.get("url") or args.get("url") or "").strip()
+    if not url:
+        query = str(
+            payload.get("query")
+            or args.get("query")
+            or payload.get("text")
+            or args.get("text")
+            or payload.get("description")
+            or args.get("description")
+            or ""
+        ).strip()
+        if query:
+            url = _youtube_url_from_query(query)
+    if not url:
+        return kind, None, (
+            "For your phone I can open a link or a video. Try “find Inception "
+            "on my phone” or give a URL."
+        )
+    return "open_url", {"url": url}, ""
 
 
 def _wants_all_devices(args: dict[str, Any]) -> bool:
@@ -454,6 +505,14 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
     url = str(args.get("url") or "").strip()
     kind = _infer_kind(args, url)
     payload = _build_payload(args, url)
+
+    # Phone target (MVP): collapse any request into one open_url job.
+    if _norm(str(args.get("platform") or "")) == "android":
+        kind, android_payload, err = _androidize(kind, payload, args)
+        if android_payload is None:
+            return err
+        payload = android_payload
+
     wait = args.get("wait", True)
     if isinstance(wait, str):
         wait = wait.strip().lower() not in {"0", "false", "no"}
@@ -548,6 +607,15 @@ def dispatch_to_device(parameters: dict | None = None, player=None, **_kwargs) -
             for d in devices
         )
         return f"Could not find that device. Linked: {listing}"
+
+    # Safety net: a phone was picked by name/id but the request wasn't androidized
+    # above (platform arg missing). Coerce to open_url or refuse clearly.
+    if _norm(str(target.get("platform") or "")) == "android" and kind not in _ANDROID_KINDS:
+        kind, android_payload, err = _androidize(kind, payload, args)
+        if android_payload is None:
+            return err
+        payload = android_payload
+        exec_kind = kind
 
     return _enqueue_and_wait(
         target=target,

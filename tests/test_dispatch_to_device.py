@@ -372,3 +372,131 @@ def test_remote_sleep_single_device():
     enq.assert_called_once()
     assert enq.call_args[0][2]["action"] == "sleep"
     assert "call again" not in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Android companion (MVP): desktop → phone, only open_url.
+# ---------------------------------------------------------------------------
+
+DEVICES_WITH_ANDROID = [
+    {
+        "id": "mac",
+        "name": "MacBook",
+        "platform": "darwin",
+        "online": True,
+        "isThisDevice": True,
+        "permissions": {"allow_remote_control": True, "allow_remote_system": True},
+    },
+    {
+        "id": "phone",
+        "name": "Pixel 8",
+        "platform": "android",
+        "online": True,
+        "isThisDevice": False,
+        "permissions": {"allow_remote_control": True},
+    },
+]
+
+
+def test_resolve_android_by_platform():
+    t = resolve_target_device(DEVICES_WITH_ANDROID, platform="android")
+    assert t is not None
+    assert t["id"] == "phone"
+
+
+def test_resolve_android_by_phone_word():
+    t = resolve_target_device(DEVICES_WITH_ANDROID, platform="телефон")
+    assert t is not None
+    assert t["id"] == "phone"
+
+
+def test_android_open_url_enqueues():
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_WITH_ANDROID)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-and-1"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "Opened link"},
+            ):
+                out = dispatch_to_device(
+                    parameters={
+                        "platform": "android",
+                        "kind": "open_url",
+                        "url": "https://example.com",
+                    }
+                )
+    enq.assert_called_once()
+    device_id, kind, payload = enq.call_args[0]
+    assert device_id == "phone"
+    assert kind == "open_url"
+    assert payload.get("url") == "https://example.com"
+    assert "call again" not in out.lower()
+
+
+def test_android_movie_query_becomes_youtube_search():
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_WITH_ANDROID)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-and-2"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "Opened YouTube"},
+            ):
+                dispatch_to_device(
+                    parameters={
+                        "platform": "android",
+                        "kind": "open_url",
+                        "query": "Inception",
+                    }
+                )
+    device_id, kind, payload = enq.call_args[0]
+    assert device_id == "phone"
+    assert kind == "open_url"
+    url = payload.get("url", "")
+    assert "youtube.com/results" in url
+    assert "Inception" in url
+
+
+def test_android_refuses_power_actions():
+    """Phone can't be shut down — no url/query → clear refusal, no job."""
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_WITH_ANDROID)
+    with ua, ds:
+        with patch("jarvis_ui.device_sync.enqueue_job") as enq:
+            out = dispatch_to_device(
+                parameters={
+                    "platform": "android",
+                    "kind": "computer_settings",
+                    "action": "shutdown",
+                }
+            )
+    enq.assert_not_called()
+    assert "phone" in out.lower()
+
+
+def test_android_by_name_coerces_to_open_url():
+    """Phone selected by device_name (no platform arg) still coerces to open_url."""
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_WITH_ANDROID)
+    with ua, ds:
+        with patch(
+            "jarvis_ui.device_sync.enqueue_job",
+            return_value={"job": {"id": "job-and-3"}},
+        ) as enq:
+            with patch(
+                "jarvis_ui.device_sync.wait_for_job",
+                return_value={"status": "done", "result": "Opened link"},
+            ):
+                dispatch_to_device(
+                    parameters={
+                        "device_name": "Pixel",
+                        "url": "https://example.org",
+                    }
+                )
+    device_id, kind, payload = enq.call_args[0]
+    assert device_id == "phone"
+    assert kind == "open_url"
+    assert payload.get("url") == "https://example.org"
