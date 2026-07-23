@@ -62,11 +62,28 @@ class NativeKvmServer:
 
     def start(self) -> None:
         self._stop.clear()
+        # Bind the port first so a failure (port in use) surfaces immediately,
+        # then attach input hooks (raises if the OS input layer is unavailable).
+        self._bind_or_raise()
+        self._start_input_hooks()
         threading.Thread(
             target=self._accept_loop, daemon=True, name="AuraKvmAccept"
         ).start()
-        self._start_input_hooks()
         self._log(f"KVM server listening on :{self.port}")
+
+    def _bind_or_raise(self) -> None:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", self.port))
+            s.listen(1)
+            s.settimeout(1.0)
+        except OSError as e:
+            raise RuntimeError(
+                f"Can't listen on port {self.port} ({e.strerror or e}). "
+                "Is another KVM already running?"
+            ) from e
+        self._sock = s
 
     def stop(self) -> None:
         self._stop.set()
@@ -93,15 +110,9 @@ class NativeKvmServer:
         self._listeners.clear()
 
     def _accept_loop(self) -> None:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("0.0.0.0", self.port))
-            s.listen(1)
-            s.settimeout(1.0)
-            self._sock = s
-        except Exception as e:
-            self._log(f"KVM bind failed: {e}")
+        s = self._sock
+        if s is None:
+            self._log("KVM accept aborted: socket not bound")
             return
 
         while not self._stop.is_set():
@@ -197,8 +208,7 @@ class NativeKvmServer:
             from pynput import keyboard, mouse
             from pynput.keyboard import Key
         except Exception as e:
-            self._log(f"pynput unavailable: {e}")
-            return
+            raise RuntimeError(f"input layer unavailable: {e}") from e
 
         mods: set[str] = set()
         edge = 2

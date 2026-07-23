@@ -756,17 +756,53 @@ class DevicesView(QWidget):
         self._kvm_status.setText(f"Status: {st} — {detail}")
 
         running = snap.status.value == "running"
-        self._kvm_start.setEnabled(not running and self._cb_kvm.isChecked())
+        # Start is always available when stopped — pressing it grants the local
+        # KVM permission automatically (implicit consent on your own machine).
+        self._kvm_start.setEnabled(not running)
         self._kvm_stop.setEnabled(running or snap.status.value == "starting")
 
-    def _on_kvm_start(self) -> None:
-        if not self._cb_kvm.isChecked():
-            QMessageBox.information(
-                self,
-                "KVM",
-                "Turn on “Allow shared keyboard & mouse (KVM over LAN)” above first.",
-            )
+    def _ensure_kvm_permission(self) -> None:
+        """Pressing Start on your own machine implies consent — turn the
+        KVM permission on and persist it so incoming invites also work."""
+        if self._cb_kvm.isChecked():
             return
+        self._cb_kvm.blockSignals(True)
+        self._cb_kvm.setChecked(True)
+        self._cb_kvm.blockSignals(False)
+        try:
+            from jarvis_ui import device_sync as DS
+
+            perms = {
+                "allow_remote_control": self._cb_control.isChecked(),
+                "allow_remote_files": self._cb_files.isChecked(),
+                "allow_remote_system": self._cb_system.isChecked(),
+                "allow_kvm_input": True,
+            }
+            DS.set_local_permissions(perms)
+            if self._this_device_id:
+                try:
+                    DS.patch_remote_permissions(self._this_device_id, perms)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _prompt_input_permission(self, message: str) -> None:
+        from jarvis_ui.kvm.permission import open_input_settings
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("KVM needs input permission")
+        box.setText(message or "Grant input permission, then press Start again.")
+        open_btn = box.addButton("Open Settings", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            open_input_settings()
+
+    def _on_kvm_start(self) -> None:
+        # One-click Start (Barrier-style): grant the local permission implicitly.
+        self._ensure_kvm_permission()
         self._on_kvm_prefs_changed()
         try:
             from jarvis_ui.kvm import KvmRole, get_kvm_manager
@@ -784,7 +820,10 @@ class DevicesView(QWidget):
             )
             self._refresh_kvm_status()
             if snap.status.value == "error":
-                QMessageBox.warning(self, "KVM", snap.message)
+                if getattr(snap, "needs_input_permission", False):
+                    self._prompt_input_permission(snap.message)
+                else:
+                    QMessageBox.warning(self, "KVM", snap.message)
             elif snap.status.value == "running" and role == KvmRole.SERVER:
                 QMessageBox.information(
                     self,
@@ -793,8 +832,8 @@ class DevicesView(QWidget):
                     "Move your mouse past the screen edge toward the peer.\n"
                     "Press Ctrl+Shift+Alt+Q to return control here.\n\n"
                     f"Your LAN IP (for the other PC if needed): {snap.lan_ip or '—'}\n"
-                    "On the other computer: enable KVM permission, set role to Client, "
-                    "enter this IP and Start — or accept the automatic invite.",
+                    "On the other computer: set role to Client, enter this IP and "
+                    "Start — or accept the automatic invite.",
                 )
         except Exception as e:
             QMessageBox.warning(self, "KVM", str(e))

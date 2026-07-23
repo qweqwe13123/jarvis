@@ -57,6 +57,7 @@ class KvmSnapshot:
     running_since: float | None = None
     connected: bool = False
     remote: bool = False
+    needs_input_permission: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +80,7 @@ class KvmSnapshot:
             "running_since": self.running_since,
             "connected": self.connected,
             "remote": self.remote,
+            "needs_input_permission": self.needs_input_permission,
         }
 
 
@@ -122,6 +124,7 @@ class KvmManager:
         self._on_change: Callable[[KvmSnapshot], None] | None = None
         self._server = None
         self._client = None
+        self._needs_input_permission = False
 
     def set_on_change(self, cb: Callable[[KvmSnapshot], None] | None) -> None:
         self._on_change = cb
@@ -176,6 +179,7 @@ class KvmManager:
                 running_since=self._running_since,
                 connected=connected,
                 remote=remote,
+                needs_input_permission=self._needs_input_permission,
             )
 
     def start(
@@ -227,14 +231,30 @@ class KvmManager:
         except Exception as e:
             self._status = KvmStatus.ERROR
             self._message = f"Input layer unavailable: {e}"
+            self._emit()
             return self.snapshot()
 
+        # macOS needs Accessibility permission to capture/inject input. Fail
+        # fast with a clear, actionable message instead of "running, but dead".
+        from jarvis_ui.kvm.permission import input_trusted, trust_hint
+
+        if not input_trusted():
+            self._status = KvmStatus.ERROR
+            self._message = trust_hint() or "Grant input permission, then Start again."
+            self._needs_input_permission = True
+            self._emit()
+            return self.snapshot()
+        self._needs_input_permission = False
+
         p = kvm_prefs.load_prefs()
-        role_s = str(role or p.get("role") or "server").lower()
-        try:
-            role_e = KvmRole(role_s)
-        except ValueError:
-            role_e = KvmRole.SERVER
+        if isinstance(role, KvmRole):
+            role_e = role
+        else:
+            role_s = str(role or p.get("role") or "server").strip().lower()
+            try:
+                role_e = KvmRole(role_s)
+            except ValueError:
+                role_e = KvmRole.SERVER
 
         host = (peer_host if peer_host is not None else str(p.get("peer_host") or "")).strip()
         pname = peer_name if peer_name is not None else str(p.get("peer_name") or "")

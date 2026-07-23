@@ -50,3 +50,77 @@ def test_manager_snapshot_native():
     snap = get_kvm_manager().snapshot()
     assert snap.engine == "aura"
     assert snap.engine_label.startswith("AURA")
+
+
+def _trusted_perms(monkeypatch):
+    import jarvis_ui.device_sync as DS
+    import jarvis_ui.kvm.permission as P
+
+    monkeypatch.setattr(DS, "get_local_permissions", lambda: {"allow_kvm_input": True})
+    monkeypatch.setattr(P, "input_trusted", lambda: True)
+
+
+def test_start_server_then_stop(monkeypatch):
+    from jarvis_ui.kvm import KvmManager, KvmRole
+
+    _trusted_perms(monkeypatch)
+    m = KvmManager()
+    snap = m.start(role=KvmRole.SERVER, peer_host="", layout="peer_left", invite_peer=False)
+    try:
+        assert snap.status.value == "running"
+        assert snap.role == KvmRole.SERVER
+        assert snap.port == 24900
+    finally:
+        stopped = m.stop()
+    assert stopped.status.value == "stopped"
+
+
+def test_role_enum_is_honored_not_defaulted(monkeypatch):
+    """Passing a KvmRole enum must not silently fall back to SERVER."""
+    from jarvis_ui.kvm import KvmManager, KvmRole
+
+    _trusted_perms(monkeypatch)
+    m = KvmManager()
+    # Client with no host is invalid → error, but role stays CLIENT intent.
+    snap = m.start(role=KvmRole.CLIENT, peer_host="", invite_peer=False)
+    assert snap.status.value == "error"
+    assert "LAN IP" in snap.message or "hostname" in snap.message
+
+
+def test_client_needs_host(monkeypatch):
+    from jarvis_ui.kvm import KvmManager, KvmRole
+
+    _trusted_perms(monkeypatch)
+    m = KvmManager()
+    snap = m.start(role="client", peer_host="", invite_peer=False)
+    assert snap.status.value == "error"
+
+
+def test_blocks_without_input_permission(monkeypatch):
+    import jarvis_ui.device_sync as DS
+    import jarvis_ui.kvm.permission as P
+    from jarvis_ui.kvm import KvmManager, KvmRole
+
+    monkeypatch.setattr(DS, "get_local_permissions", lambda: {"allow_kvm_input": True})
+    monkeypatch.setattr(P, "input_trusted", lambda: False)
+    m = KvmManager()
+    snap = m.start(role=KvmRole.SERVER, invite_peer=False)
+    assert snap.status.value == "error"
+    assert snap.needs_input_permission is True
+
+
+def test_blocks_without_kvm_permission(monkeypatch):
+    import jarvis_ui.device_sync as DS
+    from jarvis_ui.kvm import KvmManager, KvmRole
+
+    monkeypatch.setattr(DS, "get_local_permissions", lambda: {"allow_kvm_input": False})
+    m = KvmManager()
+    snap = m.start(role=KvmRole.SERVER, invite_peer=False)
+    assert snap.status.value == "error"
+
+
+def test_permission_helper_non_darwin(monkeypatch):
+    import jarvis_ui.kvm.permission as P
+
+    monkeypatch.setattr(P, "_OS", "Windows")
+    assert P.input_trusted() is True
