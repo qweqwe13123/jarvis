@@ -436,7 +436,8 @@ def test_android_open_url_enqueues():
     assert "call again" not in out.lower()
 
 
-def test_android_movie_query_becomes_youtube_search():
+def test_android_plain_query_defaults_to_google():
+    """Variant A: a plain query becomes a Google web search (general purpose)."""
     ua, ds, _sync = _mock_auth_and_devices(DEVICES_WITH_ANDROID)
     with ua, ds:
         with patch(
@@ -445,7 +446,7 @@ def test_android_movie_query_becomes_youtube_search():
         ) as enq:
             with patch(
                 "jarvis_ui.device_sync.wait_for_job",
-                return_value={"status": "done", "result": "Opened YouTube"},
+                return_value={"status": "done", "result": "Opened Google"},
             ):
                 dispatch_to_device(
                     parameters={
@@ -458,7 +459,7 @@ def test_android_movie_query_becomes_youtube_search():
     assert device_id == "phone"
     assert kind == "open_url"
     url = payload.get("url", "")
-    assert "youtube.com/results" in url
+    assert "google.com/search" in url
     assert "Inception" in url
 
 
@@ -577,3 +578,47 @@ def test_android_media_pause():
     _device_id, kind, payload = enq.call_args[0]
     assert kind == "media_control"
     assert payload.get("action") == "pause"
+
+
+def test_android_yandex_engine():
+    enq, _ = _run_android(
+        {"platform": "android", "engine": "yandex", "query": "новости"}
+    )
+    _device_id, kind, payload = enq.call_args[0]
+    assert kind == "open_url"
+    assert "yandex.ru/search" in payload.get("url", "")
+
+
+def test_android_yandex_from_phrase():
+    enq, _ = _run_android(
+        {"platform": "android", "query": "найди в яндексе погоду"}
+    )
+    _device_id, _kind, payload = enq.call_args[0]
+    assert "yandex.ru/search" in payload.get("url", "")
+
+
+def test_android_youtube_when_asked():
+    enq, _ = _run_android(
+        {"platform": "android", "engine": "youtube", "query": "cats"}
+    )
+    _device_id, _kind, payload = enq.call_args[0]
+    assert "youtube.com/results" in payload.get("url", "")
+
+
+def test_android_news_query_is_general_google():
+    """News/general requests just search Google, no 'watch online' junk."""
+    enq, _ = _run_android({"platform": "android", "query": "latest AI news"})
+    _device_id, _kind, payload = enq.call_args[0]
+    url = payload.get("url", "")
+    assert "google.com/search" in url
+    assert "watch" not in url
+
+
+def test_android_movie_word_adds_watch_online():
+    enq, _ = _run_android(
+        {"platform": "android", "query": "Inception movie"}
+    )
+    _device_id, _kind, payload = enq.call_args[0]
+    url = payload.get("url", "")
+    assert "google.com/search" in url
+    assert "watch" in url  # augmented with 'watch online'

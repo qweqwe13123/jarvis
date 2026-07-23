@@ -90,33 +90,92 @@ def _platform_aliases(hint: str) -> set[str]:
 _ANDROID_KINDS = {"open_url", "open_last", "lock", "media_control"}
 
 
-def _youtube_url_from_query(query: str) -> str:
-    """Build a YouTube search URL so 'find a movie on my phone' just works."""
+def _q(query: str) -> str:
     from urllib.parse import quote_plus
 
-    return f"https://www.youtube.com/results?search_query={quote_plus((query or '').strip())}"
+    return quote_plus((query or "").strip())
+
+
+def _search_url(engine: str, query: str) -> str:
+    """Build a search URL for the chosen engine (opens the results page)."""
+    q = _q(query)
+    if engine == "youtube":
+        return f"https://www.youtube.com/results?search_query={q}"
+    if engine == "yandex":
+        return f"https://yandex.ru/search/?text={q}"
+    if engine == "bing":
+        return f"https://www.bing.com/search?q={q}"
+    if engine == "duckduckgo":
+        return f"https://duckduckgo.com/?q={q}"
+    return f"https://www.google.com/search?q={q}"  # google — the general default
+
+
+def _youtube_url_from_query(query: str) -> str:
+    return _search_url("youtube", query)
 
 
 def _google_url_from_query(query: str) -> str:
-    """Build a Google search URL for 'find X in Google on my phone'."""
-    from urllib.parse import quote_plus
+    return _search_url("google", query)
 
-    return f"https://www.google.com/search?q={quote_plus((query or '').strip())}"
+
+_ENGINE_ALIASES = {
+    "google": "google", "гугл": "google", "гугле": "google", "хром": "google",
+    "chrome": "google",
+    "youtube": "youtube", "ютуб": "youtube", "ютьюб": "youtube", "yt": "youtube",
+    "yandex": "yandex", "яндекс": "yandex", "яндексе": "yandex",
+    "bing": "bing", "бинг": "bing",
+    "duckduckgo": "duckduckgo", "ddg": "duckduckgo", "дакдакго": "duckduckgo",
+}
 
 
 def _detect_search_engine(text: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
-    """google | youtube — from an explicit engine arg or the utterance."""
+    """google | youtube | yandex | bing | duckduckgo — from engine arg or phrase.
+
+    Default is Google so general requests (news, sites, facts) just work; YouTube
+    is only chosen when the user asks for it or clearly wants video.
+    """
     explicit = _norm(str(args.get("engine") or payload.get("engine") or ""))
-    if explicit in {"google", "гугл", "гугле"}:
-        return "google"
-    if explicit in {"youtube", "ютуб", "yt"}:
-        return "youtube"
+    if explicit in _ENGINE_ALIASES:
+        return _ENGINE_ALIASES[explicit]
     low = _norm(text)
-    if "google" in low or "гугл" in low:
-        return "google"
+    if "yandex" in low or "яндекс" in low:
+        return "yandex"
+    if "duckduckgo" in low or "дакдак" in low:
+        return "duckduckgo"
+    if "bing" in low or "бинг" in low:
+        return "bing"
     if "youtube" in low or "ютуб" in low or "ютьюб" in low:
         return "youtube"
-    return "youtube"  # sensible default for movie/video requests
+    # "гугл/хром/google/chrome" or anything else → Google web search.
+    return "google"
+
+
+def _has_cyrillic(text: str) -> bool:
+    return any("\u0400" <= ch <= "\u04ff" for ch in (text or ""))
+
+
+_MOVIE_WORDS = (
+    "фильм", "сериал", "кино", "серию", "серия", "эпизод", "сезон", "мультфильм",
+    "movie", "series", "film", "episode", "season", "cartoon", "anime", "аниме",
+)
+
+
+def _looks_like_movie(text: str) -> bool:
+    return any(w in _norm(text) for w in _MOVIE_WORDS)
+
+
+def _augment_query_for_engine(engine: str, text: str) -> str:
+    """For web engines, nudge movie/series queries toward watchable pages.
+
+    Only applied to films/series, and never doubled if the user already said
+    'смотреть'/'watch'. General queries (news, facts, sites) are searched as-is.
+    """
+    if engine not in {"google", "yandex", "bing", "duckduckgo"}:
+        return text
+    low = _norm(text)
+    if not _looks_like_movie(text) or "смотреть" in low or "watch" in low:
+        return text
+    return f"{text} смотреть онлайн" if _has_cyrillic(text) else f"{text} watch online"
 
 
 def _android_query_text(args: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -174,16 +233,19 @@ def _androidize(
         # Reopen the last thing AURA opened; companion best-effort taps play.
         return "open_last", {"autoplay": "yes"}, ""
 
-    # Default: open a URL. Direct URL wins; otherwise search google/youtube.
+    # Default: open a URL. A direct URL wins; otherwise run a web/video search
+    # on the requested engine (Google by default; Yandex/YouTube/Bing/DDG too).
     url = str(payload.get("url") or args.get("url") or "").strip()
     if not url and text:
         engine = _detect_search_engine(text, args, payload)
-        url = _google_url_from_query(text) if engine == "google" else _youtube_url_from_query(text)
+        query = _augment_query_for_engine(engine, text)
+        url = _search_url(engine, query)
     if not url:
         return kind, None, (
-            "For your phone I can open a link or a video, continue the last one, "
-            "or lock the screen. Try “find Inception on my phone”, “open it in "
-            "Google”, “continue the movie”, or “lock my phone”."
+            "For your phone I can search the web (Google/Yandex/YouTube), open a "
+            "link, continue the last one, or lock the screen. Try “find the news "
+            "about X on my phone”, “search Inception in Yandex”, “continue the "
+            "movie”, or “lock my phone”."
         )
     return "open_url", {"url": url}, ""
 
