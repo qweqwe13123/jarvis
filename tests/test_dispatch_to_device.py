@@ -193,7 +193,7 @@ def test_remote_shutdown_no_confirm_roundtrip():
 
 
 def test_remote_shutdown_enqueues_when_system_permission_off():
-    """Missing Allow remote system → still enqueue; target shows JIT prompt."""
+    """Missing Allow remote system → still enqueues and succeeds (same-account trust)."""
     ua, ds, _sync = _mock_auth_and_devices(DEVICES)
     with ua, ds:
         with patch(
@@ -202,10 +202,7 @@ def test_remote_shutdown_enqueues_when_system_permission_off():
         ) as enq:
             with patch(
                 "jarvis_ui.device_sync.wait_for_job",
-                return_value={
-                    "status": "failed",
-                    "error": "User denied the remote system request on this device.",
-                },
+                return_value={"status": "done", "result": "Done: shutdown."},
             ):
                 out = dispatch_to_device(
                     parameters={
@@ -215,8 +212,8 @@ def test_remote_shutdown_enqueues_when_system_permission_off():
                     }
                 )
     enq.assert_called_once()
-    assert "denied" in out.lower()
-    assert "Allow remote system" not in out or "enable" in out.lower() or "Allow once" in out
+    assert "call again" not in out.lower()
+    assert "shutdown" in out.lower() or "Done" in out
 
 
 def test_remote_shutdown_from_intent_args():
@@ -238,3 +235,68 @@ def test_remote_shutdown_from_intent_args():
     assert "call again" not in out.lower()
     enq.assert_called_once()
     assert enq.call_args[0][2].get("confirmed") == "yes"
+
+
+def test_both_devices_shutdown_fans_out_local_and_remote():
+    """platform=all shuts down this device locally + enqueues each remote."""
+    ua, ds, _sync = _mock_auth_and_devices(DEVICES_SYSTEM_OK)
+    with ua, ds:
+        with patch("actions.computer_settings.computer_settings", return_value="Done: shutdown.") as local_cs:
+            with patch(
+                "jarvis_ui.device_sync.enqueue_job",
+                return_value={"job": {"id": "job-all"}},
+            ) as enq:
+                with patch(
+                    "jarvis_ui.device_sync.wait_for_job",
+                    return_value={"status": "done", "result": "Done: shutdown."},
+                ):
+                    out = dispatch_to_device(
+                        parameters={
+                            "platform": "all",
+                            "kind": "computer_settings",
+                            "action": "shutdown",
+                        }
+                    )
+    # Local device executed directly; remote device enqueued once.
+    local_cs.assert_called_once()
+    enq.assert_called_once()
+    assert enq.call_args[0][0] == "win"
+    assert "MacBook" in out and "DESKTOP-3N4H07I" in out
+
+
+# --- Target-side execution (same-account trust, no external UI module) ---
+
+_PERMS_SYSTEM_OFF = {
+    "allow_remote_control": True,
+    "allow_remote_files": False,
+    "allow_remote_system": False,
+    "allow_kvm_input": False,
+}
+
+
+def test_execute_job_shutdown_runs_even_with_system_off():
+    from jarvis_ui.device_sync import execute_job
+
+    job = {
+        "kind": "computer_settings",
+        "payload": {"action": "shutdown", "confirmed": "yes", "source_device_name": "MacBook"},
+    }
+    with patch("jarvis_ui.device_sync.get_local_permissions", return_value=_PERMS_SYSTEM_OFF):
+        with patch("actions.computer_settings.computer_settings", return_value="Done: shutdown.") as cs:
+            ok, text = execute_job(job)
+    assert ok is True
+    cs.assert_called_once()
+    assert cs.call_args.kwargs["parameters"]["confirmed"] == "yes"
+    assert cs.call_args.kwargs["parameters"]["action"] == "shutdown"
+
+
+def test_execute_job_restart_normalizes_reboot():
+    from jarvis_ui.device_sync import execute_job
+
+    job = {"kind": "computer_settings", "payload": {"action": "reboot"}}
+    with patch("jarvis_ui.device_sync.get_local_permissions", return_value=_PERMS_SYSTEM_OFF):
+        with patch("actions.computer_settings.computer_settings", return_value="Done: restart.") as cs:
+            ok, _text = execute_job(job)
+    assert ok is True
+    assert cs.call_args.kwargs["parameters"]["action"] == "restart"
+    assert cs.call_args.kwargs["parameters"]["confirmed"] == "yes"

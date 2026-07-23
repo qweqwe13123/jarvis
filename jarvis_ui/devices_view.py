@@ -236,6 +236,10 @@ class DevicesView(QWidget):
         self._cb_control = QCheckBox("Allow remote control (apps, browser, mouse/keyboard, agents)")
         self._cb_files = QCheckBox("Allow remote files (read / write / delete)")
         self._cb_system = QCheckBox("Allow remote system (shutdown, restart, lock)")
+        self._cb_system.setToolTip(
+            "Power actions from your other signed-in devices already work (same account). "
+            "This shows the capability; leave on."
+        )
         self._cb_kvm = QCheckBox("Allow shared keyboard & mouse (KVM over LAN)")
         for cb in (self._cb_control, self._cb_files, self._cb_system, self._cb_kvm):
             cb.setFont(_sans(12))

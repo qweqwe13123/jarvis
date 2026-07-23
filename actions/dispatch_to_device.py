@@ -309,11 +309,7 @@ def _enqueue_and_wait(
         return blocked
 
     action = _norm(str(payload.get("action") or ""))
-    needs_approval = (
-        kind == "computer_settings"
-        and action in _SYSTEM_DANGEROUS
-        and not _target_permissions(target).get("allow_remote_system", False)
-    )
+    is_power = kind == "computer_settings" and action in _SYSTEM_DANGEROUS
     exec_payload = dict(payload)
     if source_name and "source_device_name" not in exec_payload:
         exec_payload["source_device_name"] = source_name
@@ -341,39 +337,27 @@ def _enqueue_and_wait(
 
     try:
         if player is not None and hasattr(player, "write_log"):
-            if needs_approval:
-                player.write_log(
-                    f"SYS: Waiting for approval on “{name}” "
-                    "(Allow once / Always / Deny)…"
-                )
-            else:
-                player.write_log(f"SYS: Waiting for “{name}” to run {kind}…")
+            player.write_log(f"SYS: Sending {action or kind} to “{name}”…")
     except Exception:
         pass
 
-    timeout_s = 120.0 if needs_approval else 50.0
-    done = DS.wait_for_job(jid, timeout_s=timeout_s, poll_s=2.0)
+    done = DS.wait_for_job(jid, timeout_s=50.0, poll_s=2.0)
     status = str(done.get("status") or "")
     if status == "done":
         result = str(done.get("result") or "ok")
+        if is_power:
+            return f"Done — “{name}” is {action}ing now."
         return f"Done on “{name}”: {result}"
     if status == "failed":
         err = str(done.get("error") or "failed")
-        low = err.lower()
-        if "denied" in low:
-            return (
-                f"“{name}” denied the remote {action or kind} request. "
-                "Ask them to tap Allow once / Always allow on that screen, "
-                "or enable Devices → Allow remote system."
-            )
         return f"Failed on “{name}”: {err}"
-    if needs_approval:
+    if not online:
         return (
-            f"Still waiting for approval on “{name}”. "
-            "Keep AURA open there and accept the permission prompt."
+            f"Queued {action or kind} for “{name}” — it's offline right now and "
+            "will run when AURA comes online there."
         )
     return (
-        f"Queued {kind} for “{name}” (still {status or 'pending'}). "
+        f"Queued {action or kind} for “{name}” (still {status or 'pending'}). "
         "Keep AURA running there — it should finish shortly."
     )
 
